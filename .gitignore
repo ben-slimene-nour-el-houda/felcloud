@@ -5,3 +5,6 @@ ansible/.ssh/
 !.env.example
 docs/*.txt
 scripts/*.log
+__pycache__/
+*.pyc
+*.db
