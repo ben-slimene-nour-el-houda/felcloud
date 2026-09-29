@@ -1,0 +1,14 @@
+config:
+  openstack:cloud: felcloud
+  openstack:region: North-Africa
+  felcloud-infra:availabilityZone: TN-Carthage
+  felcloud-infra:imageId: a049a501-f812-4e6c-9c07-61aa3b08bb50
+  felcloud-infra:gatewayFlavor: "1003"
+  felcloud-infra:sandboxFlavor: "1001"
+  felcloud-infra:keypairName: felcloud-resilient-v2
+  felcloud-infra:serverGroupName: felcloud-gateway-antiaffinity
+  felcloud-infra:externalNetworkId: 470acab9-0e2a-4602-a8c8-9ab95ed6f24e
+  felcloud-infra:edgeCidr: 10.20.20.0/24
+  felcloud-infra:sandboxCidr: 10.20.30.0/24
+  felcloud-infra:mgmtCidr: 10.20.10.0/24
+  felcloud-infra:adminSshCidr: 0.0.0.0/0

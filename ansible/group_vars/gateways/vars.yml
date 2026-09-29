@@ -1,0 +1,14 @@
+---
+virtual_router_id: 51
+haproxy_dpa_port: 5555
+keepalived_script_user: root
+keepalived_check_interval: 2
+keepalived_check_weight: 2
+
+teams:
+  - name: team1
+    ip: 10.20.30.70
+    port: 80
+  - name: team2
+    ip: 10.20.30.192
+    port: 80
