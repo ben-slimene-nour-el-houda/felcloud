@@ -1,2 +1,7 @@
 ansible/.vault_pass
 ansible/.ssh/
+.env
+.env.*
+!.env.example
+docs/*.txt
+scripts/*.log
