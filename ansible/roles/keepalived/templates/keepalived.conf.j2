@@ -7,7 +7,7 @@ global_defs {
 vrrp_script check_haproxy {
     script "/usr/local/bin/check_haproxy.sh"
     interval {{ keepalived_check_interval | default(2) }}
-    weight {{ keepalived_check_weight | default(2) }}
+    weight {{ keepalived_check_weight | default(60) }}
     fall 2
     rise 2
 }

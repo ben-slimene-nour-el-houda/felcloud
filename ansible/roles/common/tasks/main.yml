@@ -17,6 +17,7 @@
       - net-tools
       - ca-certificates
       - psmisc
+      - openssl
     state: present
 
 - name: Configure sysctl settings for routing and non-local binding

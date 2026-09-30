@@ -24,10 +24,23 @@ defaults
     errorfile 503 /etc/haproxy/errors/503.http
     errorfile 504 /etc/haproxy/errors/504.http
 
-# --- Hostname-Based ACL Routing (Phase 7) ---
+# --- Hostname-Based ACL Routing (HTTP 80 & HTTPS 443) ---
 
 frontend http_front
     bind *:80
+    mode http
+
+{% if teams is defined %}
+{% for team in teams %}
+    acl is_{{ team.name }} hdr(host) -i {{ team.name }}.local {{ team.name }}.felcloud.local
+    use_backend {{ team.name }}_backend if is_{{ team.name }}
+{% endfor %}
+{% endif %}
+
+    default_backend default_maintenance
+
+frontend https_front
+    bind *:443 ssl crt {{ haproxy_tls_cert_file | default('/etc/haproxy/certs/felcloud-gateway.pem') }} alpn h2,http/1.1
     mode http
 
 {% if teams is defined %}
@@ -44,10 +57,11 @@ frontend http_front
 backend {{ team.name }}_backend
     mode http
     balance roundrobin
-    server {{ team.name }}_srv {{ team.ip }}:{{ team.port | default(80) }} check
+    server {{ team.name }}_srv {{ team.ip }}:{{ team.port | default(80) }} check inter 2000 rise 2 fall 3
 {% endfor %}
 {% endif %}
 
 backend default_maintenance
     mode http
     http-request return status 503 content-type "text/plain" lf-string "503 Service Unavailable - FelCloud Resilient Gateway Maintenance\n"
+
