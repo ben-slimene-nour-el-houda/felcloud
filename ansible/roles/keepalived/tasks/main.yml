@@ -14,6 +14,8 @@
     owner: root
     group: root
     mode: "0640"
+    # Validates configuration against a temporary file before overwriting the live config.
+    validate: keepalived -t -f %s
   notify: Restart keepalived
 
 - name: Validate Keepalived configuration

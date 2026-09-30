@@ -9,7 +9,7 @@ dataplaneapi:
   user:
     - name: "{{ haproxy_dpa_user | default('admin') }}"
       insecure: true
-      password: "{{ haproxy_dpa_pass | default('felcloud_dpa_secret_2026') }}"
+      password: "{{ haproxy_dpa_pass }}"
 
 haproxy:
   config_file: "/etc/haproxy/haproxy.cfg"

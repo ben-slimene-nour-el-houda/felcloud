@@ -75,11 +75,11 @@ Three isolated subnets partition the environment:
 ```mermaid
 flowchart TB
     Client["External Clients / Browser"]
-    PUB["Public Floating IP: 197.5.133.119"]
+    PUB["Public Floating IP\n(set BASTION_IP in .env)"]
     Client -->|HTTP:80 / HTTPS:443| PUB
 
     subgraph EDGE["felcloud-edge - 10.20.20.0/24 (Router Attached)"]
-        RTR["felcloud-edge-router<br/>External IP: 197.5.133.110"]
+        RTR["felcloud-edge-router<br/>External IP: (edge-router floating IP)"]
         VIP["Keepalived VIP: 10.20.20.246<br/>port felcloud-vip-port"]
         GW1E["gw1 edge: 10.20.20.82"]
         GW2E["gw2 edge: 10.20.20.190"]
@@ -311,9 +311,7 @@ ip_resilien/
 │       ├── interface_resolve/tasks/main.yml   # Dynamic edge interface detection
 │       ├── keepalived/                        # Keepalived tasks, template (weight 60), handler
 │       └── haproxy/                           # HAProxy & DPA tasks, TLS certs, templates, handlers
-├── docs/
-│   ├── architecture.md                        # Architecture design & topology document
-│   └── IMPLEMENTATION_PLAN.md                 # Complete phased implementation roadmap
+├── output/                                    # Discovery dumps (gitignored, created at runtime)
 ├── infra/                                     # Pulumi Go Infrastructure as Code
 │   ├── main.go                                # IaC stack entry point
 │   ├── network.go                             # Subnets & networks
@@ -324,8 +322,7 @@ ip_resilien/
 │   ├── bastion.go                             # Bastion jump host VM
 │   └── sandboxes.go                           # Demonstration team backend VMs
 ├── ipam/
-│   ├── ipam_control.py                        # IPAM CLI, quarantine logic, sync & REST API server
-│   └── ipam.db                                # SQLite state database
+│   └── ipam_control.py                        # IPAM CLI, quarantine logic, sync & REST API server
 └── scripts/
     ├── run-all-tests.sh                       # Master automated test suite runner
     ├── failover-test.sh                       # Measured VRRP failover benchmark
@@ -354,7 +351,9 @@ ip_resilien/
    ```
 3. **Configure Gateways:**
    ```bash
-   cd ansible && ansible-playbook -i inventory/hosts.yml site.yml --vault-password-file .vault_pass
+   # Run from the repository root (not from ansible/)
+   ansible-playbook -i ansible/inventory/hosts.yml ansible/site.yml \
+     --vault-password-file ansible/.vault_pass
    ```
 4. **Initialize IPAM:**
    ```bash
@@ -411,7 +410,7 @@ Passed: 6 / 6
 
 ```bash
 # Test HAProxy-only failure switchover and packet loss
-FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://197.5.133.119 ./scripts/failover-test.sh
+FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://${BASTION_IP} ./scripts/failover-test.sh
 ```
 
 ### Run Address Quarantine Test
@@ -420,7 +419,28 @@ FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://197.5.133.119 ./
 ./scripts/recycle-test.sh
 ```
 
----     
+---
+
+## 13. Phase 1 Deliverables Checklist
+
+| Deliverable | Status |
+|---|---|
+| Dual-gateway HA cluster (VRRP, weight 60, guaranteed failover) | ✅ Implemented |
+| Pulumi Go IaC for all cloud resources | ✅ Implemented |
+| Ansible roles for HAProxy, Keepalived, common, interface_resolve | ✅ Implemented |
+| Config pre-validation before deploy (`validate:` directive) | ✅ Implemented |
+| Rolling deployment (`serial: 1`) | ✅ Implemented |
+| TLS termination on port 443 with wildcard SANs | ✅ Implemented |
+| Host-header L7 routing per team | ✅ Implemented |
+| HAProxy Data Plane API (port 5555) | ✅ Implemented |
+| IPAM with address quarantine and reclamation | ✅ Implemented |
+| Pre-flight backend health checks | ✅ Implemented |
+| Zero-downtime reload with auto-rollback | ✅ Implemented |
+| Automated test suite (6 tests) | ✅ Implemented |
+| Security: no open-world SSH CIDR, infra entity collision guard | ✅ Implemented |
+| Secrets in Ansible Vault only (no plaintext in repo) | ✅ Implemented |
+
+---
 
 ## 14. Planned Evolutions
 

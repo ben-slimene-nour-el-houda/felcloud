@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_DIR="${DISCOVERY_OUTPUT_DIR:-$ROOT_DIR/docs}"
+OUT_DIR="${DISCOVERY_OUTPUT_DIR:-$ROOT_DIR/output}"
 mkdir -p "$OUT_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT_FILE="$OUT_DIR/felcloud-discovery-${STAMP}.txt"

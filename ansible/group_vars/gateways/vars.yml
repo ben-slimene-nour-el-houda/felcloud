@@ -2,7 +2,8 @@
 virtual_router_id: 51
 haproxy_dpa_port: 5555
 haproxy_dpa_user: admin
-haproxy_dpa_pass: felcloud_dpa_secret_2026
+# haproxy_dpa_pass is intentionally absent here.
+# It is defined exclusively in group_vars/gateways/vault.yml (Ansible Vault AES-256).
 haproxy_tls_cert_dir: /etc/haproxy/certs
 haproxy_tls_cert_file: /etc/haproxy/certs/felcloud-gateway.pem
 keepalived_script_user: root

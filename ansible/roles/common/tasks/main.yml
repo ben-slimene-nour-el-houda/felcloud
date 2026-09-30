@@ -3,7 +3,9 @@
   ansible.builtin.apt:
     update_cache: true
     cache_valid_time: 3600
-  ignore_errors: true
+  register: common_apt_cache_update
+  # Non-fatal: apt cache failures are acceptable on air-gapped/offline hosts.
+  failed_when: common_apt_cache_update.failed | default(false)
 
 - name: Install required system packages
   ansible.builtin.apt:
@@ -41,4 +43,6 @@
     mode: "0755"
     content: |
       #!/bin/sh
+      # Primary: HTTP probe — catches dead/hung HAProxy even when PID still exists
+      /usr/bin/curl -s -m 1 -o /dev/null http://127.0.0.1:80/ || \
       /usr/bin/killall -0 haproxy

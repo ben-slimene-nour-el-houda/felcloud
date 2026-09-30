@@ -24,22 +24,25 @@
       ansible.builtin.tempfile:
         state: directory
         prefix: haproxy_cert_
-      register: temp_cert_dir
+      register: haproxy_temp_cert_dir
 
     - name: Generate self-signed SSL certificate with wildcard SANs
       ansible.builtin.command:
         cmd: >
           openssl req -x509 -newkey rsa:2048 -nodes
-          -keyout {{ temp_cert_dir.path }}/server.key
-          -out {{ temp_cert_dir.path }}/server.crt
+          -keyout {{ haproxy_temp_cert_dir.path }}/server.key
+          -out {{ haproxy_temp_cert_dir.path }}/server.crt
           -days 3650
           -subj "/CN=*.felcloud.local/O=FelCloud/C=TN"
-          -addext "subjectAltName=DNS:*.felcloud.local,DNS:*.local,DNS:localhost,IP:10.20.20.246,IP:197.5.133.119"
+          -addext "subjectAltName=DNS:*.felcloud.local,DNS:*.local,DNS:localhost,IP:{{ vip_address }},IP:{{ bastion_public_ip | default(lookup('env', 'BASTION_IP')) }}"
       changed_when: true
 
     - name: Combine private key and certificate into PEM bundle for HAProxy
       ansible.builtin.shell:
-        cmd: "cat {{ temp_cert_dir.path }}/server.key {{ temp_cert_dir.path }}/server.crt > {{ haproxy_tls_cert_file | default('/etc/haproxy/certs/felcloud-gateway.pem') }}"
+        cmd: >
+          cat {{ haproxy_temp_cert_dir.path }}/server.key
+          {{ haproxy_temp_cert_dir.path }}/server.crt
+          > {{ haproxy_tls_cert_file | default('/etc/haproxy/certs/felcloud-gateway.pem') }}
       changed_when: true
 
     - name: Set correct permissions on HAProxy PEM certificate
@@ -51,16 +54,16 @@
 
     - name: Clean up temporary certificate directory
       ansible.builtin.file:
-        path: "{{ temp_cert_dir.path }}"
+        path: "{{ haproxy_temp_cert_dir.path }}"
         state: absent
 
 - name: Check if Data Plane API binary is installed
   ansible.builtin.stat:
     path: /usr/local/bin/dataplaneapi
-  register: dataplaneapi_bin_stat
+  register: haproxy_dataplaneapi_bin_stat
 
 - name: Install HAProxy Data Plane API binary
-  when: not dataplaneapi_bin_stat.stat.exists
+  when: not haproxy_dataplaneapi_bin_stat.stat.exists
   block:
     - name: Download HAProxy Data Plane API tarball
       ansible.builtin.get_url:
@@ -68,11 +71,11 @@
         dest: /tmp/dataplaneapi.tar.gz
         mode: "0644"
         timeout: 30
-      register: dpa_download
-      ignore_errors: true
+      register: haproxy_dpa_download
+      failed_when: haproxy_dpa_download.failed and haproxy_dataplaneapi_bin_stat.stat.exists is not defined
 
     - name: Extract Data Plane API binary
-      when: dpa_download is succeeded
+      when: haproxy_dpa_download is succeeded
       ansible.builtin.unarchive:
         src: /tmp/dataplaneapi.tar.gz
         dest: /usr/local/bin/
@@ -81,13 +84,13 @@
         extra_opts:
           - "--strip-components=1"
           - "dataplaneapi"
-      ignore_errors: true
+      register: haproxy_dpa_extract
+      failed_when: haproxy_dpa_extract.failed | default(false)
 
     - name: Remove temporary Data Plane API tarball
       ansible.builtin.file:
         path: /tmp/dataplaneapi.tar.gz
         state: absent
-      ignore_errors: true
 
 - name: Deploy Data Plane API configuration
   ansible.builtin.template:
@@ -105,12 +108,8 @@
     owner: root
     group: root
     mode: "0644"
-  register: dpa_unit_deploy
-
-- name: Reload systemd daemon if DPA service changed
-  ansible.builtin.systemd:
-    daemon_reload: true
-  when: dpa_unit_deploy is changed
+  register: haproxy_dpa_unit_deploy
+  notify: Reload systemd daemon
 
 - name: Deploy HAProxy configuration template
   ansible.builtin.template:
@@ -119,6 +118,8 @@
     owner: root
     group: root
     mode: "0644"
+    # Validates configuration against a temporary file before overwriting the live config.
+    validate: haproxy -c -f %s
   notify: Reload haproxy
 
 - name: Validate HAProxy configuration syntax
@@ -137,4 +138,5 @@
     name: dataplaneapi
     state: started
     enabled: true
-  ignore_errors: true
+  register: haproxy_dpa_svc
+  failed_when: haproxy_dpa_svc.failed | default(false)
