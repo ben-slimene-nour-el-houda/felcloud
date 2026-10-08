@@ -65,6 +65,12 @@ func initEnv() {
 	}
 }
 
+type DBQueryer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 func getDBConnection() (*sql.DB, error) {
 	dbMutex.Lock()
 	defer dbMutex.Unlock()
@@ -75,7 +81,12 @@ func getDBConnection() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create db dir: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	dsn := dbPath
+	if !strings.Contains(dsn, "?") {
+		dsn += "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	}
+
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -231,15 +242,9 @@ func initDB() error {
 	return nil
 }
 
-func reclaimExpiredQuarantines() int {
-	db, err := getDBConnection()
-	if err != nil {
-		return 0
-	}
-	defer db.Close()
-
+func reclaimExpiredQuarantinesTx(q DBQueryer) int {
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
-	res, err := db.Exec(`
+	res, err := q.Exec(`
 		UPDATE ip_allocations
 		SET status = 'FREE', quarantined_at = NULL, quarantine_until = NULL
 		WHERE status = 'QUARANTINED' AND (quarantine_until IS NULL OR quarantine_until <= ?);
@@ -255,28 +260,55 @@ func reclaimExpiredQuarantines() int {
 	return int(rows)
 }
 
-func findAvailableIP(subnetName string) (string, error) {
-	reclaimExpiredQuarantines()
-
+func reclaimExpiredQuarantines() int {
 	db, err := getDBConnection()
 	if err != nil {
-		return "", err
+		return 0
 	}
 	defer db.Close()
+	return reclaimExpiredQuarantinesTx(db)
+}
 
-	// 1. Look for explicitly FREE records in this subnet
-	var freeIP string
-	err = db.QueryRow(`
+func ipToUint32(ip net.IP) uint32 {
+	ip = ip.To4()
+	if ip == nil {
+		return 0
+	}
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func uint32ToIP(n uint32) net.IP {
+	return net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
+}
+
+func findAvailableIPTx(q DBQueryer, subnetName string, cidr string, gatewayIP string) (string, error) {
+	// Parse subnet CIDR dynamically using net.ParseCIDR
+	ipParsed, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("invalid CIDR '%s' for subnet '%s': %w", cidr, subnetName, err)
+	}
+
+	// 1. Look for explicitly FREE records in this subnet that fall inside current CIDR
+	rowsFree, err := q.Query(`
 		SELECT ip_address FROM ip_allocations
 		WHERE subnet_name = ? AND status = 'FREE'
-		ORDER BY assigned_at LIMIT 1
-	`, subnetName).Scan(&freeIP)
-	if err == nil && freeIP != "" {
-		return freeIP, nil
+		ORDER BY assigned_at
+	`, subnetName)
+	if err == nil {
+		var freeIP string
+		for rowsFree.Next() {
+			if err := rowsFree.Scan(&freeIP); err == nil && freeIP != "" {
+				if parsedFree := net.ParseIP(freeIP); parsedFree != nil && ipnet.Contains(parsedFree) {
+					rowsFree.Close()
+					return freeIP, nil
+				}
+			}
+		}
+		rowsFree.Close()
 	}
 
 	// 2. Iterate subnet hosts avoiding ALLOCATED, RESERVED, or QUARANTINED IPs
-	rows, err := db.Query(`
+	rows, err := q.Query(`
 		SELECT ip_address FROM ip_allocations
 		WHERE subnet_name = ? AND status IN ('ALLOCATED', 'RESERVED', 'QUARANTINED')
 	`, subnetName)
@@ -293,23 +325,42 @@ func findAvailableIP(subnetName string) (string, error) {
 		}
 	}
 
-	// Generate host range for 10.20.30.0/24 (or 10.20.10.0/24)
-	subnetPrefix := "10.20.30."
-	if subnetName == "mgmt" {
-		subnetPrefix = "10.20.10."
-	} else if subnetName == "edge" {
-		subnetPrefix = "10.20.20."
-	}
+	// 3. Dynamic Host Range Iteration based on Subnet CIDR (2nd host to 253rd host)
+	startIP := ipToUint32(ipParsed.Mask(ipnet.Mask))
+	ones, bits := ipnet.Mask.Size()
+	hostCount := uint32(1) << uint(bits-ones)
+	endIP := startIP + hostCount - 1
 
-	for i := 2; i < 254; i++ {
-		ipCandidate := fmt.Sprintf("%s%d", subnetPrefix, i)
-		if activeOrQuarantined[ipCandidate] {
+	for n := startIP + 2; n <= endIP-2; n++ {
+		candIP := uint32ToIP(n).String()
+		if candIP == gatewayIP {
 			continue
 		}
-		return ipCandidate, nil
+		if activeOrQuarantined[candIP] {
+			continue
+		}
+		return candIP, nil
 	}
 
 	return "", fmt.Errorf("No free IPs available in subnet '%s' (check quarantined addresses).", subnetName)
+}
+
+func findAvailableIP(subnetName string) (string, error) {
+	db, err := getDBConnection()
+	if err != nil {
+		return "", err
+	}
+	defer db.Close()
+
+	reclaimExpiredQuarantinesTx(db)
+
+	var cidr, gatewayIP string
+	err = db.QueryRow("SELECT cidr, gateway_ip FROM subnets WHERE name = ?", subnetName).Scan(&cidr, &gatewayIP)
+	if err != nil {
+		return "", fmt.Errorf("Subnet '%s' does not exist in IPAM database.", subnetName)
+	}
+
+	return findAvailableIPTx(db, subnetName, cidr, gatewayIP)
 }
 
 type LeaseResult struct {
@@ -335,23 +386,31 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		return nil, fmt.Errorf("Invalid sandbox ID '%s': must be 1-32 characters starting with alphanumeric, followed by alphanumerics, dashes, or underscores.", sandboxID)
 	}
 
-	reclaimExpiredQuarantines()
-
 	db, err := getDBConnection()
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
 
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Reclaim expired quarantines in transaction
+	reclaimExpiredQuarantinesTx(tx)
+
+	// 2. Lookup subnet CIDR & gateway IP
 	var cidr, gatewayIP string
-	err = db.QueryRow("SELECT cidr, gateway_ip FROM subnets WHERE name = ?", subnetName).Scan(&cidr, &gatewayIP)
+	err = tx.QueryRow("SELECT cidr, gateway_ip FROM subnets WHERE name = ?", subnetName).Scan(&cidr, &gatewayIP)
 	if err != nil {
 		return nil, fmt.Errorf("Subnet '%s' does not exist in IPAM database.", subnetName)
 	}
 
 	targetIP := preferredIP
 	if targetIP == "" {
-		ipFound, err := findAvailableIP(subnetName)
+		ipFound, err := findAvailableIPTx(tx, subnetName, cidr, gatewayIP)
 		if err != nil {
 			return nil, err
 		}
@@ -366,9 +425,9 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		}
 	}
 
-	// Check existing allocation
+	// 3. Check existing allocation in transaction
 	var entityName, entityType, status, quarantineUntil string
-	row := db.QueryRow("SELECT entity_name, entity_type, status, COALESCE(quarantine_until, '') FROM ip_allocations WHERE ip_address = ?", targetIP)
+	row := tx.QueryRow("SELECT entity_name, entity_type, status, COALESCE(quarantine_until, '') FROM ip_allocations WHERE ip_address = ?", targetIP)
 	err = row.Scan(&entityName, &entityType, &status, &quarantineUntil)
 	if err == nil {
 		if entityType == "GATEWAY" || entityType == "BASTION" || entityType == "VIP" {
@@ -382,8 +441,8 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		}
 	}
 
-	// Upsert allocation
-	_, err = db.Exec(`
+	// 4. Upsert allocation
+	_, err = tx.Exec(`
 		INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status, quarantined_at, quarantine_until)
 		VALUES (?, ?, ?, 'TEAM_SANDBOX', 'ALLOCATED', NULL, NULL)
 		ON CONFLICT(ip_address) DO UPDATE SET
@@ -399,11 +458,14 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		return nil, fmt.Errorf("failed to insert allocation: %w", err)
 	}
 
-	// Clear stale sandboxes referencing this IP
-	db.Exec("UPDATE sandboxes SET private_ip = NULL WHERE private_ip = ? AND status IN ('RELEASED', 'FAILED', 'FAILED_HEALTH_CHECK', 'ROLLBACK')", targetIP)
+	// 5. Clear stale sandboxes referencing this IP
+	_, err = tx.Exec("UPDATE sandboxes SET private_ip = NULL WHERE private_ip = ? AND status IN ('RELEASED', 'FAILED', 'FAILED_HEALTH_CHECK', 'ROLLBACK')", targetIP)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clear stale sandboxes: %w", err)
+	}
 
-	// Upsert sandbox
-	_, err = db.Exec(`
+	// 6. Upsert sandbox
+	_, err = tx.Exec(`
 		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status)
 		VALUES (?, ?, ?, ?, 'ACTIVE')
 		ON CONFLICT(sandbox_id) DO UPDATE SET
@@ -415,6 +477,10 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 	`, sandboxID, hostname, subnetName, targetIP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert sandbox: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return &LeaseResult{

@@ -16,6 +16,8 @@ ansible/.ssh/
 ipam/ipam.db
 *.db
 *.sqlite3
+*.db-wal
+*.db-shm
 
 # Python Bytecode & Environments
 __pycache__/

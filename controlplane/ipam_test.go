@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -105,5 +106,61 @@ func TestReclaimExpiredQuarantine(t *testing.T) {
 	reclaimed := reclaimExpiredQuarantines()
 	if reclaimed < 1 {
 		t.Errorf("Expected at least 1 reclaimed IP, got %d", reclaimed)
+	}
+}
+
+func TestAllocationUsesSubnetCIDR(t *testing.T) {
+	setupTestDB(t)
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to connect to db: %v", err)
+	}
+	_, err = db.Exec("UPDATE subnets SET cidr = '10.50.0.0/24', gateway_ip = '10.50.0.1' WHERE name = 'sandbox'")
+	db.Close()
+	if err != nil {
+		t.Fatalf("failed to update subnet CIDR: %v", err)
+	}
+
+	res, err := allocateLease("team-custom-cidr", "", "sandbox", "")
+	if err != nil {
+		t.Fatalf("allocation failed for custom CIDR: %v", err)
+	}
+
+	if !strings.HasPrefix(res.IPAddress, "10.50.0.") {
+		t.Errorf("Expected allocated IP to fall in 10.50.0.0/24 subnet range, got %s", res.IPAddress)
+	}
+}
+
+func TestAllocationRollbackOnFailure(t *testing.T) {
+	setupTestDB(t)
+
+	// Allocate team-existing with fixed hostname
+	_, err := allocateLease("team-existing", "conflict-host.local", "sandbox", "")
+	if err != nil {
+		t.Fatalf("initial allocation failed: %v", err)
+	}
+
+	// Try allocating team-new using identical hostname (which triggers UNIQUE constraint failure on sandboxes table)
+	_, err = allocateLease("team-new", "conflict-host.local", "sandbox", "")
+	if err == nil {
+		t.Fatalf("expected allocation to fail due to duplicate hostname constraint")
+	}
+
+	// Verify no orphan record for team-new exists in ip_allocations table
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("db connection failed: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM ip_allocations WHERE entity_name = 'team-new'").Scan(&count)
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+
+	if count != 0 {
+		t.Errorf("ROLLBACK FAILURE: Found %d orphan ip_allocations rows for team-new", count)
 	}
 }
