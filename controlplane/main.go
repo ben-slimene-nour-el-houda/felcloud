@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +23,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ErrTransitionConflict is returned when a CAS update finds 0 rows affected,
+// indicating another writer changed the status between our read and write.
+var ErrTransitionConflict = errors.New("concurrent state transition conflict")
+
+// ErrTTLCapExceeded is returned when extending a sandbox TTL exceeds MAX_TTL_SECONDS.
+var ErrTTLCapExceeded = errors.New("requested TTL extension exceeds maximum allowed cap")
+
 // Global Configuration & Defaults
 var (
 	dbMutex                  sync.Mutex
@@ -29,6 +38,10 @@ var (
 	backupDir                string
 	defaultQuarantineSeconds int
 	routingDomain            string = "cstam.felcloud.tn"
+	defaultTTLSeconds        int64  = 14400
+	maxTTLSeconds            int64  = 86400
+	minExtendSeconds         int64  = 60
+	nowUnix                  func() int64 = func() int64 { return time.Now().UTC().Unix() }
 )
 
 func validateRoutingDomain(domain string) error {
@@ -93,6 +106,27 @@ func initEnv() {
 	}
 	if err := validateRoutingDomain(routingDomain); err != nil {
 		fmt.Fprintf(os.Stderr, "FATAL: Invalid ROUTING_DOMAIN '%s': %v\n", routingDomain, err)
+		os.Exit(1)
+	}
+
+	if envDefTTL := os.Getenv("DEFAULT_TTL_SECONDS"); envDefTTL != "" {
+		if v, err := strconv.ParseInt(envDefTTL, 10, 64); err == nil {
+			defaultTTLSeconds = v
+		}
+	}
+	if envMaxTTL := os.Getenv("MAX_TTL_SECONDS"); envMaxTTL != "" {
+		if v, err := strconv.ParseInt(envMaxTTL, 10, 64); err == nil {
+			maxTTLSeconds = v
+		}
+	}
+	if envMinExt := os.Getenv("MIN_EXTEND_SECONDS"); envMinExt != "" {
+		if v, err := strconv.ParseInt(envMinExt, 10, 64); err == nil {
+			minExtendSeconds = v
+		}
+	}
+
+	if defaultTTLSeconds > maxTTLSeconds || defaultTTLSeconds <= 0 || maxTTLSeconds <= 0 || minExtendSeconds <= 0 {
+		fmt.Fprintf(os.Stderr, "FATAL: Invalid TTL configuration: default=%d, max=%d, min_extend=%d\n", defaultTTLSeconds, maxTTLSeconds, minExtendSeconds)
 		os.Exit(1)
 	}
 }
@@ -199,33 +233,48 @@ func initDB() error {
 				hostname TEXT UNIQUE NOT NULL,
 				subnet_name TEXT NOT NULL,
 				private_ip TEXT,
-				status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
+				status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
 				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+				expires_at INTEGER,
 				FOREIGN KEY(subnet_name) REFERENCES subnets(name)
 			);
 		`)
 		if err != nil {
 			return fmt.Errorf("error creating sandboxes table: %w", err)
 		}
-	} else if err == nil && !strings.Contains(sbSQL, "FAILED_HEALTH_CHECK") {
-		db.Exec(`
-			CREATE TABLE sandboxes_new (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				sandbox_id TEXT UNIQUE NOT NULL,
-				hostname TEXT UNIQUE NOT NULL,
-				subnet_name TEXT NOT NULL,
-				private_ip TEXT,
-				status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
-				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-				FOREIGN KEY(subnet_name) REFERENCES subnets(name)
-			);
-			INSERT OR IGNORE INTO sandboxes_new (id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at)
-			SELECT id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at FROM sandboxes;
-			DROP TABLE sandboxes;
-			ALTER TABLE sandboxes_new RENAME TO sandboxes;
-		`)
+	} else if err == nil {
+		if !strings.Contains(sbSQL, "FAILED_HEALTH_CHECK") || !strings.Contains(sbSQL, "EXPIRING") {
+			// Migrate: recreate table with expanded CHECK constraint, in one transaction,
+			// with row-count verification before and after.
+			if err := migrateSandboxesSchema(db); err != nil {
+				return fmt.Errorf("sandboxes schema migration failed: %w", err)
+			}
+		}
+
+		// Additive migration for expires_at column if missing
+		var hasExpiresAt bool
+		infoRows, infoErr := db.Query("PRAGMA table_info(sandboxes)")
+		if infoErr == nil {
+			for infoRows.Next() {
+				var cid int
+				var name, typeStr string
+				var notNull int
+				var dfltValue interface{}
+				var pk int
+				if err := infoRows.Scan(&cid, &name, &typeStr, &notNull, &dfltValue, &pk); err == nil {
+					if name == "expires_at" {
+						hasExpiresAt = true
+					}
+				}
+			}
+			infoRows.Close()
+		}
+		if !hasExpiresAt {
+			if _, err := db.Exec("ALTER TABLE sandboxes ADD COLUMN expires_at INTEGER"); err != nil {
+				return fmt.Errorf("failed to add expires_at column: %w", err)
+			}
+		}
 	}
 
 	// 4. Config generations table
@@ -240,6 +289,22 @@ func initDB() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("error creating config_generations table: %w", err)
+	}
+
+	// 5. Events table & index
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts_ms INTEGER NOT NULL,
+			sandbox_id TEXT,
+			type TEXT NOT NULL,
+			detail TEXT,
+			duration_ms INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_events_sandbox_ts ON events(sandbox_id, ts_ms);
+	`)
+	if err != nil {
+		return fmt.Errorf("error creating events table: %w", err)
 	}
 
 	// Seed subnets
@@ -274,6 +339,179 @@ func initDB() error {
 	return nil
 }
 
+// migrateSandboxesSchema recreates the sandboxes table with the expanded CHECK
+// constraint (adding EXPIRING, TEARING_DOWN). Runs in ONE transaction with
+// row-count verification before and after to guarantee no rows are lost.
+func migrateSandboxesSchema(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check if old sandboxes table has expires_at column
+	var oldHasExpiresAt bool
+	infoRows, infoErr := tx.Query("PRAGMA table_info(sandboxes)")
+	if infoErr == nil {
+		for infoRows.Next() {
+			var cid int
+			var name, typeStr string
+			var notNull int
+			var dfltValue interface{}
+			var pk int
+			if err := infoRows.Scan(&cid, &name, &typeStr, &notNull, &dfltValue, &pk); err == nil {
+				if name == "expires_at" {
+					oldHasExpiresAt = true
+				}
+			}
+		}
+		infoRows.Close()
+	}
+
+	// Count rows before migration
+	var countBefore int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sandboxes").Scan(&countBefore); err != nil {
+		return fmt.Errorf("pre-migration row count: %w", err)
+	}
+
+	_, err = tx.Exec(`
+		CREATE TABLE sandboxes_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sandbox_id TEXT UNIQUE NOT NULL,
+			hostname TEXT UNIQUE NOT NULL,
+			subnet_name TEXT NOT NULL,
+			private_ip TEXT,
+			status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			expires_at INTEGER,
+			FOREIGN KEY(subnet_name) REFERENCES subnets(name)
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("create sandboxes_new: %w", err)
+	}
+
+	if oldHasExpiresAt {
+		_, err = tx.Exec(`
+			INSERT INTO sandboxes_new (id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at, expires_at)
+			SELECT id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at, expires_at FROM sandboxes;
+		`)
+	} else {
+		_, err = tx.Exec(`
+			INSERT INTO sandboxes_new (id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at)
+			SELECT id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at FROM sandboxes;
+		`)
+	}
+	if err != nil {
+		return fmt.Errorf("copy rows to sandboxes_new: %w", err)
+	}
+
+	// Count rows after copy
+	var countAfter int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sandboxes_new").Scan(&countAfter); err != nil {
+		return fmt.Errorf("post-migration row count: %w", err)
+	}
+	if countAfter != countBefore {
+		return fmt.Errorf("row count mismatch: before=%d after=%d", countBefore, countAfter)
+	}
+
+	if _, err := tx.Exec("DROP TABLE sandboxes"); err != nil {
+		return fmt.Errorf("drop old sandboxes: %w", err)
+	}
+	if _, err := tx.Exec("ALTER TABLE sandboxes_new RENAME TO sandboxes"); err != nil {
+		return fmt.Errorf("rename sandboxes_new: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// recordEvent is best-effort: it logs errors but never returns one,
+// so a failed event INSERT cannot abort the surrounding operation or
+// roll back its transaction.
+func recordEvent(q DBQueryer, sandboxID, typ, detail string, durationMs int64) {
+	tsMs := time.Now().UTC().UnixMilli()
+	var sID, det interface{}
+	if sandboxID != "" {
+		sID = sandboxID
+	}
+	if detail != "" {
+		det = detail
+	}
+	_, err := q.Exec(`
+		INSERT INTO events (ts_ms, sandbox_id, type, detail, duration_ms)
+		VALUES (?, ?, ?, ?, ?)
+	`, tsMs, sID, typ, det, durationMs)
+	if err != nil {
+		log.Printf("WARNING: recordEvent(%s, %s): %v", typ, sandboxID, err)
+	}
+}
+
+func isValidTransition(from, to string) bool {
+	switch from {
+	case "PROVISIONING":
+		return to == "ACTIVE" || to == "FAILED"
+	case "ACTIVE":
+		return to == "EXPIRING" || to == "TEARING_DOWN"
+	case "EXPIRING":
+		return to == "TEARING_DOWN"
+	case "TEARING_DOWN":
+		return to == "RELEASED" || to == "FAILED"
+	case "FAILED":
+		return to == "TEARING_DOWN"
+	case "REQUESTED", "FAILED_HEALTH_CHECK", "ROLLBACK":
+		return to == "TEARING_DOWN"
+	default:
+		return false
+	}
+}
+
+// transitionSandbox performs an atomic CAS (compare-and-swap) on sandbox status.
+// When q is a *sql.DB an immediate transaction is opened internally;
+// when q is already a *sql.Tx the caller's transaction is used directly.
+func transitionSandbox(q DBQueryer, id, to string) error {
+	if db, ok := q.(*sql.DB); ok {
+		// Wrap in an immediate transaction for true atomicity under concurrency.
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("transitionSandbox: begin tx for '%s': %w", id, err)
+		}
+		defer tx.Rollback()
+		if err := transitionSandbox(tx, id, to); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+
+	var currentStatus string
+	err := q.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", id).Scan(&currentStatus)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("sandbox '%s' not found", id)
+		}
+		return fmt.Errorf("failed to query sandbox '%s': %w", id, err)
+	}
+
+	if !isValidTransition(currentStatus, to) {
+		return fmt.Errorf("illegal state transition for sandbox '%s': '%s' -> '%s'", id, currentStatus, to)
+	}
+
+	res, err := q.Exec("UPDATE sandboxes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ? AND status = ?", to, id, currentStatus)
+	if err != nil {
+		return fmt.Errorf("failed to update status for sandbox '%s': %w", id, err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check affected rows for sandbox '%s': %w", id, err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("%w: sandbox '%s' (expected status '%s')", ErrTransitionConflict, id, currentStatus)
+	}
+
+	return nil
+}
+
 func reclaimExpiredQuarantinesTx(q DBQueryer) int {
 	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
 	res, err := q.Exec(`
@@ -287,6 +525,7 @@ func reclaimExpiredQuarantinesTx(q DBQueryer) int {
 
 	rows, _ := res.RowsAffected()
 	if rows > 0 {
+		recordEvent(q, "", "reclaimed", fmt.Sprintf("count=%d", rows), 0)
 		fmt.Printf("✓ Reclaimed %d expired quarantined IP address(es).\n", rows)
 	}
 	return int(rows)
@@ -402,9 +641,14 @@ type LeaseResult struct {
 	PrivateIP  string `json:"private_ip"`
 	Status     string `json:"status"`
 	SubnetName string `json:"subnet_name,omitempty"`
+	ExpiresAt  *int64 `json:"expires_at,omitempty"`
 }
 
 func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseResult, error) {
+	return allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP, 0)
+}
+
+func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSeconds int64) (*LeaseResult, error) {
 	if subnetName == "" {
 		subnetName = "sandbox"
 	}
@@ -417,6 +661,16 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 	if !re.MatchString(sandboxID) {
 		return nil, fmt.Errorf("Invalid sandbox ID '%s': must be 1-32 characters starting with alphanumeric, followed by alphanumerics, dashes, or underscores.", sandboxID)
 	}
+
+	effectiveTTL := ttlSeconds
+	if effectiveTTL <= 0 {
+		effectiveTTL = defaultTTLSeconds
+	}
+	if effectiveTTL > maxTTLSeconds {
+		return nil, fmt.Errorf("requested TTL %d exceeds maximum allowed TTL %d", effectiveTTL, maxTTLSeconds)
+	}
+
+	exp := nowUnix() + effectiveTTL
 
 	db, err := getDBConnection()
 	if err != nil {
@@ -496,20 +750,24 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		return nil, fmt.Errorf("failed to clear stale sandboxes: %w", err)
 	}
 
-	// 6. Upsert sandbox
+	// 6. Upsert sandbox with expires_at
 	_, err = tx.Exec(`
-		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status)
-		VALUES (?, ?, ?, ?, 'ACTIVE')
+		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at)
+		VALUES (?, ?, ?, ?, 'ACTIVE', ?)
 		ON CONFLICT(sandbox_id) DO UPDATE SET
 			hostname = excluded.hostname,
 			subnet_name = excluded.subnet_name,
 			private_ip = excluded.private_ip,
 			status = 'ACTIVE',
+			expires_at = excluded.expires_at,
 			updated_at = CURRENT_TIMESTAMP;
-	`, sandboxID, hostname, subnetName, targetIP)
+	`, sandboxID, hostname, subnetName, targetIP, exp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert sandbox: %w", err)
 	}
+
+	// Record allocated event in same transaction
+	recordEvent(tx, sandboxID, "allocated", fmt.Sprintf("ip=%s", targetIP), 0)
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
@@ -522,7 +780,72 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		PrivateIP:  targetIP,
 		Status:     "ALLOCATED",
 		SubnetName: subnetName,
+		ExpiresAt:  &exp,
 	}, nil
+}
+
+func extendSandbox(q DBQueryer, sandboxID string, extendSeconds int64) (int64, error) {
+	if db, ok := q.(*sql.DB); ok {
+		tx, err := db.Begin()
+		if err != nil {
+			return 0, fmt.Errorf("extendSandbox: begin tx for '%s': %w", sandboxID, err)
+		}
+		defer tx.Rollback()
+		newExp, err := extendSandbox(tx, sandboxID, extendSeconds)
+		if err != nil {
+			return 0, err
+		}
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("extendSandbox: commit tx for '%s': %w", sandboxID, err)
+		}
+		return newExp, nil
+	}
+
+	if extendSeconds < minExtendSeconds || extendSeconds <= 0 {
+		return 0, fmt.Errorf("extend_seconds (%d) must be at least %d", extendSeconds, minExtendSeconds)
+	}
+
+	var status string
+	var expVal sql.NullInt64
+	err := q.QueryRow("SELECT status, expires_at FROM sandboxes WHERE sandbox_id = ?", sandboxID).Scan(&status, &expVal)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("sandbox '%s' not found", sandboxID)
+		}
+		return 0, fmt.Errorf("failed to query sandbox '%s': %w", sandboxID, err)
+	}
+
+	if status != "ACTIVE" || !expVal.Valid {
+		return 0, fmt.Errorf("cannot extend sandbox '%s': status is '%s' and expires_at valid is %v", sandboxID, status, expVal.Valid)
+	}
+
+	now := nowUnix()
+	baseTime := expVal.Int64
+	if now > baseTime {
+		baseTime = now
+	}
+	newExpiresAt := baseTime + extendSeconds
+
+	if newExpiresAt-now > maxTTLSeconds {
+		return 0, ErrTTLCapExceeded
+	}
+
+	res, err := q.Exec("UPDATE sandboxes SET expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ? AND status = 'ACTIVE'", newExpiresAt, sandboxID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update expires_at for sandbox '%s': %w", sandboxID, err)
+	}
+
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to check affected rows for sandbox '%s': %w", sandboxID, err)
+	}
+	if rows == 0 {
+		return 0, fmt.Errorf("%w: sandbox '%s'", ErrTransitionConflict, sandboxID)
+	}
+
+	recordEvent(q, sandboxID, "extended", fmt.Sprintf("from=%d to=%d", expVal.Int64, newExpiresAt), 0)
+
+	return newExpiresAt, nil
 }
 
 type ReleaseResult struct {
@@ -564,15 +887,28 @@ func releaseLease(sandboxID, ipAddress string, quarantineSec int) (*ReleaseResul
 	quarantineUntilStr := now.Add(time.Duration(quarantineSec) * time.Second).Format("2006-01-02 15:04:05")
 	quarantinedAtStr := now.Format("2006-01-02 15:04:05")
 
+	// Wrap quarantine + sandbox status + event recording in a single transaction
+	tx, txErr := db.Begin()
+	if txErr != nil {
+		return nil, fmt.Errorf("releaseLease: begin tx: %w", txErr)
+	}
+	defer tx.Rollback()
+
 	if targetIP != "" {
-		db.Exec(`
+		tx.Exec(`
 			UPDATE ip_allocations
 			SET status = 'QUARANTINED', quarantined_at = ?, quarantine_until = ?
 			WHERE ip_address = ?;
 		`, quarantinedAtStr, quarantineUntilStr, targetIP)
 	}
 
-	db.Exec("UPDATE sandboxes SET status = 'RELEASED', private_ip = NULL, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ?", sandboxID)
+	tx.Exec("UPDATE sandboxes SET status = 'RELEASED', private_ip = NULL, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ?", sandboxID)
+
+	recordEvent(tx, sandboxID, "released", fmt.Sprintf("ip=%s,cooldown=%d", targetIP, quarantineSec), 0)
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("releaseLease: commit tx: %w", err)
+	}
 
 	fmt.Printf("✓ IP %s placed in QUARANTINED state until %s (%ds cooldown).\n", targetIP, quarantineUntilStr, quarantineSec)
 
@@ -831,6 +1167,7 @@ func rollbackConfig() bool {
 
 	fmt.Printf("--> Rolling back to Generation [%s]...\n", genID)
 	os.WriteFile("/tmp/haproxy_rollback.cfg", []byte(snapshot), 0644)
+	recordEvent(db, "", "rollback", genID, 0)
 	fmt.Printf("✓ Configuration restored to previous generation [%s].\n", genID)
 	return true
 }
@@ -843,6 +1180,11 @@ func syncHAProxyDualGateways(dryRun bool) (bool, string) {
 	if !isValid {
 		fmt.Printf("✗ CRITICAL: Candidate HAProxy configuration failed validation:\n%s\n", validationMsg)
 		fmt.Println("✗ Aborting reload! Active gateway configuration untouched.")
+		db, _ := getDBConnection()
+		if db != nil {
+			recordEvent(db, "", "sync_failed", validationMsg, 0)
+			db.Close()
+		}
 		return false, fmt.Sprintf("Validation failed: %s", validationMsg)
 	}
 
@@ -888,12 +1230,18 @@ func syncHAProxyDualGateways(dryRun bool) (bool, string) {
 		db, _ := getDBConnection()
 		if db != nil {
 			db.Exec("UPDATE config_generations SET status = 'COMMITTED' WHERE generation_id = ?", genID)
+			recordEvent(db, "", "sync_ok", genID, 0)
 			db.Close()
 		}
 		return true, fmt.Sprintf("Generation %s applied", genID)
 	}
 
 	fmt.Println("✗ Ansible deployment failed! Triggering automatic rollback...")
+	db, _ = getDBConnection()
+	if db != nil {
+		recordEvent(db, "", "sync_failed", errBuf.String(), 0)
+		db.Close()
+	}
 	rollbackConfig()
 	return false, fmt.Sprintf("Ansible error: %s", errBuf.String())
 }
@@ -1072,7 +1420,7 @@ func setupAPIRoutes() http.Handler {
 		}
 		defer db.Close()
 
-		rows, err := db.Query("SELECT id, sandbox_id, hostname, subnet_name, COALESCE(private_ip, '') as private_ip, status, created_at, updated_at FROM sandboxes ORDER BY created_at")
+		rows, err := db.Query("SELECT id, sandbox_id, hostname, subnet_name, COALESCE(private_ip, '') as private_ip, status, created_at, updated_at, expires_at FROM sandboxes ORDER BY created_at")
 		if err != nil {
 			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -1083,8 +1431,9 @@ func setupAPIRoutes() http.Handler {
 		for rows.Next() {
 			var id int
 			var sID, host, sub, ip, st, cAt, uAt string
-			if err := rows.Scan(&id, &sID, &host, &sub, &ip, &st, &cAt, &uAt); err == nil {
-				sbs = append(sbs, map[string]interface{}{
+			var expVal sql.NullInt64
+			if err := rows.Scan(&id, &sID, &host, &sub, &ip, &st, &cAt, &uAt, &expVal); err == nil {
+				sbMap := map[string]interface{}{
 					"id":          id,
 					"sandbox_id":  sID,
 					"hostname":    host,
@@ -1093,7 +1442,20 @@ func setupAPIRoutes() http.Handler {
 					"status":      st,
 					"created_at":  cAt,
 					"updated_at":  uAt,
-				})
+				}
+				if expVal.Valid {
+					now := nowUnix()
+					rem := expVal.Int64 - now
+					if rem < 0 {
+						rem = 0
+					}
+					sbMap["expires_at"] = expVal.Int64
+					sbMap["ttl_remaining_seconds"] = rem
+				} else {
+					sbMap["expires_at"] = nil
+					sbMap["ttl_remaining_seconds"] = nil
+				}
+				sbs = append(sbs, sbMap)
 			}
 		}
 		sendJSON(w, http.StatusOK, map[string]interface{}{"sandboxes": sbs})
@@ -1109,10 +1471,75 @@ func setupAPIRoutes() http.Handler {
 	mux.HandleFunc("/api/leases/reclaim", handleReclaim)
 
 	mux.HandleFunc("/api/sandboxes/provision", handleProvision)
+	mux.HandleFunc("/api/sandboxes/extend", handleExtendSandbox)
 	mux.HandleFunc("/api/gateways/sync", handleGatewaySync)
 	mux.HandleFunc("/api/gateways/rollback", handleGatewayRollback)
 
+	mux.HandleFunc("/api/events", handleEvents)
+
 	return mux
+}
+
+func handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+		return
+	}
+
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			if l < 1 {
+				limit = 1
+			} else if l > 500 {
+				limit = 500
+			} else {
+				limit = l
+			}
+		}
+	}
+
+	db, err := getDBConnection()
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`
+		SELECT id, ts_ms, COALESCE(sandbox_id, ''), type, COALESCE(detail, ''), COALESCE(duration_ms, 0)
+		FROM events
+		ORDER BY ts_ms DESC, id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var eventsList []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var tsMs, durMs int64
+		var sID, typ, det string
+		if err := rows.Scan(&id, &tsMs, &sID, &typ, &det, &durMs); err == nil {
+			eventsList = append(eventsList, map[string]interface{}{
+				"id":          id,
+				"ts_ms":       tsMs,
+				"sandbox_id":  sID,
+				"type":        typ,
+				"detail":      det,
+				"duration_ms": durMs,
+			})
+		}
+	}
+
+	if eventsList == nil {
+		eventsList = []map[string]interface{}{}
+	}
+
+	sendJSON(w, http.StatusOK, eventsList)
 }
 
 func handleAllocate(w http.ResponseWriter, r *http.Request) {
@@ -1142,13 +1569,95 @@ func handleAllocate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := allocateLease(sandboxID, hostname, "sandbox", preferredIP)
+	var ttlSec int64
+	if tVal, ok := params["ttl_seconds"].(float64); ok {
+		ttlSec = int64(tVal)
+	} else if tVal, ok := params["ttl"].(float64); ok {
+		ttlSec = int64(tVal)
+	}
+
+	res, err := allocateLeaseTTL(sandboxID, hostname, "sandbox", preferredIP, ttlSec)
 	if err != nil {
+		if strings.Contains(err.Error(), "exceeds maximum allowed") {
+			sendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		sendJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
 
 	sendJSON(w, http.StatusCreated, res)
+}
+
+type extendRequest struct {
+	SandboxID     string `json:"sandbox_id"`
+	ExtendSeconds int64  `json:"extend_seconds"`
+}
+
+func handleExtendSandbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	var req extendRequest
+	if err := dec.Decode(&req); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
+
+	re := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`)
+	if !re.MatchString(req.SandboxID) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid sandbox_id format"})
+		return
+	}
+
+	if req.ExtendSeconds < minExtendSeconds {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("extend_seconds must be at least %d", minExtendSeconds)})
+		return
+	}
+
+	db, err := getDBConnection()
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Database error"})
+		return
+	}
+	defer db.Close()
+
+	newExp, err := extendSandbox(db, req.SandboxID, req.ExtendSeconds)
+	if err != nil {
+		if errors.Is(err, ErrTTLCapExceeded) {
+			sendJSON(w, 422, map[string]string{"error": "Requested extension exceeds maximum TTL cap"})
+			return
+		}
+		if errors.Is(err, ErrTransitionConflict) || strings.Contains(err.Error(), "cannot extend sandbox") {
+			sendJSON(w, http.StatusConflict, map[string]string{"error": "Sandbox status is not ACTIVE or expires_at is null"})
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			sendJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("Sandbox '%s' not found", req.SandboxID)})
+			return
+		}
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to extend sandbox"})
+		return
+	}
+
+	now := nowUnix()
+	rem := newExp - now
+	if rem < 0 {
+		rem = 0
+	}
+
+	sendJSON(w, http.StatusOK, map[string]interface{}{
+		"success":               true,
+		"sandbox_id":            req.SandboxID,
+		"expires_at":            newExp,
+		"ttl_remaining_seconds": rem,
+	})
 }
 
 func handleRelease(w http.ResponseWriter, r *http.Request) {
