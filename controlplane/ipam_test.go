@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -878,14 +879,14 @@ func TestExtendSandbox(t *testing.T) {
 		t.Fatalf("expected error for extend < minExtendSeconds, got nil")
 	}
 
-	// 5. Non-ACTIVE states (FAILED, EXPIRING) -> rejected
+	// 5. Non-ACTIVE states (FAILED, EXPIRING) -> rejected with ErrWrongState
 	_, err = db.Exec("UPDATE sandboxes SET status = 'FAILED' WHERE sandbox_id = ?", sbID)
 	if err != nil {
 		t.Fatalf("update to FAILED failed: %v", err)
 	}
 	_, err = extendSandbox(db, sbID, 600)
-	if err == nil {
-		t.Fatalf("expected error for FAILED sandbox, got nil")
+	if !errors.Is(err, ErrWrongState) {
+		t.Fatalf("expected ErrWrongState for FAILED sandbox, got %v", err)
 	}
 
 	_, err = db.Exec("UPDATE sandboxes SET status = 'EXPIRING' WHERE sandbox_id = ?", sbID)
@@ -893,8 +894,8 @@ func TestExtendSandbox(t *testing.T) {
 		t.Fatalf("update to EXPIRING failed: %v", err)
 	}
 	_, err = extendSandbox(db, sbID, 600)
-	if err == nil {
-		t.Fatalf("expected error for EXPIRING sandbox, got nil")
+	if !errors.Is(err, ErrWrongState) {
+		t.Fatalf("expected ErrWrongState for EXPIRING sandbox, got %v", err)
 	}
 
 	// 6. Unknown sandbox
@@ -1210,6 +1211,281 @@ func TestSandboxesSchemaMigrationTTL(t *testing.T) {
 	// 6. Run second initDB - assert idempotent no-op
 	if err := initDB(); err != nil {
 		t.Fatalf("second initDB failed: %v", err)
+	}
+}
+
+func TestExpiresAtMigrationFromS2Schema(t *testing.T) {
+	tmpDB := filepath.Join(t.TempDir(), "s2_migration_test.db")
+	dbMutex.Lock()
+	oldDBPath := dbPath
+	dbPath = tmpDB
+	dbMutex.Unlock()
+	t.Cleanup(func() {
+		dbMutex.Lock()
+		dbPath = oldDBPath
+		dbMutex.Unlock()
+	})
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+
+	// 1. Build S2 schema: sandboxes table with expanded CHECK constraint (includes EXPIRING & TEARING_DOWN) but NO expires_at column
+	_, err = db.Exec(`
+		CREATE TABLE subnets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT UNIQUE NOT NULL,
+			cidr TEXT NOT NULL,
+			gateway_ip TEXT NOT NULL,
+			description TEXT
+		);
+		INSERT INTO subnets (name, cidr, gateway_ip) VALUES ('sandbox', '10.20.30.0/24', '10.20.30.1');
+
+		CREATE TABLE ip_allocations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			ip_address TEXT UNIQUE NOT NULL,
+			subnet_name TEXT NOT NULL,
+			entity_name TEXT NOT NULL,
+			entity_type TEXT NOT NULL,
+			status TEXT CHECK(status IN ('ALLOCATED', 'RESERVED', 'FREE', 'RELEASED', 'QUARANTINED')) DEFAULT 'ALLOCATED',
+			quarantined_at TIMESTAMP,
+			quarantine_until TIMESTAMP,
+			assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(subnet_name) REFERENCES subnets(name)
+		);
+
+		CREATE TABLE sandboxes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sandbox_id TEXT UNIQUE NOT NULL,
+			hostname TEXT UNIQUE NOT NULL,
+			subnet_name TEXT NOT NULL,
+			private_ip TEXT,
+			status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(subnet_name) REFERENCES subnets(name)
+		);
+
+		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status)
+		VALUES ('s2-sb-1', 's2-sb-1.cstam.felcloud.tn', 'sandbox', '10.20.30.51', 'ACTIVE');
+		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status)
+		VALUES ('s2-sb-2', 's2-sb-2.cstam.felcloud.tn', 'sandbox', '10.20.30.52', 'EXPIRING');
+	`)
+	if err != nil {
+		t.Fatalf("failed to create S2 schema: %v", err)
+	}
+
+	// 2. Run initDB to execute additive expires_at migration
+	if err := initDB(); err != nil {
+		t.Fatalf("initDB failed on S2 schema: %v", err)
+	}
+
+	// 3. Verify expires_at column exists in sandboxes table
+	var hasExpiresAt bool
+	infoRows, err := db.Query("PRAGMA table_info(sandboxes)")
+	if err != nil {
+		t.Fatalf("pragma table_info failed: %v", err)
+	}
+	for infoRows.Next() {
+		var cid int
+		var name, typeStr string
+		var notNull int
+		var dfltValue interface{}
+		var pk int
+		if err := infoRows.Scan(&cid, &name, &typeStr, &notNull, &dfltValue, &pk); err == nil {
+			if name == "expires_at" {
+				hasExpiresAt = true
+			}
+		}
+	}
+	infoRows.Close()
+
+	if !hasExpiresAt {
+		t.Fatalf("expires_at column missing after initDB on S2 schema")
+	}
+
+	// 4. Verify existing rows are unchanged with NULL expires_at
+	var exp1, exp2 sql.NullInt64
+	var st1, st2 string
+	err = db.QueryRow("SELECT status, expires_at FROM sandboxes WHERE sandbox_id = 's2-sb-1'").Scan(&st1, &exp1)
+	if err != nil || st1 != "ACTIVE" || exp1.Valid {
+		t.Fatalf("s2-sb-1 mismatch: status=%s, exp.Valid=%v", st1, exp1.Valid)
+	}
+	err = db.QueryRow("SELECT status, expires_at FROM sandboxes WHERE sandbox_id = 's2-sb-2'").Scan(&st2, &exp2)
+	if err != nil || st2 != "EXPIRING" || exp2.Valid {
+		t.Fatalf("s2-sb-2 mismatch: status=%s, exp.Valid=%v", st2, exp2.Valid)
+	}
+
+	// 5. Verify allocateLease works on upgraded DB
+	allocRes, err := allocateLease("s2-new-sb", "", "sandbox", "")
+	if err != nil || allocRes == nil || allocRes.ExpiresAt == nil {
+		t.Fatalf("allocateLease on upgraded S2 schema failed: %v", err)
+	}
+
+	// 6. Verify second initDB is a no-op
+	if err := initDB(); err != nil {
+		t.Fatalf("second initDB on upgraded S2 schema failed: %v", err)
+	}
+}
+
+func TestExtendSandboxMaxInt64(t *testing.T) {
+	setupTestDB(t)
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("getDBConnection failed: %v", err)
+	}
+	defer db.Close()
+
+	sbID := "maxint-sb"
+	initialExp := int64(1700000000)
+	_, err = db.Exec(`
+		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at)
+		VALUES (?, ?, 'sandbox', '10.20.30.77', 'ACTIVE', ?)
+	`, sbID, sbID+".cstam.felcloud.tn", initialExp)
+	if err != nil {
+		t.Fatalf("insert test sandbox failed: %v", err)
+	}
+
+	// Test with math.MaxInt64
+	_, err = extendSandbox(db, sbID, math.MaxInt64)
+	if err == nil || (!errors.Is(err, ErrTTLCapExceeded) && !errors.Is(err, ErrInvalidExtend)) {
+		t.Fatalf("expected ErrTTLCapExceeded or ErrInvalidExtend for math.MaxInt64, got %v", err)
+	}
+
+	// Test with math.MaxInt64 - 1
+	_, err = extendSandbox(db, sbID, math.MaxInt64-1)
+	if err == nil || (!errors.Is(err, ErrTTLCapExceeded) && !errors.Is(err, ErrInvalidExtend)) {
+		t.Fatalf("expected ErrTTLCapExceeded or ErrInvalidExtend for math.MaxInt64-1, got %v", err)
+	}
+
+	// Assert expires_at unchanged in database
+	var currentExp int64
+	err = db.QueryRow("SELECT expires_at FROM sandboxes WHERE sandbox_id = ?", sbID).Scan(&currentExp)
+	if err != nil || currentExp != initialExp {
+		t.Fatalf("expected expires_at unchanged (%d), got %d, err=%v", initialExp, currentExp, err)
+	}
+}
+
+func TestParseTTLConfig(t *testing.T) {
+	// 1. Defaults when environment is empty
+	def, max, min, err := parseTTLConfig(func(k string) string { return "" })
+	if err != nil || def != 14400 || max != 86400 || min != 60 {
+		t.Fatalf("default parsing mismatch: def=%d, max=%d, min=%d, err=%v", def, max, min, err)
+	}
+
+	// 2. Custom valid values
+	def, max, min, err = parseTTLConfig(func(k string) string {
+		switch k {
+		case "DEFAULT_TTL_SECONDS":
+			return "3600"
+		case "MAX_TTL_SECONDS":
+			return "7200"
+		case "MIN_EXTEND_SECONDS":
+			return "120"
+		default:
+			return ""
+		}
+	})
+	if err != nil || def != 3600 || max != 7200 || min != 120 {
+		t.Fatalf("custom valid parsing mismatch: def=%d, max=%d, min=%d, err=%v", def, max, min, err)
+	}
+
+	// 3. Set-but-unparseable values
+	_, _, _, err = parseTTLConfig(func(k string) string {
+		if k == "DEFAULT_TTL_SECONDS" {
+			return "not_a_number"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid DEFAULT_TTL_SECONDS") {
+		t.Fatalf("expected unparseable DEFAULT_TTL_SECONDS error, got %v", err)
+	}
+
+	_, _, _, err = parseTTLConfig(func(k string) string {
+		if k == "MAX_TTL_SECONDS" {
+			return "invalid_max"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid MAX_TTL_SECONDS") {
+		t.Fatalf("expected unparseable MAX_TTL_SECONDS error, got %v", err)
+	}
+
+	_, _, _, err = parseTTLConfig(func(k string) string {
+		if k == "MIN_EXTEND_SECONDS" {
+			return "invalid_min"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid MIN_EXTEND_SECONDS") {
+		t.Fatalf("expected unparseable MIN_EXTEND_SECONDS error, got %v", err)
+	}
+
+	// 4. Default > Max
+	_, _, _, err = parseTTLConfig(func(k string) string {
+		switch k {
+		case "DEFAULT_TTL_SECONDS":
+			return "50000"
+		case "MAX_TTL_SECONDS":
+			return "10000"
+		default:
+			return ""
+		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid TTL configuration") {
+		t.Fatalf("expected default > max error, got %v", err)
+	}
+
+	// 5. Negative values
+	_, _, _, err = parseTTLConfig(func(k string) string {
+		if k == "MIN_EXTEND_SECONDS" {
+			return "-10"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatalf("expected negative value error, got nil")
+	}
+}
+
+func TestAllocationPreservesActiveExpiresAt(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	// Initial allocation at baseTime
+	res1, err := allocateLeaseTTL("sb-preserve", "", "sandbox", "", 3600)
+	if err != nil || res1.ExpiresAt == nil || *res1.ExpiresAt != baseTime+3600 {
+		t.Fatalf("initial allocation failed: %v", err)
+	}
+	origExp := *res1.ExpiresAt
+
+	// Advance time by 1000s
+	currTime = baseTime + 1000
+
+	// Re-allocate the same ACTIVE sandbox
+	res2, err := allocateLeaseTTL("sb-preserve", "", "sandbox", "", 7200)
+	if err != nil {
+		t.Fatalf("re-allocation failed: %v", err)
+	}
+	if res2.ExpiresAt == nil || *res2.ExpiresAt != origExp {
+		t.Fatalf("expected re-allocation to keep existing expires_at %d, got %v", origExp, res2.ExpiresAt)
+	}
+
+	// Check DB row directly
+	db, _ := getDBConnection()
+	defer db.Close()
+	var dbExp int64
+	_ = db.QueryRow("SELECT expires_at FROM sandboxes WHERE sandbox_id = 'sb-preserve'").Scan(&dbExp)
+	if dbExp != origExp {
+		t.Fatalf("expected DB expires_at %d, got %d", origExp, dbExp)
 	}
 }
 

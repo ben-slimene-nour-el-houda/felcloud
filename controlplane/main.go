@@ -27,8 +27,13 @@ import (
 // indicating another writer changed the status between our read and write.
 var ErrTransitionConflict = errors.New("concurrent state transition conflict")
 
-// ErrTTLCapExceeded is returned when extending a sandbox TTL exceeds MAX_TTL_SECONDS.
-var ErrTTLCapExceeded = errors.New("requested TTL extension exceeds maximum allowed cap")
+// Typed errors for sandbox operations
+var (
+	ErrTTLCapExceeded  = errors.New("requested TTL extension exceeds maximum allowed cap")
+	ErrSandboxNotFound = errors.New("sandbox not found")
+	ErrWrongState      = errors.New("sandbox in invalid state for operation")
+	ErrInvalidExtend   = errors.New("invalid extend seconds value")
+)
 
 // Global Configuration & Defaults
 var (
@@ -64,6 +69,40 @@ func validateRoutingDomain(domain string) error {
 		}
 	}
 	return nil
+}
+
+func parseTTLConfig(lookupEnv func(string) string) (int64, int64, int64, error) {
+	defTTL := int64(14400)
+	maxTTL := int64(86400)
+	minExt := int64(60)
+
+	if envDefTTL := lookupEnv("DEFAULT_TTL_SECONDS"); envDefTTL != "" {
+		v, err := strconv.ParseInt(envDefTTL, 10, 64)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid DEFAULT_TTL_SECONDS '%s': %w", envDefTTL, err)
+		}
+		defTTL = v
+	}
+	if envMaxTTL := lookupEnv("MAX_TTL_SECONDS"); envMaxTTL != "" {
+		v, err := strconv.ParseInt(envMaxTTL, 10, 64)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid MAX_TTL_SECONDS '%s': %w", envMaxTTL, err)
+		}
+		maxTTL = v
+	}
+	if envMinExt := lookupEnv("MIN_EXTEND_SECONDS"); envMinExt != "" {
+		v, err := strconv.ParseInt(envMinExt, 10, 64)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid MIN_EXTEND_SECONDS '%s': %w", envMinExt, err)
+		}
+		minExt = v
+	}
+
+	if defTTL > maxTTL || defTTL <= 0 || maxTTL <= 0 || minExt <= 0 {
+		return 0, 0, 0, fmt.Errorf("invalid TTL configuration: default=%d, max=%d, min_extend=%d (must have 0 < default <= max and min_extend > 0)", defTTL, maxTTL, minExt)
+	}
+
+	return defTTL, maxTTL, minExt, nil
 }
 
 func initEnv() {
@@ -109,26 +148,14 @@ func initEnv() {
 		os.Exit(1)
 	}
 
-	if envDefTTL := os.Getenv("DEFAULT_TTL_SECONDS"); envDefTTL != "" {
-		if v, err := strconv.ParseInt(envDefTTL, 10, 64); err == nil {
-			defaultTTLSeconds = v
-		}
-	}
-	if envMaxTTL := os.Getenv("MAX_TTL_SECONDS"); envMaxTTL != "" {
-		if v, err := strconv.ParseInt(envMaxTTL, 10, 64); err == nil {
-			maxTTLSeconds = v
-		}
-	}
-	if envMinExt := os.Getenv("MIN_EXTEND_SECONDS"); envMinExt != "" {
-		if v, err := strconv.ParseInt(envMinExt, 10, 64); err == nil {
-			minExtendSeconds = v
-		}
-	}
-
-	if defaultTTLSeconds > maxTTLSeconds || defaultTTLSeconds <= 0 || maxTTLSeconds <= 0 || minExtendSeconds <= 0 {
-		fmt.Fprintf(os.Stderr, "FATAL: Invalid TTL configuration: default=%d, max=%d, min_extend=%d\n", defaultTTLSeconds, maxTTLSeconds, minExtendSeconds)
+	defTTL, maxTTL, minExt, err := parseTTLConfig(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
 		os.Exit(1)
 	}
+	defaultTTLSeconds = defTTL
+	maxTTLSeconds = maxTTL
+	minExtendSeconds = minExt
 }
 
 type DBQueryer interface {
@@ -750,7 +777,7 @@ func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSe
 		return nil, fmt.Errorf("failed to clear stale sandboxes: %w", err)
 	}
 
-	// 6. Upsert sandbox with expires_at
+	// 6. Upsert sandbox with expires_at (preserves existing expires_at if already ACTIVE)
 	_, err = tx.Exec(`
 		INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at)
 		VALUES (?, ?, ?, ?, 'ACTIVE', ?)
@@ -759,11 +786,25 @@ func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSe
 			subnet_name = excluded.subnet_name,
 			private_ip = excluded.private_ip,
 			status = 'ACTIVE',
-			expires_at = excluded.expires_at,
+			expires_at = CASE
+				WHEN sandboxes.status = 'ACTIVE' AND sandboxes.expires_at IS NOT NULL THEN sandboxes.expires_at
+				ELSE excluded.expires_at
+			END,
 			updated_at = CURRENT_TIMESTAMP;
 	`, sandboxID, hostname, subnetName, targetIP, exp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert sandbox: %w", err)
+	}
+
+	// Fetch the actual persisted expires_at
+	var persistedExp sql.NullInt64
+	_ = tx.QueryRow("SELECT expires_at FROM sandboxes WHERE sandbox_id = ?", sandboxID).Scan(&persistedExp)
+	var expPtr *int64
+	if persistedExp.Valid {
+		v := persistedExp.Int64
+		expPtr = &v
+	} else {
+		expPtr = &exp
 	}
 
 	// Record allocated event in same transaction
@@ -780,7 +821,7 @@ func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSe
 		PrivateIP:  targetIP,
 		Status:     "ALLOCATED",
 		SubnetName: subnetName,
-		ExpiresAt:  &exp,
+		ExpiresAt:  expPtr,
 	}, nil
 }
 
@@ -802,7 +843,10 @@ func extendSandbox(q DBQueryer, sandboxID string, extendSeconds int64) (int64, e
 	}
 
 	if extendSeconds < minExtendSeconds || extendSeconds <= 0 {
-		return 0, fmt.Errorf("extend_seconds (%d) must be at least %d", extendSeconds, minExtendSeconds)
+		return 0, fmt.Errorf("%w: extend_seconds (%d) must be at least %d", ErrInvalidExtend, extendSeconds, minExtendSeconds)
+	}
+	if extendSeconds > maxTTLSeconds {
+		return 0, fmt.Errorf("%w: extend_seconds (%d) exceeds maximum allowed TTL %d", ErrTTLCapExceeded, extendSeconds, maxTTLSeconds)
 	}
 
 	var status string
@@ -810,13 +854,13 @@ func extendSandbox(q DBQueryer, sandboxID string, extendSeconds int64) (int64, e
 	err := q.QueryRow("SELECT status, expires_at FROM sandboxes WHERE sandbox_id = ?", sandboxID).Scan(&status, &expVal)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("sandbox '%s' not found", sandboxID)
+			return 0, fmt.Errorf("%w: sandbox '%s'", ErrSandboxNotFound, sandboxID)
 		}
 		return 0, fmt.Errorf("failed to query sandbox '%s': %w", sandboxID, err)
 	}
 
 	if status != "ACTIVE" || !expVal.Valid {
-		return 0, fmt.Errorf("cannot extend sandbox '%s': status is '%s' and expires_at valid is %v", sandboxID, status, expVal.Valid)
+		return 0, fmt.Errorf("%w: sandbox '%s' (status='%s', expires_at_valid=%v)", ErrWrongState, sandboxID, status, expVal.Valid)
 	}
 
 	now := nowUnix()
@@ -824,11 +868,17 @@ func extendSandbox(q DBQueryer, sandboxID string, extendSeconds int64) (int64, e
 	if now > baseTime {
 		baseTime = now
 	}
-	newExpiresAt := baseTime + extendSeconds
 
-	if newExpiresAt-now > maxTTLSeconds {
+	// Overflow-safe cap check
+	remaining := baseTime - now
+	if remaining < 0 {
+		remaining = 0
+	}
+	if extendSeconds > maxTTLSeconds-remaining {
 		return 0, ErrTTLCapExceeded
 	}
+
+	newExpiresAt := baseTime + extendSeconds
 
 	res, err := q.Exec("UPDATE sandboxes SET expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ? AND status = 'ACTIVE'", newExpiresAt, sandboxID)
 	if err != nil {
@@ -1630,16 +1680,20 @@ func handleExtendSandbox(w http.ResponseWriter, r *http.Request) {
 
 	newExp, err := extendSandbox(db, req.SandboxID, req.ExtendSeconds)
 	if err != nil {
-		if errors.Is(err, ErrTTLCapExceeded) {
-			sendJSON(w, 422, map[string]string{"error": "Requested extension exceeds maximum TTL cap"})
+		if errors.Is(err, ErrSandboxNotFound) {
+			sendJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("Sandbox '%s' not found", req.SandboxID)})
 			return
 		}
-		if errors.Is(err, ErrTransitionConflict) || strings.Contains(err.Error(), "cannot extend sandbox") {
+		if errors.Is(err, ErrWrongState) || errors.Is(err, ErrTransitionConflict) {
 			sendJSON(w, http.StatusConflict, map[string]string{"error": "Sandbox status is not ACTIVE or expires_at is null"})
 			return
 		}
-		if strings.Contains(err.Error(), "not found") {
-			sendJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("Sandbox '%s' not found", req.SandboxID)})
+		if errors.Is(err, ErrInvalidExtend) {
+			sendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, ErrTTLCapExceeded) {
+			sendJSON(w, 422, map[string]string{"error": "Requested extension exceeds maximum TTL cap"})
 			return
 		}
 		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to extend sandbox"})
