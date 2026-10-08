@@ -164,3 +164,41 @@ func TestAllocationRollbackOnFailure(t *testing.T) {
 		t.Errorf("ROLLBACK FAILURE: Found %d orphan ip_allocations rows for team-new", count)
 	}
 }
+
+func TestAllocationIgnoresFreeIPOutsideCIDR(t *testing.T) {
+	setupTestDB(t)
+
+	res1, err := allocateLease("team-stale", "", "sandbox", "")
+	if err != nil {
+		t.Fatalf("initial allocation failed: %v", err)
+	}
+	staleFreeIP := res1.IPAddress
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to connect to db: %v", err)
+	}
+	_, err = db.Exec("UPDATE ip_allocations SET status = 'FREE', quarantined_at = NULL, quarantine_until = NULL WHERE ip_address = ?", staleFreeIP)
+	if err != nil {
+		db.Close()
+		t.Fatalf("failed to set status FREE: %v", err)
+	}
+
+	_, err = db.Exec("UPDATE subnets SET cidr = '10.88.0.0/24', gateway_ip = '10.88.0.1' WHERE name = 'sandbox'")
+	db.Close()
+	if err != nil {
+		t.Fatalf("failed to update subnet CIDR: %v", err)
+	}
+
+	res2, err := allocateLease("team-fresh", "", "sandbox", "")
+	if err != nil {
+		t.Fatalf("allocation failed for team-fresh: %v", err)
+	}
+
+	if res2.IPAddress == staleFreeIP {
+		t.Errorf("ALLOCATION ERROR: Reused stale FREE IP %s outside of active subnet CIDR 10.88.0.0/24", staleFreeIP)
+	}
+	if !strings.HasPrefix(res2.IPAddress, "10.88.0.") {
+		t.Errorf("Expected allocated IP to fall in 10.88.0.0/24 subnet range, got %s", res2.IPAddress)
+	}
+}
