@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1486,6 +1487,731 @@ func TestAllocationPreservesActiveExpiresAt(t *testing.T) {
 	_ = db.QueryRow("SELECT expires_at FROM sandboxes WHERE sandbox_id = 'sb-preserve'").Scan(&dbExp)
 	if dbExp != origExp {
 		t.Fatalf("expected DB expires_at %d, got %d", origExp, dbExp)
+	}
+}
+
+func TestAllocateLeaseExistingSandboxStates(t *testing.T) {
+	setupTestDB(t)
+
+	// 1. Initial allocation for ACTIVE sandbox
+	res1, err := allocateLeaseTTL("sb-state-active", "", "sandbox", "", 3600)
+	if err != nil {
+		t.Fatalf("initial allocation failed: %v", err)
+	}
+	origIP := res1.IPAddress
+	origExp := *res1.ExpiresAt
+
+	// Re-allocation of ACTIVE sandbox with existing private_ip
+	res2, err := allocateLeaseTTL("sb-state-active", "", "sandbox", "", 7200)
+	if err != nil {
+		t.Fatalf("re-allocation of active sandbox failed: %v", err)
+	}
+	if res2.IPAddress != origIP {
+		t.Fatalf("expected same IP %s, got %s", origIP, res2.IPAddress)
+	}
+	if *res2.ExpiresAt != origExp {
+		t.Fatalf("expected same expires_at %d, got %d", origExp, *res2.ExpiresAt)
+	}
+
+	// Verify no second IP row was created in ip_allocations
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	var ipCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM ip_allocations WHERE entity_name = 'sb-state-active'").Scan(&ipCount); err != nil || ipCount != 1 {
+		t.Fatalf("expected exactly 1 IP allocation row, got %d (err: %v)", ipCount, err)
+	}
+
+	// 2. Sandbox in EXPIRING state -> ErrWrongState and no writes
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-expiring', 'sb-expiring.local', 'sandbox', '10.0.0.99', 'EXPIRING', 1700000000)")
+	if err != nil {
+		t.Fatalf("insert expiring sandbox: %v", err)
+	}
+	_, err = allocateLeaseTTL("sb-expiring", "", "sandbox", "", 3600)
+	if !errors.Is(err, ErrWrongState) {
+		t.Fatalf("expected ErrWrongState for EXPIRING sandbox, got %v", err)
+	}
+
+	// 3. Sandbox in TEARING_DOWN state -> ErrWrongState and no writes
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-teardown', 'sb-teardown.local', 'sandbox', '10.0.0.98', 'TEARING_DOWN', 1700000000)")
+	if err != nil {
+		t.Fatalf("insert tearing_down sandbox: %v", err)
+	}
+	_, err = allocateLeaseTTL("sb-teardown", "", "sandbox", "", 3600)
+	if !errors.Is(err, ErrWrongState) {
+		t.Fatalf("expected ErrWrongState for TEARING_DOWN sandbox, got %v", err)
+	}
+
+	// 4. Sandbox in RELEASED state -> succeeds and allocates lease
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-released', 'sb-released.local', 'sandbox', NULL, 'RELEASED', NULL)")
+	if err != nil {
+		t.Fatalf("insert released sandbox: %v", err)
+	}
+	resRel, err := allocateLeaseTTL("sb-released", "", "sandbox", "", 3600)
+	if err != nil || resRel.Status != "ALLOCATED" {
+		t.Fatalf("expected successful allocation for RELEASED sandbox, got res: %v, err: %v", resRel, err)
+	}
+
+	// 5. Sandbox in FAILED state -> succeeds and allocates lease
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-failed', 'sb-failed.local', 'sandbox', NULL, 'FAILED', NULL)")
+	if err != nil {
+		t.Fatalf("insert failed sandbox: %v", err)
+	}
+	resFail, err := allocateLeaseTTL("sb-failed", "", "sandbox", "", 3600)
+	if err != nil || resFail.Status != "ALLOCATED" {
+		t.Fatalf("expected successful allocation for FAILED sandbox, got res: %v, err: %v", resFail, err)
+	}
+}
+
+func TestParseReaperConfig(t *testing.T) {
+	// 1. Defaults
+	intv, batch, maxAtt, ret, err := parseReaperConfig(func(string) string { return "" })
+	if err != nil || intv != 10 || batch != 20 || maxAtt != 5 || ret != 259200 {
+		t.Fatalf("expected defaults (10, 20, 5, 259200), got (%d, %d, %d, %d, err: %v)", intv, batch, maxAtt, ret, err)
+	}
+
+	// 2. Custom valid
+	intv, batch, maxAtt, ret, err = parseReaperConfig(func(k string) string {
+		switch k {
+		case "REAPER_INTERVAL_SECONDS":
+			return "15"
+		case "REAPER_BATCH_SIZE":
+			return "50"
+		case "TEARDOWN_MAX_ATTEMPTS":
+			return "3"
+		case "EVENTS_RETENTION_SECONDS":
+			return "86400"
+		default:
+			return ""
+		}
+	})
+	if err != nil || intv != 15 || batch != 50 || maxAtt != 3 || ret != 86400 {
+		t.Fatalf("expected custom values, got (%d, %d, %d, %d, err: %v)", intv, batch, maxAtt, ret, err)
+	}
+
+	// 3. Unparseable strings
+	for _, envKey := range []string{"REAPER_INTERVAL_SECONDS", "REAPER_BATCH_SIZE", "TEARDOWN_MAX_ATTEMPTS", "EVENTS_RETENTION_SECONDS"} {
+		_, _, _, _, err := parseReaperConfig(func(k string) string {
+			if k == envKey {
+				return "not_a_number"
+			}
+			return ""
+		})
+		if err == nil || !strings.Contains(err.Error(), envKey) {
+			t.Fatalf("expected error for unparseable %s, got %v", envKey, err)
+		}
+	}
+
+	// 4. Non-positive values (< 1)
+	for _, envKey := range []string{"REAPER_INTERVAL_SECONDS", "REAPER_BATCH_SIZE", "TEARDOWN_MAX_ATTEMPTS", "EVENTS_RETENTION_SECONDS"} {
+		_, _, _, _, err := parseReaperConfig(func(k string) string {
+			if k == envKey {
+				return "0"
+			}
+			return ""
+		})
+		if err == nil || !strings.Contains(err.Error(), "invalid reaper configuration") {
+			t.Fatalf("expected error for 0 value in %s, got %v", envKey, err)
+		}
+	}
+}
+
+func TestReaperExpiredActiveSandbox(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	// Allocate sandbox with 100s TTL
+	res, err := allocateLeaseTTL("sb-reap-1", "", "sandbox", "", 100)
+	if err != nil {
+		t.Fatalf("allocation failed: %v", err)
+	}
+	allocatedIP := res.IPAddress
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Advance time past expiry
+	currTime = baseTime + 150
+
+	// Run reaper tick
+	tickRes := reaperTick(db, nowUnix())
+	if tickRes.Error != nil {
+		t.Fatalf("reaperTick error: %v", tickRes.Error)
+	}
+	if tickRes.ReapedCount != 1 {
+		t.Fatalf("expected 1 reaped sandbox, got %d", tickRes.ReapedCount)
+	}
+
+	// Assert sandbox is RELEASED
+	var sbStatus string
+	if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-reap-1'").Scan(&sbStatus); err != nil || sbStatus != "RELEASED" {
+		t.Fatalf("expected sandbox status RELEASED, got '%s' (err: %v)", sbStatus, err)
+	}
+
+	// Assert IP is QUARANTINED
+	var ipStatus string
+	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = ?", allocatedIP).Scan(&ipStatus); err != nil || ipStatus != "QUARANTINED" {
+		t.Fatalf("expected IP status QUARANTINED, got '%s' (err: %v)", ipStatus, err)
+	}
+
+	// Assert events recorded in order
+	rows, err := db.Query("SELECT type, detail FROM events WHERE sandbox_id = 'sb-reap-1' ORDER BY id ASC")
+	if err != nil {
+		t.Fatalf("query events: %v", err)
+	}
+	defer rows.Close()
+
+	var eventTypes []string
+	for rows.Next() {
+		var typ, det string
+		_ = rows.Scan(&typ, &det)
+		eventTypes = append(eventTypes, typ)
+	}
+	rows.Close()
+
+	// Events should include: allocated, teardown_step (release_ips), teardown_step (delete_openstack_resources), teardown_step (remove_route_and_sync), expired_teardown_done
+	hasTeardownDone := false
+	for _, typ := range eventTypes {
+		if typ == "expired_teardown_done" {
+			hasTeardownDone = true
+		}
+	}
+	if !hasTeardownDone {
+		t.Fatalf("expected expired_teardown_done event, got events: %v", eventTypes)
+	}
+
+	// Advance time past quarantine cooldown (default 60s)
+	currTime += 70
+	reaperTick(db, nowUnix())
+
+	// Assert IP is now reclaimed to FREE
+	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = ?", allocatedIP).Scan(&ipStatus); err != nil || ipStatus != "FREE" {
+		t.Fatalf("expected IP status FREE after quarantine reclaim, got '%s' (err: %v)", ipStatus, err)
+	}
+}
+
+func TestReaperUntouchedSandboxes(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	// Sandbox 1: not yet expired (TTL 3600)
+	_, err := allocateLeaseTTL("sb-future", "", "sandbox", "", 3600)
+	if err != nil {
+		t.Fatalf("allocation future: %v", err)
+	}
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Sandbox 2: NULL expires_at
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-null-exp', 'sb-null.local', 'sandbox', '10.0.0.77', 'ACTIVE', NULL)")
+	if err != nil {
+		t.Fatalf("insert null expires_at sandbox: %v", err)
+	}
+
+	// Run reaper tick at baseTime
+	res := reaperTick(db, nowUnix())
+	if res.Error != nil || res.ReapedCount != 0 {
+		t.Fatalf("expected 0 reaped, got count=%d, err=%v", res.ReapedCount, res.Error)
+	}
+
+	// Verify both sandboxes remain ACTIVE
+	var status1, status2 string
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-future'").Scan(&status1)
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-null-exp'").Scan(&status2)
+	if status1 != "ACTIVE" || status2 != "ACTIVE" {
+		t.Fatalf("expected both sandboxes ACTIVE, got sb-future='%s', sb-null-exp='%s'", status1, status2)
+	}
+}
+
+func TestReaperResumeAndIdempotency(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Configure fake steps: step 1 is release_ips; step 2 fails on attempt 1, succeeds on attempt 2
+	oldSteps := teardownSteps
+	t.Cleanup(func() { teardownSteps = oldSteps })
+
+	attempt := 0
+	teardownSteps = []teardownStep{
+		oldSteps[0], // release_ips
+		{
+			name: "flaky_step",
+			run: func(d DBQueryer, s sandboxRef) error {
+				attempt++
+				if attempt == 1 {
+					return fmt.Errorf("transient failure")
+				}
+				return nil
+			},
+		},
+	}
+
+	_, err = allocateLeaseTTL("sb-flaky", "", "sandbox", "", 50)
+	if err != nil {
+		t.Fatalf("allocate failed: %v", err)
+	}
+
+	// Advance past expiry
+	currTime = baseTime + 100
+
+	// Tick 1: flaky_step fails
+	res1 := reaperTick(db, nowUnix())
+	if res1.ReapedCount != 0 {
+		t.Fatalf("expected 0 reaped on tick 1, got %d", res1.ReapedCount)
+	}
+
+	// Verify sandbox is in TEARING_DOWN
+	var status string
+	if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-flaky'").Scan(&status); err != nil || status != "TEARING_DOWN" {
+		t.Fatalf("expected TEARING_DOWN on tick 1, got '%s'", status)
+	}
+
+	// Verify IP was already quarantined by step 1
+	var ipStatus string
+	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE entity_name = 'sb-flaky'").Scan(&ipStatus); err != nil || ipStatus != "QUARANTINED" {
+		t.Fatalf("expected QUARANTINED on tick 1, got '%s'", ipStatus)
+	}
+
+	// Tick 2: step 1 re-runs (idempotent no-op), flaky_step succeeds
+	res2 := reaperTick(db, nowUnix())
+	if res2.ResumedCount != 1 {
+		t.Fatalf("expected 1 resumed sandbox on tick 2, got %d", res2.ResumedCount)
+	}
+
+	// Verify sandbox is now RELEASED
+	if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-flaky'").Scan(&status); err != nil || status != "RELEASED" {
+		t.Fatalf("expected RELEASED on tick 2, got '%s'", status)
+	}
+}
+
+func TestReaperMaxAttempts(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	oldSteps := teardownSteps
+	oldMax := teardownMaxAttempts
+	t.Cleanup(func() {
+		teardownSteps = oldSteps
+		teardownMaxAttempts = oldMax
+	})
+
+	teardownMaxAttempts = 3
+	teardownSteps = []teardownStep{
+		{
+			name: "perm_failing",
+			run: func(d DBQueryer, s sandboxRef) error {
+				return fmt.Errorf("permanent failure")
+			},
+		},
+	}
+
+	_, err = allocateLeaseTTL("sb-perm-fail", "", "sandbox", "", 50)
+	if err != nil {
+		t.Fatalf("allocate failed: %v", err)
+	}
+
+	currTime = baseTime + 100
+
+	// Tick 1
+	reaperTick(db, nowUnix())
+	var status string
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-perm-fail'").Scan(&status)
+	if status != "TEARING_DOWN" {
+		t.Fatalf("tick 1: expected TEARING_DOWN, got %s", status)
+	}
+
+	// Tick 2
+	reaperTick(db, nowUnix())
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-perm-fail'").Scan(&status)
+	if status != "TEARING_DOWN" {
+		t.Fatalf("tick 2: expected TEARING_DOWN, got %s", status)
+	}
+
+	// Tick 3: reaches max attempts (3) -> FAILED
+	res3 := reaperTick(db, nowUnix())
+	if res3.FailedCount != 1 {
+		t.Fatalf("tick 3: expected 1 failure, got %d", res3.FailedCount)
+	}
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-perm-fail'").Scan(&status)
+	if status != "FAILED" {
+		t.Fatalf("tick 3: expected FAILED, got %s", status)
+	}
+
+	// Verify teardown_failed event
+	var failedEventCount int
+	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-perm-fail' AND type = 'teardown_failed'").Scan(&failedEventCount)
+	if failedEventCount != 1 {
+		t.Fatalf("expected 1 teardown_failed event, got %d", failedEventCount)
+	}
+}
+
+func TestReaperStaleExpiringResumed(t *testing.T) {
+	setupTestDB(t)
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	// Insert stale EXPIRING sandbox
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-stale-exp', 'sb-stale.local', 'sandbox', '10.0.0.88', 'EXPIRING', ?)", baseTime-100)
+	if err != nil {
+		t.Fatalf("insert expiring sandbox: %v", err)
+	}
+	_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES ('10.0.0.88', 'sandbox', 'sb-stale-exp', 'TEAM_SANDBOX', 'ALLOCATED')")
+	if err != nil {
+		t.Fatalf("insert allocation: %v", err)
+	}
+
+	res := reaperTick(db, nowUnix())
+	if res.ResumedCount != 1 {
+		t.Fatalf("expected 1 resumed sandbox, got %d", res.ResumedCount)
+	}
+
+	var status string
+	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-stale-exp'").Scan(&status)
+	if status != "RELEASED" {
+		t.Fatalf("expected RELEASED, got %s", status)
+	}
+}
+
+func TestReaperConcurrency(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Allocate 10 sandboxes with TTL 50
+	for i := 1; i <= 10; i++ {
+		sbID := fmt.Sprintf("sb-conc-%d", i)
+		if _, err := allocateLeaseTTL(sbID, "", "sandbox", "", 50); err != nil {
+			t.Fatalf("allocate %s: %v", sbID, err)
+		}
+	}
+
+	// Advance past expiry
+	currTime = baseTime + 100
+
+	// 2 goroutines calling reaperTick simultaneously
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := reaperTick(db, nowUnix())
+			if res.Error != nil {
+				errCh <- res.Error
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("reaper concurrency error: %v", err)
+	}
+
+	// Assert all 10 sandboxes are RELEASED
+	for i := 1; i <= 10; i++ {
+		sbID := fmt.Sprintf("sb-conc-%d", i)
+		var status string
+		if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", sbID).Scan(&status); err != nil || status != "RELEASED" {
+			t.Fatalf("expected %s status RELEASED, got '%s'", sbID, status)
+		}
+
+		// Exactly one expired_teardown_done event each
+		var doneCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = ? AND type = 'expired_teardown_done'", sbID).Scan(&doneCount)
+		if doneCount != 1 {
+			t.Fatalf("expected 1 expired_teardown_done for %s, got %d", sbID, doneCount)
+		}
+	}
+}
+
+func TestReaperBatchSize(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	oldBatch := reaperBatchSize
+	t.Cleanup(func() { reaperBatchSize = oldBatch })
+	reaperBatchSize = 20
+
+	// Allocate 25 expired sandboxes directly
+	for i := 1; i <= 25; i++ {
+		sbID := fmt.Sprintf("sb-batch-%02d", i)
+		ip := fmt.Sprintf("10.0.1.%d", i)
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES (?, ?, 'sandbox', ?, 'ACTIVE', ?)", sbID, sbID+".local", ip, baseTime-10)
+		if err != nil {
+			t.Fatalf("insert %s: %v", sbID, err)
+		}
+		_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES (?, 'sandbox', ?, 'TEAM_SANDBOX', 'ALLOCATED')", ip, sbID)
+		if err != nil {
+			t.Fatalf("insert ip %s: %v", ip, err)
+		}
+	}
+
+	// Tick 1: should process exactly 20
+	res1 := reaperTick(db, nowUnix())
+	if res1.ReapedCount != 20 {
+		t.Fatalf("tick 1: expected 20 reaped, got %d", res1.ReapedCount)
+	}
+
+	// 5 remain ACTIVE
+	var activeCount int
+	_ = db.QueryRow("SELECT COUNT(*) FROM sandboxes WHERE status = 'ACTIVE'").Scan(&activeCount)
+	if activeCount != 5 {
+		t.Fatalf("tick 1: expected 5 active remaining, got %d", activeCount)
+	}
+
+	// Tick 2: processes remaining 5
+	res2 := reaperTick(db, nowUnix())
+	if res2.ReapedCount != 5 {
+		t.Fatalf("tick 2: expected 5 reaped, got %d", res2.ReapedCount)
+	}
+}
+
+func TestReaperReleaseIPsLeakedSecondIP(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Allocate sandbox
+	res, err := allocateLeaseTTL("sb-leak-ip", "", "sandbox", "10.0.0.10", 50)
+	if err != nil {
+		t.Fatalf("allocation failed: %v", err)
+	}
+
+	// Insert leaked second IP row pointing to same entity_name
+	_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES ('10.0.0.11', 'sandbox', 'sb-leak-ip', 'TEAM_SANDBOX', 'ALLOCATED')")
+	if err != nil {
+		t.Fatalf("insert leaked IP: %v", err)
+	}
+
+	// Advance past expiry
+	currTime = baseTime + 100
+
+	// Reaper tick
+	reaperTick(db, nowUnix())
+
+	// Both IPs must be QUARANTINED
+	var status1, status2 string
+	_ = db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = ?", res.IPAddress).Scan(&status1)
+	_ = db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = '10.0.0.11'").Scan(&status2)
+	if status1 != "QUARANTINED" || status2 != "QUARANTINED" {
+		t.Fatalf("expected both IPs QUARANTINED, got %s=%s, 10.0.0.11=%s", res.IPAddress, status1, status2)
+	}
+}
+
+func TestReaperPruneEvents(t *testing.T) {
+	setupTestDB(t)
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	oldRet := eventsRetentionSeconds
+	t.Cleanup(func() {
+		nowUnix = oldNow
+		eventsRetentionSeconds = oldRet
+	})
+	nowUnix = func() int64 { return currTime }
+	eventsRetentionSeconds = 100
+
+	// Insert 1200 old events (older than baseTime - 100s)
+	oldTsMs := (baseTime - 500) * 1000
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	stmt, err := tx.Prepare("INSERT INTO events (ts_ms, sandbox_id, type, detail, duration_ms) VALUES (?, 'sb-prune', 'test_event', 'detail', 10)")
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for i := 0; i < 1200; i++ {
+		if _, err := stmt.Exec(oldTsMs); err != nil {
+			t.Fatalf("exec: %v", err)
+		}
+	}
+	stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Chunk 1: deletes at most 500
+	res1 := reaperTick(db, nowUnix())
+	if res1.PrunedEvents != 500 {
+		t.Fatalf("tick 1: expected 500 pruned, got %d", res1.PrunedEvents)
+	}
+
+	var remaining int
+	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-prune'").Scan(&remaining)
+	if remaining != 700 {
+		t.Fatalf("tick 1: expected 700 remaining, got %d", remaining)
+	}
+
+	// Chunk 2: deletes 500
+	res2 := reaperTick(db, nowUnix())
+	if res2.PrunedEvents != 500 {
+		t.Fatalf("tick 2: expected 500 pruned, got %d", res2.PrunedEvents)
+	}
+
+	// Chunk 3: deletes remaining 200
+	res3 := reaperTick(db, nowUnix())
+	if res3.PrunedEvents != 200 {
+		t.Fatalf("tick 3: expected 200 pruned, got %d", res3.PrunedEvents)
+	}
+
+	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-prune'").Scan(&remaining)
+	if remaining != 0 {
+		t.Fatalf("tick 3: expected 0 remaining, got %d", remaining)
+	}
+}
+
+func TestStartReaperLifecycle(t *testing.T) {
+	setupTestDB(t)
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	oldInt := reaperIntervalSeconds
+	oldSteps := teardownSteps
+	t.Cleanup(func() {
+		reaperIntervalSeconds = oldInt
+		teardownSteps = oldSteps
+	})
+	reaperIntervalSeconds = 1
+
+	// Inject a step that panics on the first run to test panic recovery
+	panicked := false
+	teardownSteps = []teardownStep{
+		{
+			name: "panicking_step",
+			run: func(d DBQueryer, s sandboxRef) error {
+				if !panicked {
+					panicked = true
+					panic("simulated step panic")
+				}
+				return nil
+			},
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := startReaper(ctx, db)
+	if err != nil {
+		t.Fatalf("startReaper failed: %v", err)
+	}
+
+	// Insert an expired sandbox to trigger the step
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-panic', 'sb-panic.local', 'sandbox', '10.0.0.12', 'ACTIVE', 1000)")
+	if err != nil {
+		t.Fatalf("insert sandbox: %v", err)
+	}
+
+	// Let the ticker run for at least 2 ticks
+	time.Sleep(2500 * time.Millisecond)
+
+	// Cancel context to stop the reaper
+	cancel()
+
+	// Wait on done channel to verify graceful stop with no leftover goroutine
+	select {
+	case <-done:
+		// Succeeded
+	case <-time.After(3 * time.Second):
+		t.Fatalf("reaper did not terminate cleanly on context cancellation")
+	}
+
+	if !panicked {
+		t.Fatalf("expected step to have panicked once and recovered")
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -29,10 +31,11 @@ var ErrTransitionConflict = errors.New("concurrent state transition conflict")
 
 // Typed errors for sandbox operations
 var (
-	ErrTTLCapExceeded  = errors.New("requested TTL extension exceeds maximum allowed cap")
-	ErrSandboxNotFound = errors.New("sandbox not found")
-	ErrWrongState      = errors.New("sandbox in invalid state for operation")
-	ErrInvalidExtend   = errors.New("invalid extend seconds value")
+	ErrIllegalTransition = errors.New("illegal state transition")
+	ErrTTLCapExceeded     = errors.New("requested TTL extension exceeds maximum allowed cap")
+	ErrSandboxNotFound    = errors.New("sandbox not found")
+	ErrWrongState         = errors.New("sandbox in invalid state for operation")
+	ErrInvalidExtend      = errors.New("invalid extend seconds value")
 )
 
 // Global Configuration & Defaults
@@ -47,7 +50,82 @@ var (
 	maxTTLSeconds            int64  = 86400
 	minExtendSeconds         int64  = 60
 	nowUnix                  func() int64 = func() int64 { return time.Now().UTC().Unix() }
+
+	reaperIntervalSeconds  int = 10
+	reaperBatchSize        int = 20
+	teardownMaxAttempts    int = 5
+	eventsRetentionSeconds int = 259200
 )
+
+// Package-level reaper synchronization and metrics
+var (
+	reaperTickMutex       sync.Mutex
+	teardownAttemptsMutex sync.Mutex
+	teardownAttempts      = make(map[string]int)
+
+	lastTickUnix         atomic.Int64
+	lastTickDurationMs   atomic.Int64
+	oldestOverdueSeconds atomic.Int64
+	teardownsDone        atomic.Int64
+	teardownFailures     atomic.Int64
+	eventsPruned         atomic.Int64
+)
+
+type tickResult struct {
+	ReapedCount  int
+	ResumedCount int
+	FailedCount  int
+	PrunedEvents int
+	Error        error
+}
+
+type sandboxRef struct {
+	id         string
+	hostname   string
+	subnetName string
+	privateIP  string
+	status     string
+	expiresAt  *int64
+}
+
+type teardownStep struct {
+	name string
+	run  func(db DBQueryer, s sandboxRef) error
+}
+
+var teardownSteps = []teardownStep{
+	{
+		name: "release_ips",
+		run: func(db DBQueryer, s sandboxRef) error {
+			now := time.Unix(nowUnix(), 0).UTC()
+			quarantineUntilStr := now.Add(time.Duration(defaultQuarantineSeconds) * time.Second).Format("2006-01-02 15:04:05")
+			quarantinedAtStr := now.Format("2006-01-02 15:04:05")
+			_, err := db.Exec(`
+				UPDATE ip_allocations
+				SET status = 'QUARANTINED', quarantined_at = ?, quarantine_until = ?
+				WHERE entity_name = ? AND status = 'ALLOCATED';
+			`, quarantinedAtStr, quarantineUntilStr, s.id)
+			if err != nil {
+				return fmt.Errorf("release_ips: failed to quarantine allocations for '%s': %w", s.id, err)
+			}
+			return nil
+		},
+	},
+	{
+		name: "delete_openstack_resources",
+		run: func(db DBQueryer, s sandboxRef) error {
+			log.Printf("delete_openstack_resources: not implemented yet (sandbox=%s)", s.id)
+			return nil
+		},
+	},
+	{
+		name: "remove_route_and_sync",
+		run: func(db DBQueryer, s sandboxRef) error {
+			log.Printf("remove_route_and_sync: not implemented yet (sandbox=%s)", s.id)
+			return nil
+		},
+	},
+}
 
 func validateRoutingDomain(domain string) error {
 	if len(domain) == 0 || len(domain) > 190 {
@@ -105,6 +183,47 @@ func parseTTLConfig(lookupEnv func(string) string) (int64, int64, int64, error) 
 	return defTTL, maxTTL, minExt, nil
 }
 
+func parseReaperConfig(lookupEnv func(string) string) (int, int, int, int, error) {
+	interval := 10
+	batchSize := 20
+	maxAttempts := 5
+	retention := 259200
+
+	if v := lookupEnv("REAPER_INTERVAL_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid REAPER_INTERVAL_SECONDS '%s': %w", v, err)
+		}
+		interval = n
+	}
+	if v := lookupEnv("REAPER_BATCH_SIZE"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid REAPER_BATCH_SIZE '%s': %w", v, err)
+		}
+		batchSize = n
+	}
+	if v := lookupEnv("TEARDOWN_MAX_ATTEMPTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid TEARDOWN_MAX_ATTEMPTS '%s': %w", v, err)
+		}
+		maxAttempts = n
+	}
+	if v := lookupEnv("EVENTS_RETENTION_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid EVENTS_RETENTION_SECONDS '%s': %w", v, err)
+		}
+		retention = n
+	}
+
+	if interval < 1 || batchSize < 1 || maxAttempts < 1 || retention < 1 {
+		return 0, 0, 0, 0, fmt.Errorf("invalid reaper configuration: interval=%d (min 1), batch=%d (min 1), max_attempts=%d (min 1), retention=%d (min 1)", interval, batchSize, maxAttempts, retention)
+	}
+	return interval, batchSize, maxAttempts, retention, nil
+}
+
 func initEnv() {
 	execDir, err := os.Getwd()
 	if err != nil {
@@ -156,6 +275,16 @@ func initEnv() {
 	defaultTTLSeconds = defTTL
 	maxTTLSeconds = maxTTL
 	minExtendSeconds = minExt
+
+	repInt, repBatch, repMaxAtt, repRet, err := parseReaperConfig(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
+		os.Exit(1)
+	}
+	reaperIntervalSeconds = repInt
+	reaperBatchSize = repBatch
+	teardownMaxAttempts = repMaxAtt
+	eventsRetentionSeconds = repRet
 }
 
 type DBQueryer interface {
@@ -514,13 +643,13 @@ func transitionSandbox(q DBQueryer, id, to string) error {
 	err := q.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", id).Scan(&currentStatus)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("sandbox '%s' not found", id)
+			return fmt.Errorf("%w: sandbox '%s'", ErrSandboxNotFound, id)
 		}
 		return fmt.Errorf("failed to query sandbox '%s': %w", id, err)
 	}
 
 	if !isValidTransition(currentStatus, to) {
-		return fmt.Errorf("illegal state transition for sandbox '%s': '%s' -> '%s'", id, currentStatus, to)
+		return fmt.Errorf("%w for sandbox '%s': '%s' -> '%s'", ErrIllegalTransition, id, currentStatus, to)
 	}
 
 	res, err := q.Exec("UPDATE sandboxes SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ? AND status = ?", to, id, currentStatus)
@@ -540,7 +669,7 @@ func transitionSandbox(q DBQueryer, id, to string) error {
 }
 
 func reclaimExpiredQuarantinesTx(q DBQueryer) int {
-	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05")
+	nowStr := time.Unix(nowUnix(), 0).UTC().Format("2006-01-02 15:04:05")
 	res, err := q.Exec(`
 		UPDATE ip_allocations
 		SET status = 'FREE', quarantined_at = NULL, quarantine_until = NULL
@@ -713,6 +842,36 @@ func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSe
 
 	// 1. Reclaim expired quarantines in transaction
 	reclaimExpiredQuarantinesTx(tx)
+
+	// Check existing sandbox state if row exists
+	var existingStatus string
+	var existingPrivateIP sql.NullString
+	var existingExp sql.NullInt64
+	var existingSubnet, existingHostname string
+	err = tx.QueryRow("SELECT status, private_ip, expires_at, subnet_name, hostname FROM sandboxes WHERE sandbox_id = ?", sandboxID).Scan(&existingStatus, &existingPrivateIP, &existingExp, &existingSubnet, &existingHostname)
+	if err == nil {
+		if existingStatus == "EXPIRING" || existingStatus == "TEARING_DOWN" {
+			return nil, fmt.Errorf("%w: sandbox '%s' is in state %s and cannot be allocated", ErrWrongState, sandboxID, existingStatus)
+		}
+		if existingStatus == "ACTIVE" && existingPrivateIP.Valid && existingPrivateIP.String != "" {
+			var expPtr *int64
+			if existingExp.Valid {
+				v := existingExp.Int64
+				expPtr = &v
+			}
+			return &LeaseResult{
+				SandboxID:  sandboxID,
+				Hostname:   existingHostname,
+				IPAddress:  existingPrivateIP.String,
+				PrivateIP:  existingPrivateIP.String,
+				Status:     "ALLOCATED",
+				SubnetName: existingSubnet,
+				ExpiresAt:  expPtr,
+			}, nil
+		}
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to query existing sandbox: %w", err)
+	}
 
 	// 2. Lookup subnet CIDR & gateway IP
 	var cidr, gatewayIP string
@@ -896,6 +1055,187 @@ func extendSandbox(q DBQueryer, sandboxID string, extendSeconds int64) (int64, e
 	recordEvent(q, sandboxID, "extended", fmt.Sprintf("from=%d to=%d", expVal.Int64, newExpiresAt), 0)
 
 	return newExpiresAt, nil
+}
+
+func reaperTick(db *sql.DB, now int64) tickResult {
+	reaperTickMutex.Lock()
+	defer reaperTickMutex.Unlock()
+
+	tickStart := time.Now()
+	res := tickResult{}
+
+	// a. Reclaim expired quarantines
+	reclaimExpiredQuarantinesTx(db)
+
+	// Update oldestOverdueSeconds gauge
+	var minExp sql.NullInt64
+	_ = db.QueryRow("SELECT MIN(expires_at) FROM sandboxes WHERE status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at <= ?", now).Scan(&minExp)
+	if minExp.Valid && minExp.Int64 <= now {
+		diff := now - minExp.Int64
+		if diff < 0 {
+			diff = 0
+		}
+		oldestOverdueSeconds.Store(diff)
+	} else {
+		oldestOverdueSeconds.Store(0)
+	}
+
+	// b. Select up to REAPER_BATCH_SIZE sandboxes
+	rows, err := db.Query(`
+		SELECT sandbox_id, hostname, subnet_name, COALESCE(private_ip, ''), status, expires_at
+		FROM sandboxes
+		WHERE (status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at <= ?)
+		   OR status IN ('EXPIRING', 'TEARING_DOWN')
+		ORDER BY CASE WHEN expires_at IS NOT NULL THEN expires_at ELSE 0 END ASC, id ASC
+		LIMIT ?;
+	`, now, reaperBatchSize)
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	defer rows.Close()
+
+	var candidates []sandboxRef
+	for rows.Next() {
+		var s sandboxRef
+		var exp sql.NullInt64
+		if err := rows.Scan(&s.id, &s.hostname, &s.subnetName, &s.privateIP, &s.status, &exp); err != nil {
+			continue
+		}
+		if exp.Valid {
+			v := exp.Int64
+			s.expiresAt = &v
+		}
+		candidates = append(candidates, s)
+	}
+	rows.Close()
+
+	// c. Process each candidate
+	for _, s := range candidates {
+		initialStatus := s.status
+		if initialStatus == "ACTIVE" || initialStatus == "EXPIRING" {
+			err := transitionSandbox(db, s.id, "TEARING_DOWN")
+			if err != nil {
+				if errors.Is(err, ErrTransitionConflict) || errors.Is(err, ErrIllegalTransition) || strings.Contains(err.Error(), "illegal state transition") {
+					continue // another worker owns it: skip silently
+				}
+				log.Printf("reaper: failed transition to TEARING_DOWN for '%s': %v", s.id, err)
+				continue
+			}
+			s.status = "TEARING_DOWN"
+		}
+
+		allStepsOK := true
+		sandStart := time.Now()
+
+		for _, step := range teardownSteps {
+			stepStart := time.Now()
+			stepErr := step.run(db, s)
+			stepDuration := time.Since(stepStart).Milliseconds()
+
+			if stepErr != nil {
+				allStepsOK = false
+				recordEvent(db, s.id, "teardown_step_failed", fmt.Sprintf("step=%s, err=%v", step.name, stepErr), stepDuration)
+
+				teardownAttemptsMutex.Lock()
+				teardownAttempts[s.id]++
+				attempts := teardownAttempts[s.id]
+				teardownAttemptsMutex.Unlock()
+
+				if attempts >= teardownMaxAttempts {
+					if err := transitionSandbox(db, s.id, "FAILED"); err == nil {
+						recordEvent(db, s.id, "teardown_failed", fmt.Sprintf("max attempts (%d) exceeded", teardownMaxAttempts), 0)
+						teardownFailures.Add(1)
+						res.FailedCount++
+						teardownAttemptsMutex.Lock()
+						delete(teardownAttempts, s.id)
+						teardownAttemptsMutex.Unlock()
+					}
+				}
+				break // stop running further steps for this sandbox in this tick
+			} else {
+				recordEvent(db, s.id, "teardown_step", step.name, stepDuration)
+			}
+		}
+
+		if allStepsOK {
+			totalDuration := time.Since(sandStart).Milliseconds()
+			if err := transitionSandbox(db, s.id, "RELEASED"); err == nil {
+				recordEvent(db, s.id, "expired_teardown_done", fmt.Sprintf("duration_ms=%d", totalDuration), totalDuration)
+				teardownsDone.Add(1)
+				if initialStatus == "ACTIVE" {
+					res.ReapedCount++
+				} else {
+					res.ResumedCount++
+				}
+				teardownAttemptsMutex.Lock()
+				delete(teardownAttempts, s.id)
+				teardownAttemptsMutex.Unlock()
+			}
+		}
+	}
+
+	// d. Prune events older than EVENTS_RETENTION_SECONDS (ts_ms) in chunks of at most 500 rows per tick
+	cutoffMs := (now - int64(eventsRetentionSeconds)) * 1000
+	delRes, delErr := db.Exec(`
+		DELETE FROM events
+		WHERE id IN (
+			SELECT id FROM events WHERE ts_ms < ? ORDER BY id ASC LIMIT 500
+		);
+	`, cutoffMs)
+	if delErr == nil {
+		if n, err := delRes.RowsAffected(); err == nil && n > 0 {
+			res.PrunedEvents = int(n)
+			eventsPruned.Add(n)
+		}
+	}
+
+	lastTickUnix.Store(now)
+	lastTickDurationMs.Store(time.Since(tickStart).Milliseconds())
+
+	return res
+}
+
+func startReaper(ctx context.Context, dbs ...*sql.DB) (<-chan struct{}, error) {
+	var db *sql.DB
+	var err error
+	if len(dbs) > 0 && dbs[0] != nil {
+		db = dbs[0]
+	} else {
+		db, err = getDBConnection()
+		if err != nil {
+			return nil, err
+		}
+	}
+	done := make(chan struct{})
+	interval := time.Duration(reaperIntervalSeconds) * time.Second
+	log.Printf("Starting background reaper loop (interval: %v, batch: %d, max_attempts: %d)", interval, reaperBatchSize, teardownMaxAttempts)
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("reaper: recovered from panic: %v", r)
+			}
+		}()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("reaper tick recovered from panic: %v", r)
+						}
+					}()
+					reaperTick(db, nowUnix())
+				}()
+			}
+		}
+	}()
+	return done, nil
 }
 
 type ReleaseResult struct {
@@ -1825,6 +2165,10 @@ func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
 
 func runAPIServer(port int) {
 	initDB()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, _ = startReaper(ctx)
+
 	server := &http.Server{
 		Addr:    fmt.Sprintf("0.0.0.0:%d", port),
 		Handler: setupAPIRoutes(),
