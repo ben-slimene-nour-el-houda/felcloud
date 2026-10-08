@@ -215,7 +215,10 @@ fi
 if should_run "https-routing"; then
   echo ""
   echo "[TEST 5] HTTPS 443 TLS & Host Header Routing Template..."
-  if python3 - "$ROOT_DIR" <<'EOF'
+  if ! python3 -c "import jinja2, yaml" >/dev/null 2>&1; then
+    echo "  missing python module: jinja2 or yaml (pip install jinja2 pyyaml)"
+    record_fail "missing required Python dependencies (jinja2, pyyaml)"
+  elif python3 - "$ROOT_DIR" <<'EOF'
 import sys, os, yaml
 from jinja2 import Template
 
