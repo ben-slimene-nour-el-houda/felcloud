@@ -44,7 +44,8 @@ import sys, os
 sys.path.insert(0, '$ROOT_DIR/ipam')
 from ipam_control import allocate_lease
 try:
-    res = allocate_lease('$TEAM_NAME', '${TEAM_NAME}.local')
+    routing_domain = os.environ.get('ROUTING_DOMAIN', 'cstam.felcloud.tn')
+    res = allocate_lease('$TEAM_NAME', f'${TEAM_NAME}.{routing_domain}')
     print(res['ip_address'])
 except Exception as e:
     print('ERROR:' + str(e), file=sys.stderr)
@@ -145,6 +146,6 @@ printf '\n======================================================================
 printf '✓ SANDBOX PROVISIONED & CONFIGURED\n'
 printf 'Team Name:         %s\n' "$TEAM_NAME"
 printf 'Assigned IP:       %s\n' "$ALLOCATED_IP"
-printf 'Host Routes:       %s.local, %s.felcloud.local\n' "$TEAM_NAME" "$TEAM_NAME"
+printf 'Host Routes:       %s.%s\n' "$TEAM_NAME" "${ROUTING_DOMAIN:-cstam.felcloud.tn}"
 printf 'HTTP / HTTPS Port: 80 / 443\n'
 printf '======================================================================\n'

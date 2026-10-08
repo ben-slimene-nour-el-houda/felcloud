@@ -202,3 +202,64 @@ func TestAllocationIgnoresFreeIPOutsideCIDR(t *testing.T) {
 		t.Errorf("Expected allocated IP to fall in 10.88.0.0/24 subnet range, got %s", res2.IPAddress)
 	}
 }
+
+func TestValidateRoutingDomain(t *testing.T) {
+	origDomain := routingDomain
+	t.Cleanup(func() { routingDomain = origDomain })
+	routingDomain = "cstam.felcloud.tn"
+
+	tests := []struct {
+		name    string
+		domain  string
+		wantErr bool
+	}{
+		{"valid standard domain", "cstam.felcloud.tn", false},
+		{"valid sub-domain with hyphen", "a.b-c.example", false},
+		{"valid single label", "example", false},
+		{"empty domain", "", true},
+		{"leading dot", ".cstam.felcloud.tn", true},
+		{"trailing dot", "cstam.felcloud.tn.", true},
+		{"leading hyphen", "-cstam.felcloud.tn", true},
+		{"trailing hyphen", "cstam.felcloud.tn-", true},
+		{"spaces in domain", "cstam .felcloud.tn", true},
+		{"uppercase characters", "CSTAM.felcloud.tn", true},
+		{"newline injection", "x.com\n  http-request deny", true},
+		{"semicolon injection", "x.com; drop table", true},
+		{"64-char label (>63 chars)", strings.Repeat("a", 64) + ".felcloud.tn", true},
+		{"191-char total (>190 chars)", strings.Repeat("a.", 94) + "tnx", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRoutingDomain(tt.domain)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateRoutingDomain(%q) err = %v, wantErr %v", tt.domain, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGenerateHAProxyConfigRoutingDomain(t *testing.T) {
+	origDomain := routingDomain
+	t.Cleanup(func() { routingDomain = origDomain })
+
+	teams := []TeamEntry{
+		{Name: "team5", IP: "10.20.30.50", Port: 80},
+	}
+
+	domains := []string{"cstam.felcloud.tn", "sandbox.custom-zone.org"}
+
+	for _, d := range domains {
+		routingDomain = d
+		cfg := generateHAProxyConfig(teams)
+
+		expectedACL := fmt.Sprintf("acl is_team5 hdr(host) -i team5.%s", d)
+		if !strings.Contains(cfg, expectedACL) {
+			t.Errorf("generateHAProxyConfig for domain %s missing expected ACL %q", d, expectedACL)
+		}
+		if strings.Contains(cfg, ".local") {
+			t.Errorf("generateHAProxyConfig for domain %s contains unwanted '.local'", d)
+		}
+	}
+}
+

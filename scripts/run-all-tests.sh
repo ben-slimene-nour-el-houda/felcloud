@@ -216,21 +216,37 @@ if should_run "https-routing"; then
   echo ""
   echo "[TEST 5] HTTPS 443 TLS & Host Header Routing Template..."
   if python3 - "$ROOT_DIR" <<'EOF'
-import sys
-root_dir = sys.argv[1]
-sys.path.insert(0, f"{root_dir}/ipam")
-from ipam_control import generate_haproxy_config
+import sys, os, yaml
+from jinja2 import Template
 
-cfg = generate_haproxy_config([{"name": "team1", "ip": "10.20.30.70", "port": 80}])
-assert "frontend http_front" in cfg
-assert "frontend https_front" in cfg
-assert "bind *:443 ssl crt" in cfg
-assert "team1.local" in cfg
-assert "team1.felcloud.local" in cfg
-assert "backend team1_backend" in cfg
+root_dir = sys.argv[1]
+
+# Read default routing_domain from vars.yml
+vars_path = os.path.join(root_dir, "ansible", "group_vars", "gateways", "vars.yml")
+with open(vars_path, "r") as f:
+    vars_data = yaml.safe_load(f) or {}
+
+domain = os.environ.get("ROUTING_DOMAIN") or vars_data.get("routing_domain", "cstam.felcloud.tn")
+
+template_path = os.path.join(root_dir, "ansible", "roles", "haproxy", "templates", "haproxy.cfg.j2")
+with open(template_path, "r") as f:
+    template_content = f.read()
+
+template = Template(template_content)
+rendered = template.render(
+    teams=[{"name": "team1", "ip": "10.20.30.70", "port": 80}],
+    routing_domain=domain
+)
+
+assert "frontend http_front" in rendered
+assert "frontend https_front" in rendered
+assert "bind *:443 ssl crt" in rendered
+assert f"acl is_team1 hdr(host) -i team1.{domain}" in rendered
+assert ".local" not in rendered
+assert "backend team1_backend" in rendered
 EOF
   then
-    record_pass "HTTPS TLS termination and dual Host-header routing configured"
+    record_pass "HTTPS TLS termination and single Host-header routing configured for domain"
   else
     record_fail "TLS template failed"
   fi

@@ -28,7 +28,30 @@ var (
 	varsYmlPath              string
 	backupDir                string
 	defaultQuarantineSeconds int
+	routingDomain            string = "cstam.felcloud.tn"
 )
+
+func validateRoutingDomain(domain string) error {
+	if len(domain) == 0 || len(domain) > 190 {
+		return fmt.Errorf("invalid routing domain length (%d): must be between 1 and 190 characters", len(domain))
+	}
+	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.HasPrefix(domain, "-") || strings.HasSuffix(domain, "-") {
+		return fmt.Errorf("invalid routing domain '%s': cannot start or end with '.' or '-'", domain)
+	}
+
+	labels := strings.Split(domain, ".")
+	labelRegex := regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 {
+			return fmt.Errorf("invalid routing domain label '%s': label length must be 1-63 chars", label)
+		}
+		if !labelRegex.MatchString(label) {
+			return fmt.Errorf("invalid routing domain label '%s': must contain only lowercase letters, digits, and hyphens, and cannot start/end with hyphen", label)
+		}
+	}
+	return nil
+}
 
 func initEnv() {
 	execDir, err := os.Getwd()
@@ -62,6 +85,15 @@ func initEnv() {
 		if sec, err := strconv.Atoi(envQ); err == nil {
 			defaultQuarantineSeconds = sec
 		}
+	}
+
+	routingDomain = "cstam.felcloud.tn"
+	if envRD := os.Getenv("ROUTING_DOMAIN"); envRD != "" {
+		routingDomain = envRD
+	}
+	if err := validateRoutingDomain(routingDomain); err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: Invalid ROUTING_DOMAIN '%s': %v\n", routingDomain, err)
+		os.Exit(1)
 	}
 }
 
@@ -377,7 +409,7 @@ func allocateLease(sandboxID, hostname, subnetName, preferredIP string) (*LeaseR
 		subnetName = "sandbox"
 	}
 	if hostname == "" {
-		hostname = fmt.Sprintf("%s.local", sandboxID)
+		hostname = fmt.Sprintf("%s.%s", sandboxID, routingDomain)
 	}
 
 	// Validate sandbox_id regex
@@ -704,7 +736,7 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("    bind *:80\n")
 	sb.WriteString("    mode http\n")
 	for _, t := range teams {
-		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.local %s.felcloud.local\n", t.Name, t.Name, t.Name))
+		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
 		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
 	}
 	sb.WriteString("    default_backend default_maintenance\n\n")
@@ -713,7 +745,7 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("    bind *:443 ssl crt /etc/haproxy/certs/felcloud-gateway.pem alpn h2,http/1.1\n")
 	sb.WriteString("    mode http\n")
 	for _, t := range teams {
-		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.local %s.felcloud.local\n", t.Name, t.Name, t.Name))
+		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
 		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
 	}
 	sb.WriteString("    default_backend default_maintenance\n\n")
@@ -770,6 +802,7 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 	}
 
 	existingData["teams"] = teams
+	existingData["routing_domain"] = routingDomain
 	delete(existingData, "haproxy_dpa_pass")
 
 	_ = os.MkdirAll(filepath.Dir(varsYmlPath), 0755)
@@ -841,6 +874,7 @@ func syncHAProxyDualGateways(dryRun bool) (bool, string) {
 		"../ansible/site.yml",
 		"--vault-password-file", "../ansible/.vault_pass",
 		"--tags", "haproxy",
+		"-e", fmt.Sprintf("routing_domain=%s", routingDomain),
 		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", bastionIP),
 	)
 
@@ -868,7 +902,7 @@ func addTeamFlow(teamName, ipAddress string, port int, skipHealthCheck bool) (bo
 	initDB()
 	reclaimExpiredQuarantines()
 
-	allocRes, err := allocateLease(teamName, fmt.Sprintf("%s.local", teamName), "sandbox", ipAddress)
+	allocRes, err := allocateLease(teamName, "", "sandbox", ipAddress)
 	if err != nil {
 		fmt.Printf("✗ Allocation Error: %v\n", err)
 		return false, err.Error()
@@ -1294,7 +1328,7 @@ func main() {
 			os.Exit(1)
 		}
 		_ = initDB()
-		res, err := allocateLease(name, fmt.Sprintf("%s.local", name), subnet, ip)
+		res, err := allocateLease(name, "", subnet, ip)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
 			os.Exit(1)

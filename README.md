@@ -54,7 +54,7 @@ The project addresses three key challenges for multi-tenant sandbox platforms on
 
 - **Reproducible Infrastructure as Code:** Networks, subnets, routers, security groups, VIP reservation, anti-affinity gateway instances, and jump hosts defined in Pulumi Go ([infra/main.go](infra/main.go)).
 - **Guaranteed VRRP Failover:** Keepalived cluster with weight 60 check script ensuring active node priority drops from $150 \rightarrow 90 < 100$, guaranteeing failover on HAProxy process failure ([section 4](#4-high-availability)).
-- **Dual HTTP/HTTPS Routing with TLS:** HAProxy terminates TLS on port 443 with wildcard SANs (`*.local`, `*.felcloud.local`) and routes HTTP (port 80) and HTTPS (port 443) by Host header ([section 5](#5-l7-routing-with-haproxy)).
+- **Dual HTTP/HTTPS Routing with TLS:** HAProxy terminates TLS on port 443 with wildcard SANs and routes HTTP (port 80) and HTTPS (port 443) by Host header (`<team>.<ROUTING_DOMAIN>`, default: `cstam.felcloud.tn`) ([section 5](#5-l7-routing-with-haproxy)).
 - **HAProxy Data Plane API (DPA):** Deployed and configured on port 5555 with systemd management ([section 6](#6-data-plane-api)).
 - **Transactional IPAM with Address Quarantine:** SQLite-backed address allocator with automatic quarantine cooldown and address reclamation ([section 8](#8-ipam-and-team-lifecycle)).
 - **Pre-Flight Backend Health Checks:** Validates HTTP/TCP health before opening routes in HAProxy to prevent 502/503 errors.
@@ -108,8 +108,8 @@ flowchart TB
     GW1E --- GW1S
     GW2E --- GW2M
     GW2E --- GW2S
-    GW1S -->|"Host: team1.local"| T1
-    GW1S -->|"Host: team2.local"| T2
+    GW1S -->|"Host: team1.cstam.felcloud.tn"| T1
+    GW1S -->|"Host: team2.cstam.felcloud.tn"| T2
     GW2S -.->|"Standby Path"| T1
     GW2S -.->|"Standby Path"| T2
     BASE --- BASM
@@ -119,7 +119,7 @@ flowchart TB
 
 ### Request Flow
 
-1. Client sends an HTTP (port 80) or HTTPS (port 443) request with a `Host:` header (e.g., `team1.local` or `team1.felcloud.local`).
+1. Client sends an HTTP (port 80) or HTTPS (port 443) request with a `Host:` header (e.g., `team1.cstam.felcloud.tn` matching `<team>.<ROUTING_DOMAIN>`).
 2. Traffic reaches the edge router and targets the Virtual IP (`10.20.20.246`), carried actively by the VRRP Master (`gw1`).
 3. HAProxy terminates TLS on port 443 (or accepts HTTP on port 80), evaluates Host ACL rules, and matches the backend.
 4. HAProxy proxies traffic across the `felcloud-sandbox` network to the team VM on port 80.
@@ -196,7 +196,7 @@ sequenceDiagram
 - **Dual-Port Listeners:**
   - `frontend http_front`: Listens on `*:80`
   - `frontend https_front`: Listens on `*:443 ssl crt /etc/haproxy/certs/felcloud-gateway.pem alpn h2,http/1.1`
-- **Host Header Matching:** Evaluates `hdr(host) -i <team>.local <team>.felcloud.local` and routes to dedicated backends.
+- **Host Header Matching:** Evaluates `hdr(host) -i <team>.<ROUTING_DOMAIN>` and routes to dedicated backends.
 - **Health Checks & Timers:** Backends configured with `check inter 2000 rise 2 fall 3`.
 - **Default Maintenance:** Returns HTTP 503 Service Unavailable for unmatched hosts.
 
@@ -321,8 +321,12 @@ ip_resilien/
 │   ├── gateways.go                            # Gateway instances & SSH keypair
 │   ├── bastion.go                             # Bastion jump host VM
 │   └── sandboxes.go                           # Demonstration team backend VMs
+├── controlplane/
+│   ├── main.go                                # Go Control Plane (REST API, IPAM engine, HAProxy sync)
+│   └── go.mod                                 # Control Plane dependencies (mattn/go-sqlite3, yaml.v3)
 ├── ipam/
-│   └── ipam_control.py                        # IPAM CLI, quarantine logic, sync & REST API server
+│   ├── ipam-control                           # Compiled Go control plane binary
+│   └── ipam_control.py                        # Python compatibility wrapper & CLI
 └── scripts/
     ├── run-all-tests.sh                       # Master automated test suite runner
     ├── failover-test.sh                       # Measured VRRP failover benchmark
@@ -339,7 +343,7 @@ ip_resilien/
 
 - Go 1.22+ and Pulumi CLI
 - Ansible with `ansible.posix` collection
-- Python 3 with `sqlite3` and `yaml`
+- Python 3 with `yaml` (for legacy script invocation)
 - OpenStack credentials configured (e.g. `source openrc.sh`)
 
 ### Deployment Steps
@@ -355,14 +359,15 @@ ip_resilien/
    ansible-playbook -i ansible/inventory/hosts.yml ansible/site.yml \
      --vault-password-file ansible/.vault_pass
    ```
-4. **Initialize IPAM:**
+4. **Initialize IPAM & Build Go Control Plane:**
    ```bash
-   python3 ipam/ipam_control.py init
-   python3 ipam/ipam_control.py list
+   cd controlplane && go build -o ../ipam/ipam-control . && cd ..
+   ./ipam/ipam-control init
+   ./ipam/ipam-control list
    ```
 5. **Start Control Plane REST API:**
    ```bash
-   python3 ipam/ipam_control.py serve --port 8080
+   ./ipam/ipam-control serve --port 8080
    ```
 
 ---
