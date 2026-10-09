@@ -57,3 +57,4 @@ ipam/ipam.db
 ipam/__pycache__/
 .env
 controlplane/controlplane
+controlplane/controlplane
