@@ -159,6 +159,35 @@ func TestProvisionFlowAndCompensation(t *testing.T) {
 	}
 }
 
+func TestProvisionSandboxOwnershipCanBeTornDown(t *testing.T) {
+	mock := &MockProvisioner{}
+	provisionTestSetup(t, mock)
+	rec := callProvision("owned-demo")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("provision status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var managedBy string
+	if err := db.QueryRow(`SELECT managed_by FROM sandboxes WHERE sandbox_id='owned-demo'`).Scan(&managedBy); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	if managedBy != "control-plane" {
+		t.Fatalf("managed_by=%q, want control-plane", managedBy)
+	}
+	result, err := teardownSandbox(context.Background(), "owned-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != "RELEASED" {
+		t.Fatalf("teardown result=%+v", result)
+	}
+}
+
 func TestProvisionIdempotencyAndNameValidation(t *testing.T) {
 	mock := &MockProvisioner{}
 	provisionTestSetup(t, mock)

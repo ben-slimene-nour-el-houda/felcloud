@@ -177,7 +177,9 @@ func persistResources(team string, r *SandboxResources) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=?,private_ip=?,updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=? AND status='PROVISIONING'`, r.ServerID, r.PortID, r.FixedIP, r.FixedIP, team)
+	_, err = db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=?,private_ip=?,
+		managed_by=CASE WHEN ?<>'' THEN 'control-plane' ELSE managed_by END,
+		updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=? AND status='PROVISIONING'`, r.ServerID, r.PortID, r.FixedIP, r.FixedIP, r.ServerID, team)
 	if err == nil {
 		recordEvent(db, team, "PORT_CREATED", r.PortID, r.PortDurationMS)
 		if r.ServerID != "" {

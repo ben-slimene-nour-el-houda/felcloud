@@ -33,6 +33,16 @@ func setupTestDB(t *testing.T) string {
 	return dbFile
 }
 
+func dbExecSandboxManagedBy(t *testing.T, sandboxID, owner string) (sql.Result, error) {
+	t.Helper()
+	db, err := getDBConnection()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return db.Exec(`UPDATE sandboxes SET managed_by=? WHERE sandbox_id=?`, owner, sandboxID)
+}
+
 func TestInitDBAddsDurableTeardownColumns(t *testing.T) {
 	setupTestDB(t)
 	db, err := getDBConnection()
@@ -55,7 +65,7 @@ func TestInitDBAddsDurableTeardownColumns(t *testing.T) {
 		}
 		got[name] = true
 	}
-	for _, name := range []string{"teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"} {
+	for _, name := range []string{"managed_by", "teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"} {
 		if !got[name] {
 			t.Errorf("missing migration column %q", name)
 		}
@@ -81,6 +91,40 @@ func TestInitDBAddsDurableTeardownColumns(t *testing.T) {
 	}
 	if !strings.Contains(sqlText, "TEARDOWN_FAILED") {
 		t.Error("sandbox status constraint does not include TEARDOWN_FAILED")
+	}
+}
+
+func TestManagedByMigrationDefaultsExistingRowsToExternal(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sandboxes(sandbox_id,hostname,subnet_name,private_ip,status) VALUES('legacy-owner','legacy-owner.local','sandbox','10.20.30.99','ACTIVE')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE sandboxes DROP COLUMN managed_by`); err != nil {
+		db.Close()
+		t.Fatalf("prepare pre-migration schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := initDB(); err != nil {
+		t.Fatalf("init existing database: %v", err)
+	}
+	db, err = getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var managedBy string
+	if err := db.QueryRow(`SELECT managed_by FROM sandboxes WHERE sandbox_id='legacy-owner'`).Scan(&managedBy); err != nil {
+		t.Fatal(err)
+	}
+	if managedBy != "external" {
+		t.Fatalf("managed_by=%q, want external", managedBy)
 	}
 }
 
@@ -1840,6 +1884,9 @@ func TestReaperExpiredActiveSandbox(t *testing.T) {
 		t.Fatalf("allocation failed: %v", err)
 	}
 	allocatedIP := res.IPAddress
+	if _, err := dbExecSandboxManagedBy(t, "sb-reap-1", "control-plane"); err != nil {
+		t.Fatal(err)
+	}
 
 	db, err := getDBConnection()
 	if err != nil {
@@ -1981,6 +2028,7 @@ func TestReaperResumeAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate failed: %v", err)
 	}
+	_, _ = dbExecSandboxManagedBy(t, "sb-flaky", "control-plane")
 
 	// Advance past expiry
 	currTime = baseTime + 100
@@ -2042,6 +2090,7 @@ func TestReaperMaxAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocate failed: %v", err)
 	}
+	_, _ = dbExecSandboxManagedBy(t, "sb-perm-fail", "control-plane")
 
 	currTime = baseTime + 100
 
@@ -2102,6 +2151,9 @@ func TestReaperStaleExpiringResumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert allocation: %v", err)
 	}
+	if _, err := db.Exec(`UPDATE sandboxes SET managed_by='control-plane' WHERE sandbox_id='sb-stale-exp'`); err != nil {
+		t.Fatal(err)
+	}
 
 	res := reaperTick(db, nowUnix())
 	if res.ResumedCount != 1 {
@@ -2135,6 +2187,9 @@ func TestReaperConcurrency(t *testing.T) {
 		sbID := fmt.Sprintf("sb-conc-%d", i)
 		if _, err := allocateLeaseTTL(sbID, "", "sandbox", "", 50); err != nil {
 			t.Fatalf("allocate %s: %v", sbID, err)
+		}
+		if _, err := db.Exec(`UPDATE sandboxes SET managed_by='control-plane' WHERE sandbox_id=?`, sbID); err != nil {
+			t.Fatal(err)
 		}
 	}
 
@@ -2198,6 +2253,9 @@ func TestReaperConcurrencyThroughMutexWrapper(t *testing.T) {
 		if _, err := allocateLeaseTTL(sbID, "", "sandbox", "", 50); err != nil {
 			t.Fatalf("allocate %s: %v", sbID, err)
 		}
+		if _, err := db.Exec(`UPDATE sandboxes SET managed_by='control-plane' WHERE sandbox_id=?`, sbID); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	currTime = baseTime + 100
@@ -2260,7 +2318,7 @@ func TestReaperBatchSize(t *testing.T) {
 	for i := 1; i <= 25; i++ {
 		sbID := fmt.Sprintf("sb-batch-%02d", i)
 		ip := fmt.Sprintf("10.0.1.%d", i)
-		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES (?, ?, 'sandbox', ?, 'ACTIVE', ?)", sbID, sbID+".local", ip, baseTime-10)
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at, managed_by) VALUES (?, ?, 'sandbox', ?, 'ACTIVE', ?, 'control-plane')", sbID, sbID+".local", ip, baseTime-10)
 		if err != nil {
 			t.Fatalf("insert %s: %v", sbID, err)
 		}
@@ -2309,6 +2367,9 @@ func TestReaperReleaseIPsLeakedSecondIP(t *testing.T) {
 	res, err := allocateLeaseTTL("sb-leak-ip", "", "sandbox", "10.0.0.10", 50)
 	if err != nil {
 		t.Fatalf("allocation failed: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET managed_by='control-plane' WHERE sandbox_id='sb-leak-ip'`); err != nil {
+		t.Fatal(err)
 	}
 
 	// Insert leaked second IP row pointing to same entity_name
@@ -2431,7 +2492,7 @@ func TestStartReaperLifecycle(t *testing.T) {
 	}
 
 	// Insert an expired sandbox to trigger the step
-	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-panic', 'sb-panic.local', 'sandbox', '10.0.0.12', 'ACTIVE', 1000)")
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at, managed_by) VALUES ('sb-panic', 'sb-panic.local', 'sandbox', '10.0.0.12', 'ACTIVE', 1000, 'control-plane')")
 	if err != nil {
 		t.Fatalf("insert sandbox: %v", err)
 	}

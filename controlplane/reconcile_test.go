@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -125,5 +126,37 @@ func TestReconcileApplyCannotClaimProtectedIP(t *testing.T) {
 	var status string
 	if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE entity_name='vip'`).Scan(&status); err != nil || status != "RESERVED" {
 		t.Fatalf("protected lease status=%q err=%v", status, err)
+	}
+}
+
+func TestReconcileApplyRejectsOwnershipAndResourceIdentityFields(t *testing.T) {
+	setupTestDB(t)
+	provisioner = &MockProvisioner{}
+	if _, err := allocateLeaseTTL("immutable-row", "immutable-row.cstam.felcloud.tn", "sandbox", "10.20.30.62", 3600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []string{"managed_by", "server_id", "port_id"}
+	for _, field := range tests {
+		t.Run(field, func(t *testing.T) {
+			body := `{"actions":[{"type":"mark_failed","sandbox_id":"immutable-row","` + field + `":"attacker-value"}]}`
+			rec := httptest.NewRecorder()
+			handleReconcileApply(rec, httptest.NewRequest(http.MethodPost, "/api/reconcile/apply", bytes.NewBufferString(body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var managedBy string
+	var serverID, portID sql.NullString
+	if err := db.QueryRow(`SELECT managed_by,server_id,port_id FROM sandboxes WHERE sandbox_id='immutable-row'`).Scan(&managedBy, &serverID, &portID); err != nil {
+		t.Fatal(err)
+	}
+	if managedBy != "external" || serverID.Valid || portID.Valid {
+		t.Fatalf("reconcile changed protected fields: managed_by=%s server_id=%v port_id=%v", managedBy, serverID, portID)
 	}
 }

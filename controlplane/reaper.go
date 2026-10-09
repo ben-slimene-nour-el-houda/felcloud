@@ -49,6 +49,7 @@ func ensureTeardownColumns(db *sql.DB) error {
 	}
 	rows.Close()
 	columns := map[string]string{
+		"managed_by":                    "TEXT NOT NULL DEFAULT 'external'",
 		"teardown_step":                 "TEXT NOT NULL DEFAULT ''",
 		"teardown_attempts":             "INTEGER NOT NULL DEFAULT 0",
 		"teardown_step_attempts":        "INTEGER NOT NULL DEFAULT 0",
@@ -163,8 +164,11 @@ func reaperTickInner(db *sql.DB, now int64) tickResult {
 	rows, err := db.Query(`
 		SELECT sandbox_id, hostname, subnet_name, COALESCE(private_ip, ''), status, expires_at
 		FROM sandboxes
-		WHERE (status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at <= ?)
-		   OR status IN ('EXPIRING', 'TEARING_DOWN')
+		WHERE ((status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at <= ?)
+		   OR status IN ('EXPIRING', 'TEARING_DOWN'))
+		AND (COALESCE(managed_by,'external')='control-plane' OR NOT EXISTS (
+			SELECT 1 FROM events refused WHERE refused.sandbox_id=sandboxes.sandbox_id AND refused.type='TEARDOWN_REFUSED'
+		))
 		ORDER BY CASE WHEN expires_at IS NOT NULL THEN expires_at ELSE 0 END ASC, id ASC
 		LIMIT ?;
 	`, now, reaperBatchSize)
@@ -242,7 +246,7 @@ func reaperTickInner(db *sql.DB, now int64) tickResult {
 	delRes, delErr := db.Exec(`
 		DELETE FROM events
 		WHERE id IN (
-			SELECT id FROM events WHERE ts_ms < ? ORDER BY id ASC LIMIT 500
+			SELECT id FROM events WHERE ts_ms < ? AND type<>'TEARDOWN_REFUSED' ORDER BY id ASC LIMIT 500
 		);
 	`, cutoffMs)
 	if delErr == nil {

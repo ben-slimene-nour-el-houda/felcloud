@@ -17,6 +17,17 @@ var teardownTimeout = 120 * time.Second
 var teardownConcurrency = 4
 
 var errTeardownInProgress = errors.New("sandbox teardown is already in progress")
+var errTeardownRefused = errors.New("sandbox is not managed by the control plane")
+
+type teardownRefusedError struct {
+	ManagedBy string
+}
+
+func (e *teardownRefusedError) Error() string {
+	return fmt.Sprintf("%v (managed_by=%q)", errTeardownRefused, e.ManagedBy)
+}
+
+func (e *teardownRefusedError) Unwrap() error { return errTeardownRefused }
 
 type teardownResult struct {
 	SandboxID       string           `json:"sandbox_id"`
@@ -26,9 +37,9 @@ type teardownResult struct {
 }
 
 type teardownSnapshot struct {
-	id, hostname, subnet, ip, status, serverID, portID string
-	started, routeRemoved, resourcesDeleted            sql.NullInt64
-	verifiedGone, released                             sql.NullInt64
+	id, hostname, subnet, ip, status, serverID, portID, managedBy string
+	started, routeRemoved, resourcesDeleted                       sql.NullInt64
+	verifiedGone, released                                        sql.NullInt64
 }
 
 type teardownStepError struct {
@@ -63,9 +74,9 @@ func loadTeardownSnapshot(db *sql.DB, id string) (teardownSnapshot, error) {
 	var s teardownSnapshot
 	err := db.QueryRow(`SELECT sandbox_id,hostname,subnet_name,COALESCE(private_ip,''),status,
 		COALESCE(server_id,''),COALESCE(port_id,''),teardown_started_at,teardown_route_removed_at,
-		teardown_resources_deleted_at,teardown_verified_gone_at,teardown_released_at
+		teardown_resources_deleted_at,teardown_verified_gone_at,teardown_released_at,COALESCE(managed_by,'external')
 		FROM sandboxes WHERE sandbox_id=?`, id).Scan(&s.id, &s.hostname, &s.subnet, &s.ip, &s.status,
-		&s.serverID, &s.portID, &s.started, &s.routeRemoved, &s.resourcesDeleted, &s.verifiedGone, &s.released)
+		&s.serverID, &s.portID, &s.started, &s.routeRemoved, &s.resourcesDeleted, &s.verifiedGone, &s.released, &s.managedBy)
 	if err == sql.ErrNoRows {
 		return s, fmt.Errorf("%w: %s", ErrSandboxNotFound, id)
 	}
@@ -89,6 +100,12 @@ func teardownSandbox(ctx context.Context, id string) (*teardownResult, error) {
 	s, err := loadTeardownSnapshot(db, id)
 	if err != nil {
 		return nil, err
+	}
+	if s.managedBy != "control-plane" {
+		if err := recordTeardownRefused(db, id, s.managedBy); err != nil {
+			return nil, err
+		}
+		return nil, &teardownRefusedError{ManagedBy: s.managedBy}
 	}
 	result := &teardownResult{SandboxID: id, State: s.status, TimingsMS: zeroTeardownTimings()}
 	if s.status == "RELEASED" {
@@ -224,6 +241,23 @@ func teardownSandbox(ctx context.Context, id string) (*teardownResult, error) {
 	result.State = "RELEASED"
 	result.TimingsMS["total"] = time.Since(totalStart).Milliseconds()
 	return result, nil
+}
+
+func recordTeardownRefused(db *sql.DB, id, managedBy string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.Exec(`INSERT INTO events(ts_ms,sandbox_id,type,detail,duration_ms)
+		SELECT ?,?,?,?,0 WHERE NOT EXISTS (
+			SELECT 1 FROM events WHERE sandbox_id=? AND type='TEARDOWN_REFUSED'
+		)`, time.Now().UTC().UnixMilli(), id, "TEARDOWN_REFUSED",
+		fmt.Sprintf("reason=ownership_guard managed_by=%s", managedBy), id)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func zeroTeardownTimings() map[string]int64 {
@@ -369,6 +403,10 @@ func handleSandboxTeardown(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrSandboxNotFound) {
 			sendJSON(w, http.StatusNotFound, map[string]string{"error": err.Error(), "sandbox_id": id})
+			return
+		}
+		if errors.Is(err, errTeardownRefused) {
+			sendJSON(w, http.StatusForbidden, map[string]string{"error": err.Error(), "step": "guard", "sandbox_id": id})
 			return
 		}
 		if errors.Is(err, errTeardownInProgress) {

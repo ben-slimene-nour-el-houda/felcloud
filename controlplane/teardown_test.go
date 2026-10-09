@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func createTeardownFixture(t *testing.T, id string) (*MockProvisioner, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=? WHERE sandbox_id=?`, resources.ServerID, resources.PortID, resources.FixedIP, id); err != nil {
+	if _, err := db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=?,managed_by='control-plane' WHERE sandbox_id=?`, resources.ServerID, resources.PortID, resources.FixedIP, id); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -92,6 +93,87 @@ func TestTeardownSuccessAndIdempotency(t *testing.T) {
 	defer mock.mu.Unlock()
 	if mock.Calls["delete_server"]+mock.Calls["delete_port"] != deleteCalls {
 		t.Fatal("idempotent teardown repeated resource deletion")
+	}
+}
+
+func TestNonControlPlaneSandboxIsRefusedEverywhereOnlyOnce(t *testing.T) {
+	setupTestDB(t)
+	provisioner = &MockProvisioner{Servers: map[string]bool{}}
+	if _, err := allocateLeaseTTL("team1", "team1.cstam.felcloud.tn", "sandbox", "10.20.30.70", 3600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET expires_at=? WHERE sandbox_id='team1'`, nowUnix()-1); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	setupAPIRoutes().ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/sandboxes/team1", nil))
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"step":"guard"`) {
+		db.Close()
+		t.Fatalf("endpoint status=%d body=%s", w.Code, w.Body.String())
+	}
+	if _, err := teardownCLI("team1"); !errors.Is(err, errTeardownRefused) {
+		db.Close()
+		t.Fatalf("CLI teardown error=%v, want ownership refusal", err)
+	}
+	for i := 0; i < 2; i++ {
+		if got := reaperTick(db, nowUnix()); got.Error != nil {
+			db.Close()
+			t.Fatalf("reaper tick %d: %v", i, got.Error)
+		}
+	}
+	var status, managedBy, leaseStatus string
+	var attempts, refused int
+	if err := db.QueryRow(`SELECT status,managed_by,teardown_attempts FROM sandboxes WHERE sandbox_id='team1'`).Scan(&status, &managedBy, &attempts); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE entity_name='team1'`).Scan(&leaseStatus); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='team1' AND type='TEARDOWN_REFUSED'`).Scan(&refused); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	if status != "ACTIVE" || managedBy != "external" || leaseStatus != "ALLOCATED" || attempts != 0 || refused != 1 {
+		t.Fatalf("state=%s managed_by=%s lease=%s attempts=%d refused_events=%d", status, managedBy, leaseStatus, attempts, refused)
+	}
+}
+
+func TestReaperRefusalEventIsEmittedOnce(t *testing.T) {
+	setupTestDB(t)
+	if _, err := allocateLeaseTTL("legacy-expired", "legacy-expired.cstam.felcloud.tn", "sandbox", "10.20.30.72", 3600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE sandboxes SET expires_at=? WHERE sandbox_id='legacy-expired'`, nowUnix()-1); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if result := reaperTick(db, nowUnix()); result.Error != nil {
+			t.Fatalf("tick %d: %v", i, result.Error)
+		}
+	}
+	var count, attempts int
+	var status string
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='legacy-expired' AND type='TEARDOWN_REFUSED'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status,teardown_attempts FROM sandboxes WHERE sandbox_id='legacy-expired'`).Scan(&status, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != "ACTIVE" || attempts != 0 {
+		t.Fatalf("refusal events=%d status=%s attempts=%d", count, status, attempts)
 	}
 }
 
@@ -174,8 +256,8 @@ func TestTeardownCrashResumeAndLegacyWithoutResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := teardownSandbox(context.Background(), "legacy-row"); err != nil {
-		t.Fatal(err)
+	if _, err := teardownSandbox(context.Background(), "legacy-row"); !errors.Is(err, errTeardownRefused) {
+		t.Fatalf("legacy teardown error=%v, want ownership refusal", err)
 	}
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
@@ -267,6 +349,9 @@ func TestTwelveParallelTeardowns(t *testing.T) {
 		if _, err := allocateLeaseTTL(id, id+".cstam.felcloud.tn", "sandbox", "", 3600); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := dbExecSandboxManagedBy(t, id, "control-plane"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -307,7 +392,7 @@ func TestReaperAndEndpointShareTeardownPath(t *testing.T) {
 	}
 	db, _ := getDBConnection()
 	defer db.Close()
-	if _, err := db.Exec(`UPDATE sandboxes SET expires_at=? WHERE sandbox_id='shared-path'`, base-1); err != nil {
+	if _, err := db.Exec(`UPDATE sandboxes SET expires_at=?,managed_by='control-plane' WHERE sandbox_id='shared-path'`, base-1); err != nil {
 		t.Fatal(err)
 	}
 	if got := reaperTick(db, base); got.ReapedCount != 1 {

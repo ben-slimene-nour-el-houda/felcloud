@@ -120,6 +120,7 @@ func initDB() error {
 				port_id TEXT,
 				fixed_ip TEXT,
 				provisioned_at INTEGER,
+				managed_by TEXT NOT NULL DEFAULT 'external',
 				teardown_step TEXT NOT NULL DEFAULT '',
 				teardown_attempts INTEGER NOT NULL DEFAULT 0,
 				teardown_step_attempts INTEGER NOT NULL DEFAULT 0,
@@ -287,6 +288,7 @@ func migrateSandboxesSchema(db *sql.DB) error {
 			port_id TEXT,
 			fixed_ip TEXT,
 			provisioned_at INTEGER,
+			managed_by TEXT NOT NULL DEFAULT 'external',
 			teardown_step TEXT NOT NULL DEFAULT '',
 			teardown_attempts INTEGER NOT NULL DEFAULT 0,
 			teardown_step_attempts INTEGER NOT NULL DEFAULT 0,
@@ -303,7 +305,7 @@ func migrateSandboxesSchema(db *sql.DB) error {
 		return fmt.Errorf("create sandboxes_new: %w", err)
 	}
 
-	columns := []string{"expires_at", "server_id", "port_id", "fixed_ip", "provisioned_at", "teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"}
+	columns := []string{"expires_at", "server_id", "port_id", "fixed_ip", "provisioned_at", "managed_by", "teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"}
 	selects := make([]string, 0, len(columns))
 	for _, column := range columns {
 		if oldCols[column] {
@@ -313,6 +315,8 @@ func migrateSandboxesSchema(db *sql.DB) error {
 		fallback := "NULL"
 		if column == "teardown_step" {
 			fallback = "''"
+		} else if column == "managed_by" {
+			fallback = "'external'"
 		} else if column == "teardown_attempts" || column == "teardown_step_attempts" {
 			fallback = "0"
 		}

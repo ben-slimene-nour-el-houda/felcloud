@@ -344,17 +344,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Error: --name must be a lowercase DNS label of 1-63 characters.")
 			os.Exit(1)
 		}
-		if err := initDB(); err != nil {
-			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
-			os.Exit(1)
-		}
-		if err := configureProvisioner(context.Background()); err != nil {
-			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
-			os.Exit(1)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
-		defer cancel()
-		result, err := teardownSandbox(ctx, name)
+		result, err := teardownCLI(name)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
 			os.Exit(1)
@@ -395,4 +385,32 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+func teardownCLI(name string) (*teardownResult, error) {
+	if err := initDB(); err != nil {
+		return nil, err
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := loadTeardownSnapshot(db, name)
+	if err == nil && snapshot.managedBy != "control-plane" {
+		// Route through the shared guard so refusal is durably recorded once.
+		db.Close()
+		return teardownSandbox(context.Background(), name)
+	}
+	if closeErr := db.Close(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := configureProvisioner(context.Background()); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+	defer cancel()
+	return teardownSandbox(ctx, name)
 }
