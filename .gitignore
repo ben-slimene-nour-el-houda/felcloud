@@ -51,3 +51,8 @@ Thumbs.db
 infra/infra
 ipam/ipam-control
 benchmark/tmp/
+infra/infra
+ipam/ipam-control
+ipam/ipam.db
+ipam/__pycache__/
+.env

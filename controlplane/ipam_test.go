@@ -1492,77 +1492,229 @@ func TestAllocationPreservesActiveExpiresAt(t *testing.T) {
 
 func TestAllocateLeaseExistingSandboxStates(t *testing.T) {
 	setupTestDB(t)
-
-	// 1. Initial allocation for ACTIVE sandbox
-	res1, err := allocateLeaseTTL("sb-state-active", "", "sandbox", "", 3600)
-	if err != nil {
-		t.Fatalf("initial allocation failed: %v", err)
-	}
-	origIP := res1.IPAddress
-	origExp := *res1.ExpiresAt
-
-	// Re-allocation of ACTIVE sandbox with existing private_ip
-	res2, err := allocateLeaseTTL("sb-state-active", "", "sandbox", "", 7200)
-	if err != nil {
-		t.Fatalf("re-allocation of active sandbox failed: %v", err)
-	}
-	if res2.IPAddress != origIP {
-		t.Fatalf("expected same IP %s, got %s", origIP, res2.IPAddress)
-	}
-	if *res2.ExpiresAt != origExp {
-		t.Fatalf("expected same expires_at %d, got %d", origExp, *res2.ExpiresAt)
-	}
-
-	// Verify no second IP row was created in ip_allocations
 	db, err := getDBConnection()
 	if err != nil {
 		t.Fatalf("failed to get DB: %v", err)
 	}
 	defer db.Close()
 
-	var ipCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM ip_allocations WHERE entity_name = 'sb-state-active'").Scan(&ipCount); err != nil || ipCount != 1 {
-		t.Fatalf("expected exactly 1 IP allocation row, got %d (err: %v)", ipCount, err)
-	}
+	t.Run("EXPIRING", func(t *testing.T) {
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-expiring', 'sb-expiring.local', 'sandbox', '10.0.0.99', 'EXPIRING', 1700000000)")
+		if err != nil {
+			t.Fatalf("insert expiring sandbox: %v", err)
+		}
+		var sbCountBefore, ipCountBefore int
+		_ = db.QueryRow("SELECT COUNT(*) FROM sandboxes").Scan(&sbCountBefore)
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations").Scan(&ipCountBefore)
+		var rowBefore string
+		_ = db.QueryRow("SELECT status || '|' || COALESCE(private_ip, 'NULL') || '|' || COALESCE(expires_at, -1) FROM sandboxes WHERE sandbox_id = 'sb-expiring'").Scan(&rowBefore)
 
-	// 2. Sandbox in EXPIRING state -> ErrWrongState and no writes
-	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-expiring', 'sb-expiring.local', 'sandbox', '10.0.0.99', 'EXPIRING', 1700000000)")
+		_, err = allocateLeaseTTL("sb-expiring", "", "sandbox", "", 3600)
+		if !errors.Is(err, ErrWrongState) {
+			t.Fatalf("expected ErrWrongState for EXPIRING sandbox, got %v", err)
+		}
+
+		var sbCountAfter, ipCountAfter int
+		_ = db.QueryRow("SELECT COUNT(*) FROM sandboxes").Scan(&sbCountAfter)
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations").Scan(&ipCountAfter)
+		var rowAfter string
+		_ = db.QueryRow("SELECT status || '|' || COALESCE(private_ip, 'NULL') || '|' || COALESCE(expires_at, -1) FROM sandboxes WHERE sandbox_id = 'sb-expiring'").Scan(&rowAfter)
+		if sbCountBefore != sbCountAfter || ipCountBefore != ipCountAfter {
+			t.Fatalf("expected zero writes: sb (%d->%d), ip (%d->%d)", sbCountBefore, sbCountAfter, ipCountBefore, ipCountAfter)
+		}
+		if rowBefore != rowAfter {
+			t.Fatalf("expected sandbox row unchanged, before=%s after=%s", rowBefore, rowAfter)
+		}
+	})
+
+	t.Run("TEARING_DOWN", func(t *testing.T) {
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-teardown', 'sb-teardown.local', 'sandbox', '10.0.0.98', 'TEARING_DOWN', 1700000000)")
+		if err != nil {
+			t.Fatalf("insert tearing_down sandbox: %v", err)
+		}
+		var sbCountBefore, ipCountBefore int
+		_ = db.QueryRow("SELECT COUNT(*) FROM sandboxes").Scan(&sbCountBefore)
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations").Scan(&ipCountBefore)
+		var rowBefore string
+		_ = db.QueryRow("SELECT status || '|' || COALESCE(private_ip, 'NULL') || '|' || COALESCE(expires_at, -1) FROM sandboxes WHERE sandbox_id = 'sb-teardown'").Scan(&rowBefore)
+
+		_, err = allocateLeaseTTL("sb-teardown", "", "sandbox", "", 3600)
+		if !errors.Is(err, ErrWrongState) {
+			t.Fatalf("expected ErrWrongState for TEARING_DOWN sandbox, got %v", err)
+		}
+
+		var sbCountAfter, ipCountAfter int
+		_ = db.QueryRow("SELECT COUNT(*) FROM sandboxes").Scan(&sbCountAfter)
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations").Scan(&ipCountAfter)
+		var rowAfter string
+		_ = db.QueryRow("SELECT status || '|' || COALESCE(private_ip, 'NULL') || '|' || COALESCE(expires_at, -1) FROM sandboxes WHERE sandbox_id = 'sb-teardown'").Scan(&rowAfter)
+		if sbCountBefore != sbCountAfter || ipCountBefore != ipCountAfter {
+			t.Fatalf("expected zero writes: sb (%d->%d), ip (%d->%d)", sbCountBefore, sbCountAfter, ipCountBefore, ipCountAfter)
+		}
+		if rowBefore != rowAfter {
+			t.Fatalf("expected sandbox row unchanged, before=%s after=%s", rowBefore, rowAfter)
+		}
+	})
+
+	t.Run("ACTIVE_with_IP", func(t *testing.T) {
+		res1, err := allocateLeaseTTL("sb-active-ip", "", "sandbox", "", 3600)
+		if err != nil {
+			t.Fatalf("initial allocation failed: %v", err)
+		}
+		origIP := res1.IPAddress
+		origExp := *res1.ExpiresAt
+
+		var ipCountBefore int
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations WHERE entity_name = 'sb-active-ip'").Scan(&ipCountBefore)
+
+		res2, err := allocateLeaseTTL("sb-active-ip", "", "sandbox", "", 7200)
+		if err != nil {
+			t.Fatalf("re-allocation failed: %v", err)
+		}
+		if res2.IPAddress != origIP {
+			t.Fatalf("expected same IP %s, got %s", origIP, res2.IPAddress)
+		}
+		if *res2.ExpiresAt != origExp {
+			t.Fatalf("expected same expires_at %d, got %d", origExp, *res2.ExpiresAt)
+		}
+
+		var ipCountAfter int
+		_ = db.QueryRow("SELECT COUNT(*) FROM ip_allocations WHERE entity_name = 'sb-active-ip'").Scan(&ipCountAfter)
+		if ipCountBefore != 1 || ipCountAfter != 1 {
+			t.Fatalf("expected IP count to remain 1, got before=%d after=%d", ipCountBefore, ipCountAfter)
+		}
+	})
+
+	t.Run("ACTIVE_with_NULL_IP", func(t *testing.T) {
+		origExp := int64(1750000000)
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-active-null-ip', 'sb-active-null-ip.local', 'sandbox', NULL, 'ACTIVE', ?)", origExp)
+		if err != nil {
+			t.Fatalf("insert active null ip sandbox: %v", err)
+		}
+
+		res, err := allocateLeaseTTL("sb-active-null-ip", "", "sandbox", "", 3600)
+		if err != nil {
+			t.Fatalf("allocation for ACTIVE null ip sandbox failed: %v", err)
+		}
+		if res.IPAddress == "" {
+			t.Fatalf("expected newly allocated IP, got empty")
+		}
+		if res.ExpiresAt == nil || *res.ExpiresAt != origExp {
+			t.Fatalf("expected preserved expires_at %d, got %v", origExp, res.ExpiresAt)
+		}
+	})
+
+	t.Run("RELEASED", func(t *testing.T) {
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-released', 'sb-released.local', 'sandbox', NULL, 'RELEASED', NULL)")
+		if err != nil {
+			t.Fatalf("insert released sandbox: %v", err)
+		}
+		res, err := allocateLeaseTTL("sb-released", "", "sandbox", "", 3600)
+		if err != nil || res.Status != "ALLOCATED" {
+			t.Fatalf("expected successful allocation for RELEASED sandbox, got res: %v, err: %v", res, err)
+		}
+	})
+
+	t.Run("FAILED", func(t *testing.T) {
+		_, err := db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-failed', 'sb-failed.local', 'sandbox', NULL, 'FAILED', NULL)")
+		if err != nil {
+			t.Fatalf("insert failed sandbox: %v", err)
+		}
+		res, err := allocateLeaseTTL("sb-failed", "", "sandbox", "", 3600)
+		if err != nil || res.Status != "ALLOCATED" {
+			t.Fatalf("expected successful allocation for FAILED sandbox, got res: %v, err: %v", res, err)
+		}
+	})
+
+	t.Run("new", func(t *testing.T) {
+		res, err := allocateLeaseTTL("sb-new-unique", "", "sandbox", "", 3600)
+		if err != nil || res.Status != "ALLOCATED" {
+			t.Fatalf("expected successful allocation for new sandbox, got res: %v, err: %v", res, err)
+		}
+	})
+}
+
+func TestReleaseLeaseTearingDownGuard(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
 	if err != nil {
-		t.Fatalf("insert expiring sandbox: %v", err)
+		t.Fatalf("failed to get DB: %v", err)
 	}
-	_, err = allocateLeaseTTL("sb-expiring", "", "sandbox", "", 3600)
-	if !errors.Is(err, ErrWrongState) {
-		t.Fatalf("expected ErrWrongState for EXPIRING sandbox, got %v", err)
-	}
+	defer db.Close()
 
-	// 3. Sandbox in TEARING_DOWN state -> ErrWrongState and no writes
-	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-teardown', 'sb-teardown.local', 'sandbox', '10.0.0.98', 'TEARING_DOWN', 1700000000)")
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-td-guard', 'sb-td-guard.local', 'sandbox', '10.0.0.95', 'TEARING_DOWN', 1700000000)")
 	if err != nil {
 		t.Fatalf("insert tearing_down sandbox: %v", err)
 	}
-	_, err = allocateLeaseTTL("sb-teardown", "", "sandbox", "", 3600)
+	_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES ('10.0.0.95', 'sandbox', 'sb-td-guard', 'TEAM_SANDBOX', 'ALLOCATED')")
+	if err != nil {
+		t.Fatalf("insert allocation: %v", err)
+	}
+
+	_, err = releaseLease("sb-td-guard", "", 60)
 	if !errors.Is(err, ErrWrongState) {
-		t.Fatalf("expected ErrWrongState for TEARING_DOWN sandbox, got %v", err)
+		t.Fatalf("expected ErrWrongState from releaseLease on TEARING_DOWN sandbox, got %v", err)
 	}
 
-	// 4. Sandbox in RELEASED state -> succeeds and allocates lease
-	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-released', 'sb-released.local', 'sandbox', NULL, 'RELEASED', NULL)")
-	if err != nil {
-		t.Fatalf("insert released sandbox: %v", err)
+	var status, privateIP string
+	if err := db.QueryRow("SELECT status, COALESCE(private_ip, '') FROM sandboxes WHERE sandbox_id = 'sb-td-guard'").Scan(&status, &privateIP); err != nil {
+		t.Fatalf("failed to query sandbox: %v", err)
 	}
-	resRel, err := allocateLeaseTTL("sb-released", "", "sandbox", "", 3600)
-	if err != nil || resRel.Status != "ALLOCATED" {
-		t.Fatalf("expected successful allocation for RELEASED sandbox, got res: %v, err: %v", resRel, err)
+	if status != "TEARING_DOWN" || privateIP != "10.0.0.95" {
+		t.Fatalf("expected sandbox to remain TEARING_DOWN with IP 10.0.0.95, got status=%s, privateIP=%s", status, privateIP)
 	}
 
-	// 5. Sandbox in FAILED state -> succeeds and allocates lease
-	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-failed', 'sb-failed.local', 'sandbox', NULL, 'FAILED', NULL)")
-	if err != nil {
-		t.Fatalf("insert failed sandbox: %v", err)
+	var ipStatus string
+	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = '10.0.0.95'").Scan(&ipStatus); err != nil {
+		t.Fatalf("failed to query ip_allocations: %v", err)
 	}
-	resFail, err := allocateLeaseTTL("sb-failed", "", "sandbox", "", 3600)
-	if err != nil || resFail.Status != "ALLOCATED" {
-		t.Fatalf("expected successful allocation for FAILED sandbox, got res: %v, err: %v", resFail, err)
+	if ipStatus != "ALLOCATED" {
+		t.Fatalf("expected IP row to remain ALLOCATED (no QUARANTINED write), got %s", ipStatus)
+	}
+
+	var releasedEvents int
+	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-td-guard' AND type = 'released'").Scan(&releasedEvents)
+	if releasedEvents != 0 {
+		t.Fatalf("expected no 'released' event for rejected release, got %d", releasedEvents)
+	}
+}
+
+func TestAddTeamFlowFailedHealthCheckGuard(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	// Sandbox owned by the reaper: must NOT be clobbered by a late health-check result.
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-hc-td', 'sb-hc-td.local', 'sandbox', '10.0.0.94', 'TEARING_DOWN', 1700000000)")
+	if err != nil {
+		t.Fatalf("insert tearing_down sandbox: %v", err)
+	}
+	// Sandbox still in ACTIVE: the guarded write must remain effective.
+	_, err = db.Exec("INSERT INTO sandboxes (sandbox_id, hostname, subnet_name, private_ip, status, expires_at) VALUES ('sb-hc-active', 'sb-hc-active.local', 'sandbox', '10.0.0.93', 'ACTIVE', 1700000000)")
+	if err != nil {
+		t.Fatalf("insert active sandbox: %v", err)
+	}
+
+	markFailedHealthCheck("sb-hc-td")
+	markFailedHealthCheck("sb-hc-active")
+
+	var tdStatus string
+	if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-hc-td'").Scan(&tdStatus); err != nil {
+		t.Fatalf("failed to query TEARING_DOWN sandbox: %v", err)
+	}
+	if tdStatus != "TEARING_DOWN" {
+		t.Fatalf("expected TEARING_DOWN sandbox unchanged by addTeamFlow health-check write, got %s", tdStatus)
+	}
+
+	var activeStatus string
+	if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-hc-active'").Scan(&activeStatus); err != nil {
+		t.Fatalf("failed to query ACTIVE sandbox: %v", err)
+	}
+	if activeStatus != "FAILED_HEALTH_CHECK" {
+		t.Fatalf("expected ACTIVE sandbox to become FAILED_HEALTH_CHECK, got %s", activeStatus)
 	}
 }
 
@@ -1950,7 +2102,98 @@ func TestReaperConcurrency(t *testing.T) {
 	// Advance past expiry
 	currTime = baseTime + 100
 
+	// Ownership invariant: teardown steps may only run for a sandbox this worker
+	// has successfully claimed (ref status TEARING_DOWN). A worker that lost the
+	// CAS on the ACTIVE/EXPIRING -> TEARING_DOWN transition must skip silently.
+	oldSteps := teardownSteps
+	t.Cleanup(func() { teardownSteps = oldSteps })
+	var claimMu sync.Mutex
+	unclaimedRuns := 0
+	wrapped := make([]teardownStep, len(oldSteps))
+	for i, st := range oldSteps {
+		st := st
+		wrapped[i] = teardownStep{
+			name: st.name,
+			run: func(d DBQueryer, s sandboxRef) error {
+				if s.status != "TEARING_DOWN" {
+					claimMu.Lock()
+					unclaimedRuns++
+					claimMu.Unlock()
+				}
+				return st.run(d, s)
+			},
+		}
+	}
+	teardownSteps = wrapped
+
 	// 2 goroutines calling reaperTick simultaneously
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res := reaperTickInner(db, nowUnix())
+			if res.Error != nil {
+				errCh <- res.Error
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("reaper concurrency error: %v", err)
+	}
+
+	claimMu.Lock()
+	if unclaimedRuns != 0 {
+		t.Errorf("expected 0 teardown step runs for unclaimed sandboxes, got %d", unclaimedRuns)
+	}
+	claimMu.Unlock()
+
+	// Assert all 10 sandboxes are RELEASED
+	for i := 1; i <= 10; i++ {
+		sbID := fmt.Sprintf("sb-conc-%d", i)
+		var status string
+		if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", sbID).Scan(&status); err != nil || status != "RELEASED" {
+			t.Fatalf("expected %s status RELEASED, got '%s'", sbID, status)
+		}
+
+		// Exactly one expired_teardown_done event each
+		var doneCount int
+		_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = ? AND type = 'expired_teardown_done'", sbID).Scan(&doneCount)
+		if doneCount != 1 {
+			t.Fatalf("expected 1 expired_teardown_done for %s, got %d", sbID, doneCount)
+		}
+	}
+}
+
+func TestReaperConcurrencyThroughMutexWrapper(t *testing.T) {
+	setupTestDB(t)
+
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	oldNow := nowUnix
+	nowUnix = func() int64 { return currTime }
+	t.Cleanup(func() { nowUnix = oldNow })
+
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatalf("failed to get DB: %v", err)
+	}
+	defer db.Close()
+
+	for i := 1; i <= 10; i++ {
+		sbID := fmt.Sprintf("sb-wrap-%d", i)
+		if _, err := allocateLeaseTTL(sbID, "", "sandbox", "", 50); err != nil {
+			t.Fatalf("allocate %s: %v", sbID, err)
+		}
+	}
+
+	currTime = baseTime + 100
+
+	// 2 goroutines calling the mutex-protected wrapper: ticks must serialize.
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
 	for g := 0; g < 2; g++ {
@@ -1967,18 +2210,16 @@ func TestReaperConcurrency(t *testing.T) {
 	close(errCh)
 
 	for err := range errCh {
-		t.Errorf("reaper concurrency error: %v", err)
+		t.Errorf("reaper wrapper concurrency error: %v", err)
 	}
 
-	// Assert all 10 sandboxes are RELEASED
 	for i := 1; i <= 10; i++ {
-		sbID := fmt.Sprintf("sb-conc-%d", i)
+		sbID := fmt.Sprintf("sb-wrap-%d", i)
 		var status string
 		if err := db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", sbID).Scan(&status); err != nil || status != "RELEASED" {
-			t.Fatalf("expected %s status RELEASED, got '%s'", sbID, status)
+			t.Fatalf("expected %s status RELEASED, got '%s' (err: %v)", sbID, status, err)
 		}
 
-		// Exactly one expired_teardown_done event each
 		var doneCount int
 		_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = ? AND type = 'expired_teardown_done'", sbID).Scan(&doneCount)
 		if doneCount != 1 {
@@ -2163,11 +2404,18 @@ func TestStartReaperLifecycle(t *testing.T) {
 
 	oldInt := reaperIntervalSeconds
 	oldSteps := teardownSteps
+	oldNow := nowUnix
 	t.Cleanup(func() {
 		reaperIntervalSeconds = oldInt
 		teardownSteps = oldSteps
+		nowUnix = oldNow
 	})
 	reaperIntervalSeconds = 1
+
+	// Fake clock so the tick body does not depend on wall time
+	baseTime := int64(1700000000)
+	currTime := baseTime
+	nowUnix = func() int64 { return currTime }
 
 	// Inject a step that panics on the first run to test panic recovery
 	panicked := false
@@ -2196,8 +2444,23 @@ func TestStartReaperLifecycle(t *testing.T) {
 		t.Fatalf("insert sandbox: %v", err)
 	}
 
-	// Let the ticker run for at least 2 ticks
-	time.Sleep(2500 * time.Millisecond)
+	// Tick 1 runs the step (which panics and is recovered), tick 2 resumes and
+	// finishes the teardown: the sandbox reaching RELEASED proves >= 2 ticks ran.
+	deadline := time.Now().Add(5 * time.Second)
+	sbStatus := ""
+	for {
+		_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-panic'").Scan(&sbStatus)
+		if sbStatus == "RELEASED" || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if sbStatus != "RELEASED" {
+		t.Fatalf("expected sandbox RELEASED after >= 2 ticks (recovered panic), got %q", sbStatus)
+	}
+	if lastTickUnix.Load() != currTime {
+		t.Fatalf("expected lastTickUnix gauge %d, got %d", currTime, lastTickUnix.Load())
+	}
 
 	// Cancel context to stop the reaper
 	cancel()
@@ -2214,6 +2477,3 @@ func TestStartReaperLifecycle(t *testing.T) {
 		t.Fatalf("expected step to have panicked once and recovered")
 	}
 }
-
-
-
