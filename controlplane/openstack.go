@@ -1,0 +1,413 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gophercloud/gophercloud/v2"
+	"github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
+	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/ports"
+	"github.com/gophercloud/gophercloud/v2/pagination"
+	"gopkg.in/yaml.v3"
+)
+
+type Provisioner interface {
+	CreateSandbox(ctx context.Context, req CreateReq) (*SandboxResources, error)
+	DeleteSandbox(ctx context.Context, serverID, portID string) error
+	GetServer(ctx context.Context, serverID string) (status string, err error)
+}
+
+type CreateReq struct {
+	SandboxID string `json:"sandbox_id,omitempty"`
+	Team      string `json:"team,omitempty"`
+	FixedIP   string `json:"-"`
+}
+
+type SandboxResources struct {
+	ServerID               string `json:"server_id"`
+	PortID                 string `json:"port_id"`
+	FixedIP                string `json:"fixed_ip"`
+	PortDurationMS         int64  `json:"-"`
+	ServerCreateDurationMS int64  `json:"-"`
+}
+
+type ProvisionConfig struct {
+	NetworkID     string
+	NetworkName   string
+	SubnetID      string
+	SecurityGroup string
+	Image         string
+	Flavor        string
+	Keypair       string
+	Timeout       time.Duration
+	MaxConcurrent int
+}
+
+type MockProvisioner struct {
+	mu        sync.Mutex
+	CreateErr error
+	Created   int
+	Statuses  []string
+	StatusErr error
+	Deleted   []string
+	NextIP    func() string
+}
+
+func (m *MockProvisioner) CreateSandbox(_ context.Context, req CreateReq) (*SandboxResources, error) {
+	m.mu.Lock()
+	m.Created++
+	m.mu.Unlock()
+	if m.CreateErr != nil {
+		return nil, m.CreateErr
+	}
+	ip := req.FixedIP
+	if ip == "" {
+		ip = "10.20.30.10"
+	}
+	if m.NextIP != nil {
+		ip = m.NextIP()
+	}
+	return &SandboxResources{ServerID: "mock-server-" + req.Team, PortID: "mock-port-" + req.Team, FixedIP: ip, PortDurationMS: 11, ServerCreateDurationMS: 22}, nil
+}
+func (m *MockProvisioner) DeleteSandbox(_ context.Context, serverID, portID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Deleted = append(m.Deleted, serverID, portID)
+	return nil
+}
+func (m *MockProvisioner) GetServer(context.Context, string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.StatusErr != nil {
+		return "", m.StatusErr
+	}
+	if len(m.Statuses) == 0 {
+		return "ACTIVE", nil
+	}
+	status := m.Statuses[0]
+	if len(m.Statuses) > 1 {
+		m.Statuses = m.Statuses[1:]
+	}
+	return status, nil
+}
+
+type OpenStackProvisioner struct {
+	mu              sync.Mutex
+	compute         *gophercloud.ServiceClient
+	network         *gophercloud.ServiceClient
+	cfg             ProvisionConfig
+	securityGroupID string
+}
+
+var provisioner Provisioner
+var provisionConfig ProvisionConfig
+var provisionTimeout = 180 * time.Second
+var provisionSemaphore chan struct{}
+
+func loadProvisionConfig() (ProvisionConfig, error) {
+	get := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
+	cfg := ProvisionConfig{NetworkID: get("SANDBOX_NETWORK_ID"), NetworkName: get("SANDBOX_NETWORK_NAME"), SubnetID: get("SANDBOX_SUBNET_ID"), SecurityGroup: get("SANDBOX_SG_NAME"), Image: get("SANDBOX_IMAGE"), Flavor: get("SANDBOX_FLAVOR"), Keypair: get("SANDBOX_KEYPAIR"), Timeout: 180 * time.Second, MaxConcurrent: 8}
+	if cfg.SecurityGroup == "" {
+		cfg.SecurityGroup = "sg-sandbox"
+	}
+	if v := get("PROVISION_TIMEOUT_SECONDS"); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 1 || int64(n) > int64(^uint64(0)>>1)/int64(time.Second) {
+			return cfg, fmt.Errorf("PROVISION_TIMEOUT_SECONDS must be a positive integer")
+		}
+		cfg.Timeout = time.Duration(n) * time.Second
+	}
+	if v := get("MAX_CONCURRENT_PROVISIONS"); v != "" {
+		n, e := strconv.Atoi(v)
+		if e != nil || n < 1 || n > 1024 {
+			return cfg, fmt.Errorf("MAX_CONCURRENT_PROVISIONS must be an integer from 1 to 1024")
+		}
+		cfg.MaxConcurrent = n
+	}
+	if cfg.NetworkID == "" && cfg.NetworkName == "" {
+		return cfg, errors.New("SANDBOX_NETWORK_ID or SANDBOX_NETWORK_NAME is required")
+	}
+	if cfg.SubnetID == "" || cfg.Image == "" || cfg.Flavor == "" || cfg.Keypair == "" {
+		return cfg, errors.New("SANDBOX_SUBNET_ID, SANDBOX_IMAGE, SANDBOX_FLAVOR, and SANDBOX_KEYPAIR are required")
+	}
+	return cfg, nil
+}
+
+func configureProvisioner(ctx context.Context) error {
+	if err := configureHealthProbe(); err != nil {
+		return err
+	}
+	if err := configureHealthProbeTimeout(); err != nil {
+		return err
+	}
+	if os.Getenv("PROVISIONER") == "mock" {
+		provisioner = &MockProvisioner{}
+		provisionTimeout = 180 * time.Second
+		if v := os.Getenv("PROVISION_TIMEOUT_SECONDS"); v != "" {
+			n, e := strconv.Atoi(v)
+			if e != nil || n < 1 || int64(n) > int64(^uint64(0)>>1)/int64(time.Second) {
+				return fmt.Errorf("PROVISION_TIMEOUT_SECONDS must be a positive integer")
+			}
+			provisionTimeout = time.Duration(n) * time.Second
+		}
+		max := 8
+		if v := os.Getenv("MAX_CONCURRENT_PROVISIONS"); v != "" {
+			n, e := strconv.Atoi(v)
+			if e != nil || n < 1 || n > 1024 {
+				return fmt.Errorf("MAX_CONCURRENT_PROVISIONS must be an integer from 1 to 1024")
+			}
+			max = n
+		}
+		provisionSemaphore = make(chan struct{}, max)
+		return nil
+	}
+	cfg, err := loadProvisionConfig()
+	if err != nil {
+		return err
+	}
+	p, err := newOpenStackProvisioner(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	provisionConfig = cfg
+	provisionTimeout = cfg.Timeout
+	provisionSemaphore = make(chan struct{}, cfg.MaxConcurrent)
+	provisioner = p
+	return nil
+}
+
+func configureHealthProbeTimeout() error {
+	healthProbeTimeout = 90 * time.Second
+	v := strings.TrimSpace(os.Getenv("HEALTH_PROBE_TIMEOUT_SECONDS"))
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || int64(n) > int64(^uint64(0)>>1)/int64(time.Second) {
+		return errors.New("HEALTH_PROBE_TIMEOUT_SECONDS must be a positive integer")
+	}
+	healthProbeTimeout = time.Duration(n) * time.Second
+	return nil
+}
+
+// authFromEnvironment supports OS_* variables and a named cloud from clouds.yaml.
+func authFromEnvironment() (gophercloud.AuthOptions, string, error) {
+	if os.Getenv("OS_AUTH_URL") != "" {
+		opts, e := openstack.AuthOptionsFromEnv()
+		if e != nil {
+			return opts, "", fmt.Errorf("OpenStack environment auth: %w", e)
+		}
+		if projectDomain := os.Getenv("OS_PROJECT_DOMAIN_NAME"); projectDomain != "" && os.Getenv("OS_PROJECT_NAME") != "" {
+			opts.Scope = &gophercloud.AuthScope{ProjectName: os.Getenv("OS_PROJECT_NAME"), DomainName: projectDomain}
+		}
+		return opts, os.Getenv("OS_REGION_NAME"), nil
+	}
+	cloudName := os.Getenv("OS_CLOUD")
+	if cloudName == "" {
+		return gophercloud.AuthOptions{}, "", errors.New("OpenStack auth missing: set OS_* variables or OS_CLOUD")
+	}
+	paths := []string{filepath.Join(os.Getenv("HOME"), ".config/openstack/clouds.yaml"), "/etc/openstack/clouds.yaml"}
+	if p := os.Getenv("OS_CLIENT_CONFIG_FILE"); p != "" {
+		paths = append([]string{p}, paths...)
+	}
+	var doc struct {
+		Clouds map[string]struct {
+			Auth      map[string]string `yaml:"auth"`
+			Region    string            `yaml:"region_name"`
+			Interface string            `yaml:"interface"`
+		} `yaml:"clouds"`
+	}
+	for _, p := range paths {
+		data, e := os.ReadFile(p)
+		if e != nil {
+			continue
+		}
+		if yaml.Unmarshal(data, &doc) != nil {
+			continue
+		}
+		c, ok := doc.Clouds[cloudName]
+		if !ok {
+			continue
+		}
+		a := c.Auth
+		opts := gophercloud.AuthOptions{
+			IdentityEndpoint:            a["auth_url"],
+			Username:                    a["username"],
+			Password:                    a["password"],
+			TenantID:                    a["project_id"],
+			TenantName:                  a["project_name"],
+			DomainName:                  a["user_domain_name"],
+			ApplicationCredentialID:     a["application_credential_id"],
+			ApplicationCredentialName:   a["application_credential_name"],
+			ApplicationCredentialSecret: a["application_credential_secret"],
+			AllowReauth:                 true,
+		}
+		if a["project_domain_name"] != "" && a["project_name"] != "" {
+			opts.Scope = &gophercloud.AuthScope{ProjectName: a["project_name"], DomainName: a["project_domain_name"]}
+		}
+		passwordAuth := opts.Username != "" && opts.Password != ""
+		appCredentialAuth := opts.ApplicationCredentialID != "" && opts.ApplicationCredentialSecret != ""
+		if opts.IdentityEndpoint == "" || (!passwordAuth && !appCredentialAuth) {
+			return opts, "", errors.New("clouds.yaml auth requires auth_url and either username/password or application credential ID/secret")
+		}
+		return opts, c.Region, nil
+	}
+	return gophercloud.AuthOptions{}, "", fmt.Errorf("cloud %q not found in clouds.yaml", cloudName)
+}
+
+func newOpenStackProvisioner(ctx context.Context, cfg ProvisionConfig) (*OpenStackProvisioner, error) {
+	auth, region, err := authFromEnvironment()
+	if err != nil {
+		return nil, err
+	}
+	provider, err := openstack.AuthenticatedClient(ctx, auth)
+	if err != nil {
+		return nil, fmt.Errorf("OpenStack Keystone authentication failed: %w", err)
+	}
+	if v := os.Getenv("OS_REGION_NAME"); v != "" {
+		region = v
+	}
+	endpoint := gophercloud.EndpointOpts{Region: region}
+	compute, err := openstack.NewComputeV2(provider, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("Nova endpoint: %w", err)
+	}
+	network, err := openstack.NewNetworkV2(provider, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("Neutron endpoint: %w", err)
+	}
+	p := &OpenStackProvisioner{compute: compute, network: network, cfg: cfg}
+	if cfg.NetworkID == "" {
+		pager := networks.List(network, networks.ListOpts{Name: cfg.NetworkName})
+		err = pager.EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+			list, e := networks.ExtractNetworks(page)
+			if e != nil {
+				return false, e
+			}
+			for _, n := range list {
+				if n.Name == cfg.NetworkName {
+					p.cfg.NetworkID = n.ID
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resolve sandbox network: %w", err)
+		}
+		if p.cfg.NetworkID == "" {
+			return nil, fmt.Errorf("sandbox network %q not found", cfg.NetworkName)
+		}
+	}
+	return p, nil
+}
+
+func (p *OpenStackProvisioner) resolveSecurityGroup(ctx context.Context) (string, error) {
+	var id string
+	err := groups.List(p.network, groups.ListOpts{Name: p.cfg.SecurityGroup}).EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+		gs, e := groups.ExtractGroups(page)
+		if e != nil {
+			return false, e
+		}
+		for _, g := range gs {
+			if g.Name == p.cfg.SecurityGroup {
+				id = g.ID
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", fmt.Errorf("security group %q not found", p.cfg.SecurityGroup)
+	}
+	return id, nil
+}
+
+func cloudInitHTTP() []byte {
+	// Input-independent script: team names never enter cloud-init or shell syntax.
+	script := `#cloud-config
+packages: [python3]
+runcmd:
+  - [sh, -c, "mkdir -p /var/www/sandbox && echo 'FelCloud sandbox ready' > /var/www/sandbox/index.html"]
+  - [sh, -c, "nohup python3 -m http.server 80 --directory /var/www/sandbox >/var/log/sandbox-http.log 2>&1 &"]
+`
+	return []byte(script)
+}
+
+func (p *OpenStackProvisioner) CreateSandbox(ctx context.Context, req CreateReq) (*SandboxResources, error) {
+	p.mu.Lock()
+	if p.securityGroupID == "" {
+		id, e := p.resolveSecurityGroup(ctx)
+		if e != nil {
+			p.mu.Unlock()
+			return nil, e
+		}
+		p.securityGroupID = id
+	}
+	securityGroupID := p.securityGroupID
+	p.mu.Unlock()
+	sec := []string{securityGroupID}
+	up := true
+	portStart := time.Now()
+	pr := ports.Create(ctx, p.network, ports.CreateOpts{NetworkID: p.cfg.NetworkID, Name: "sandbox-" + req.Team, AdminStateUp: &up, FixedIPs: []map[string]string{{"subnet_id": p.cfg.SubnetID, "ip_address": req.FixedIP}}, SecurityGroups: &sec})
+	port, err := pr.Extract()
+	if err != nil {
+		return nil, fmt.Errorf("create neutron port: %w", err)
+	}
+	portDuration := time.Since(portStart).Milliseconds()
+	fixedIP := ""
+	if len(port.FixedIPs) > 0 {
+		fixedIP = port.FixedIPs[0].IPAddress
+	}
+	if fixedIP == "" {
+		return &SandboxResources{PortID: port.ID, PortDurationMS: portDuration}, errors.New("Neutron port did not return a fixed IP")
+	}
+	createOpts := servers.CreateOpts{Name: "sandbox-" + req.Team, ImageRef: p.cfg.Image, FlavorRef: p.cfg.Flavor, Networks: []servers.Network{{Port: port.ID}}, UserData: cloudInitHTTP()}
+	serverCreateStart := time.Now()
+	res := servers.Create(ctx, p.compute, keypairs.CreateOptsExt{CreateOptsBuilder: createOpts, KeyName: p.cfg.Keypair}, nil)
+	serverCreateDuration := time.Since(serverCreateStart).Milliseconds()
+	srv, err := res.Extract()
+	if err != nil {
+		return &SandboxResources{PortID: port.ID, FixedIP: fixedIP, PortDurationMS: portDuration, ServerCreateDurationMS: serverCreateDuration}, fmt.Errorf("create nova server: %w", err)
+	}
+	return &SandboxResources{ServerID: srv.ID, PortID: port.ID, FixedIP: fixedIP, PortDurationMS: portDuration, ServerCreateDurationMS: serverCreateDuration}, nil
+}
+
+func (p *OpenStackProvisioner) DeleteSandbox(ctx context.Context, serverID, portID string) error {
+	var errs []error
+	if serverID != "" {
+		err := servers.Delete(ctx, p.compute, serverID).ExtractErr()
+		if err != nil && !gophercloud.ResponseCodeIs(err, 404) {
+			errs = append(errs, err)
+		}
+	}
+	if portID != "" {
+		err := ports.Delete(ctx, p.network, portID).ExtractErr()
+		if err != nil && !gophercloud.ResponseCodeIs(err, 404) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+func (p *OpenStackProvisioner) GetServer(ctx context.Context, serverID string) (string, error) {
+	r := servers.Get(ctx, p.compute, serverID)
+	s, e := r.Extract()
+	if e != nil {
+		return "", e
+	}
+	return s.Status, nil
+}
