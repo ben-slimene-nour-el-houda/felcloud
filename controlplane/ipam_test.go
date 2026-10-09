@@ -23,11 +23,65 @@ func setupTestDB(t *testing.T) string {
 	dbFile := filepath.Join(tmpDir, "test_ipam.db")
 	dbPath = dbFile
 	defaultQuarantineSeconds = 60
+	provisioner = &MockProvisioner{}
+	provisionSync = provisionSyncState{}
+	gatewaySyncFunc = func(bool) (bool, string) { return true, "test sync" }
 
 	if err := initDB(); err != nil {
 		t.Fatalf("failed to init test DB: %v", err)
 	}
 	return dbFile
+}
+
+func TestInitDBAddsDurableTeardownColumns(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`PRAGMA table_info(sandboxes)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			t.Fatal(err)
+		}
+		got[name] = true
+	}
+	for _, name := range []string{"teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"} {
+		if !got[name] {
+			t.Errorf("missing migration column %q", name)
+		}
+	}
+	rows.Close()
+	if _, err := db.Exec(`INSERT INTO sandboxes(sandbox_id,hostname,subnet_name,status,server_id,port_id,fixed_ip,provisioned_at,teardown_route_removed_at) VALUES('migration-check','migration-check.local','sandbox','ACTIVE','srv-check','port-check','10.20.30.99',123,456)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSandboxesSchema(db); err != nil {
+		t.Fatalf("rebuild sandbox schema: %v", err)
+	}
+	var serverID, portID, fixedIP string
+	var provisionedAt, routeRemovedAt int64
+	if err := db.QueryRow(`SELECT server_id,port_id,fixed_ip,provisioned_at,teardown_route_removed_at FROM sandboxes WHERE sandbox_id='migration-check'`).Scan(&serverID, &portID, &fixedIP, &provisionedAt, &routeRemovedAt); err != nil {
+		t.Fatal(err)
+	}
+	if serverID != "srv-check" || portID != "port-check" || fixedIP != "10.20.30.99" || provisionedAt != 123 || routeRemovedAt != 456 {
+		t.Fatalf("migration lost fields: server=%s port=%s ip=%s provisioned=%d route_removed=%d", serverID, portID, fixedIP, provisionedAt, routeRemovedAt)
+	}
+	var sqlText string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='sandboxes'`).Scan(&sqlText); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sqlText, "TEARDOWN_FAILED") {
+		t.Error("sandbox status constraint does not include TEARDOWN_FAILED")
+	}
 }
 
 func TestConcurrentAllocation(t *testing.T) {
@@ -1910,23 +1964,17 @@ func TestReaperResumeAndIdempotency(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Configure fake steps: step 1 is release_ips; step 2 fails on attempt 1, succeeds on attempt 2
-	oldSteps := teardownSteps
-	t.Cleanup(func() { teardownSteps = oldSteps })
-
-	attempt := 0
-	teardownSteps = []teardownStep{
-		oldSteps[0], // release_ips
-		{
-			name: "flaky_step",
-			run: func(d DBQueryer, s sandboxRef) error {
-				attempt++
-				if attempt == 1 {
-					return fmt.Errorf("transient failure")
-				}
-				return nil
-			},
-		},
+	oldSync := gatewaySyncFunc
+	oldMaxAttempts := teardownMaxAttempts
+	t.Cleanup(func() { gatewaySyncFunc, teardownMaxAttempts = oldSync, oldMaxAttempts })
+	teardownMaxAttempts = 5
+	syncCalls := 0
+	gatewaySyncFunc = func(bool) (bool, string) {
+		syncCalls++
+		if syncCalls == 1 {
+			return false, "transient failure"
+		}
+		return true, "ok"
 	}
 
 	_, err = allocateLeaseTTL("sb-flaky", "", "sandbox", "", 50)
@@ -1949,13 +1997,13 @@ func TestReaperResumeAndIdempotency(t *testing.T) {
 		t.Fatalf("expected TEARING_DOWN on tick 1, got '%s'", status)
 	}
 
-	// Verify IP was already quarantined by step 1
+	// A failed step must leave the lease allocated.
 	var ipStatus string
-	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE entity_name = 'sb-flaky'").Scan(&ipStatus); err != nil || ipStatus != "QUARANTINED" {
-		t.Fatalf("expected QUARANTINED on tick 1, got '%s'", ipStatus)
+	if err := db.QueryRow("SELECT status FROM ip_allocations WHERE entity_name = 'sb-flaky'").Scan(&ipStatus); err != nil || ipStatus != "ALLOCATED" {
+		t.Fatalf("expected ALLOCATED on tick 1, got '%s' (err=%v)", ipStatus, err)
 	}
 
-	// Tick 2: step 1 re-runs (idempotent no-op), flaky_step succeeds
+	// Tick 2 resumes at the failed route step and completes the teardown.
 	res2 := reaperTick(db, nowUnix())
 	if res2.ResumedCount != 1 {
 		t.Fatalf("expected 1 resumed sandbox on tick 2, got %d", res2.ResumedCount)
@@ -1982,21 +2030,12 @@ func TestReaperMaxAttempts(t *testing.T) {
 	}
 	defer db.Close()
 
-	oldSteps := teardownSteps
+	oldSync := gatewaySyncFunc
 	oldMax := teardownMaxAttempts
-	t.Cleanup(func() {
-		teardownSteps = oldSteps
-		teardownMaxAttempts = oldMax
-	})
-
+	t.Cleanup(func() { gatewaySyncFunc, teardownMaxAttempts = oldSync, oldMax })
 	teardownMaxAttempts = 3
-	teardownSteps = []teardownStep{
-		{
-			name: "perm_failing",
-			run: func(d DBQueryer, s sandboxRef) error {
-				return fmt.Errorf("permanent failure")
-			},
-		},
+	gatewaySyncFunc = func(bool) (bool, string) {
+		return false, "permanent failure"
 	}
 
 	_, err = allocateLeaseTTL("sb-perm-fail", "", "sandbox", "", 50)
@@ -2021,19 +2060,19 @@ func TestReaperMaxAttempts(t *testing.T) {
 		t.Fatalf("tick 2: expected TEARING_DOWN, got %s", status)
 	}
 
-	// Tick 3: reaches max attempts (3) -> FAILED
+	// Tick 3 reaches the durable max attempts -> TEARDOWN_FAILED.
 	res3 := reaperTick(db, nowUnix())
 	if res3.FailedCount != 1 {
 		t.Fatalf("tick 3: expected 1 failure, got %d", res3.FailedCount)
 	}
 	_ = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = 'sb-perm-fail'").Scan(&status)
-	if status != "FAILED" {
-		t.Fatalf("tick 3: expected FAILED, got %s", status)
+	if status != "TEARDOWN_FAILED" {
+		t.Fatalf("tick 3: expected TEARDOWN_FAILED, got %s", status)
 	}
 
 	// Verify teardown_failed event
 	var failedEventCount int
-	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-perm-fail' AND type = 'teardown_failed'").Scan(&failedEventCount)
+	_ = db.QueryRow("SELECT COUNT(*) FROM events WHERE sandbox_id = 'sb-perm-fail' AND type = 'TEARDOWN_FAILED'").Scan(&failedEventCount)
 	if failedEventCount != 1 {
 		t.Fatalf("expected 1 teardown_failed event, got %d", failedEventCount)
 	}
@@ -2102,30 +2141,6 @@ func TestReaperConcurrency(t *testing.T) {
 	// Advance past expiry
 	currTime = baseTime + 100
 
-	// Ownership invariant: teardown steps may only run for a sandbox this worker
-	// has successfully claimed (ref status TEARING_DOWN). A worker that lost the
-	// CAS on the ACTIVE/EXPIRING -> TEARING_DOWN transition must skip silently.
-	oldSteps := teardownSteps
-	t.Cleanup(func() { teardownSteps = oldSteps })
-	var claimMu sync.Mutex
-	unclaimedRuns := 0
-	wrapped := make([]teardownStep, len(oldSteps))
-	for i, st := range oldSteps {
-		st := st
-		wrapped[i] = teardownStep{
-			name: st.name,
-			run: func(d DBQueryer, s sandboxRef) error {
-				if s.status != "TEARING_DOWN" {
-					claimMu.Lock()
-					unclaimedRuns++
-					claimMu.Unlock()
-				}
-				return st.run(d, s)
-			},
-		}
-	}
-	teardownSteps = wrapped
-
 	// 2 goroutines calling reaperTick simultaneously
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
@@ -2145,12 +2160,6 @@ func TestReaperConcurrency(t *testing.T) {
 	for err := range errCh {
 		t.Errorf("reaper concurrency error: %v", err)
 	}
-
-	claimMu.Lock()
-	if unclaimedRuns != 0 {
-		t.Errorf("expected 0 teardown step runs for unclaimed sandboxes, got %d", unclaimedRuns)
-	}
-	claimMu.Unlock()
 
 	// Assert all 10 sandboxes are RELEASED
 	for i := 1; i <= 10; i++ {
@@ -2403,11 +2412,9 @@ func TestStartReaperLifecycle(t *testing.T) {
 	defer db.Close()
 
 	oldInt := reaperIntervalSeconds
-	oldSteps := teardownSteps
 	oldNow := nowUnix
 	t.Cleanup(func() {
 		reaperIntervalSeconds = oldInt
-		teardownSteps = oldSteps
 		nowUnix = oldNow
 	})
 	reaperIntervalSeconds = 1
@@ -2416,21 +2423,6 @@ func TestStartReaperLifecycle(t *testing.T) {
 	baseTime := int64(1700000000)
 	currTime := baseTime
 	nowUnix = func() int64 { return currTime }
-
-	// Inject a step that panics on the first run to test panic recovery
-	panicked := false
-	teardownSteps = []teardownStep{
-		{
-			name: "panicking_step",
-			run: func(d DBQueryer, s sandboxRef) error {
-				if !panicked {
-					panicked = true
-					panic("simulated step panic")
-				}
-				return nil
-			},
-		},
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done, err := startReaper(ctx, db)
@@ -2444,8 +2436,7 @@ func TestStartReaperLifecycle(t *testing.T) {
 		t.Fatalf("insert sandbox: %v", err)
 	}
 
-	// Tick 1 runs the step (which panics and is recovered), tick 2 resumes and
-	// finishes the teardown: the sandbox reaching RELEASED proves >= 2 ticks ran.
+	// The background tick should route the sandbox through the shared teardown path.
 	deadline := time.Now().Add(5 * time.Second)
 	sbStatus := ""
 	for {
@@ -2473,7 +2464,4 @@ func TestStartReaperLifecycle(t *testing.T) {
 		t.Fatalf("reaper did not terminate cleanly on context cancellation")
 	}
 
-	if !panicked {
-		t.Fatalf("expected step to have panicked once and recovered")
-	}
 }

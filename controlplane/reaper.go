@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,9 +27,46 @@ type sandboxRef struct {
 	expiresAt  *int64
 }
 
-type teardownStep struct {
-	name string
-	run  func(db DBQueryer, s sandboxRef) error
+func ensureTeardownColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(sandboxes)`)
+	if err != nil {
+		return err
+	}
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var def any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &def, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		cols[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	columns := map[string]string{
+		"teardown_step":                 "TEXT NOT NULL DEFAULT ''",
+		"teardown_attempts":             "INTEGER NOT NULL DEFAULT 0",
+		"teardown_step_attempts":        "INTEGER NOT NULL DEFAULT 0",
+		"teardown_started_at":           "INTEGER",
+		"teardown_route_removed_at":     "INTEGER",
+		"teardown_resources_deleted_at": "INTEGER",
+		"teardown_verified_gone_at":     "INTEGER",
+		"teardown_released_at":          "INTEGER",
+		"teardown_last_error":           "TEXT",
+	}
+	for name, decl := range columns {
+		if !cols[name] {
+			if _, err := db.Exec(`ALTER TABLE sandboxes ADD COLUMN ` + name + ` ` + decl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func isValidTransition(from, to string) bool {
@@ -41,7 +78,9 @@ func isValidTransition(from, to string) bool {
 	case "EXPIRING":
 		return to == "TEARING_DOWN"
 	case "TEARING_DOWN":
-		return to == "RELEASED" || to == "FAILED"
+		return to == "RELEASED" || to == "FAILED" || to == "TEARDOWN_FAILED"
+	case "TEARDOWN_FAILED":
+		return to == "TEARING_DOWN"
 	case "FAILED":
 		return to == "TEARING_DOWN"
 	case "REQUESTED", "FAILED_HEALTH_CHECK", "ROLLBACK":
@@ -150,70 +189,53 @@ func reaperTickInner(db *sql.DB, now int64) tickResult {
 	}
 	rows.Close()
 
-	// c. Process each candidate
-	for _, s := range candidates {
-		initialStatus := s.status
-		if initialStatus == "ACTIVE" || initialStatus == "EXPIRING" {
-			err := transitionSandbox(db, s.id, "TEARING_DOWN")
-			if err != nil {
-				if errors.Is(err, ErrTransitionConflict) || errors.Is(err, ErrIllegalTransition) || strings.Contains(err.Error(), "illegal state transition") {
-					continue // another worker owns it: skip silently
+	// c. Process candidates through the same durable teardown path as the API.
+	var wg sync.WaitGroup
+	var resultMu sync.Mutex
+	workerCount := teardownConcurrency
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	sem := make(chan struct{}, workerCount)
+	for _, candidate := range candidates {
+		s := candidate
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+			defer cancel()
+			tdResult, tdErr := teardownSandbox(ctx, s.id)
+			resultMu.Lock()
+			defer resultMu.Unlock()
+			if tdErr != nil {
+				if errors.Is(tdErr, errTeardownInProgress) {
+					return
 				}
-				log.Printf("reaper: failed transition to TEARING_DOWN for '%s': %v", s.id, err)
-				continue
-			}
-			s.status = "TEARING_DOWN"
-		}
-
-		allStepsOK := true
-		sandStart := time.Now()
-
-		for _, step := range teardownSteps {
-			stepStart := time.Now()
-			stepErr := step.run(db, s)
-			stepDuration := time.Since(stepStart).Milliseconds()
-
-			if stepErr != nil {
-				allStepsOK = false
-				recordEvent(db, s.id, "teardown_step_failed", fmt.Sprintf("step=%s, err=%v", step.name, stepErr), stepDuration)
-
-				teardownAttemptsMutex.Lock()
-				teardownAttempts[s.id]++
-				attempts := teardownAttempts[s.id]
-				teardownAttemptsMutex.Unlock()
-
-				if attempts >= teardownMaxAttempts {
-					if err := transitionSandbox(db, s.id, "FAILED"); err == nil {
-						recordEvent(db, s.id, "teardown_failed", fmt.Sprintf("max attempts (%d) exceeded", teardownMaxAttempts), 0)
-						teardownFailures.Add(1)
+				log.Printf("reaper: teardown failed for '%s': %v", s.id, tdErr)
+				var stepErr *teardownStepError
+				if errors.As(tdErr, &stepErr) {
+					var state string
+					if err := db.QueryRow(`SELECT status FROM sandboxes WHERE sandbox_id=?`, s.id).Scan(&state); err == nil && state == "TEARDOWN_FAILED" {
 						res.FailedCount++
-						teardownAttemptsMutex.Lock()
-						delete(teardownAttempts, s.id)
-						teardownAttemptsMutex.Unlock()
 					}
 				}
-				break // stop running further steps for this sandbox in this tick
+				return
+			}
+			if tdResult.AlreadyReleased {
+				return
+			}
+			recordEvent(db, s.id, "expired_teardown_done", "teardown completed", 0)
+			teardownsDone.Add(1)
+			if s.status == "ACTIVE" {
+				res.ReapedCount++
 			} else {
-				recordEvent(db, s.id, "teardown_step", step.name, stepDuration)
+				res.ResumedCount++
 			}
-		}
-
-		if allStepsOK {
-			totalDuration := time.Since(sandStart).Milliseconds()
-			if err := transitionSandbox(db, s.id, "RELEASED"); err == nil {
-				recordEvent(db, s.id, "expired_teardown_done", fmt.Sprintf("duration_ms=%d", totalDuration), totalDuration)
-				teardownsDone.Add(1)
-				if initialStatus == "ACTIVE" {
-					res.ReapedCount++
-				} else {
-					res.ResumedCount++
-				}
-				teardownAttemptsMutex.Lock()
-				delete(teardownAttempts, s.id)
-				teardownAttemptsMutex.Unlock()
-			}
-		}
+		}()
 	}
+	wg.Wait()
 
 	// d. Prune events older than EVENTS_RETENTION_SECONDS (ts_ms) in chunks of at most 500 rows per tick
 	cutoffMs := (now - int64(eventsRetentionSeconds)) * 1000

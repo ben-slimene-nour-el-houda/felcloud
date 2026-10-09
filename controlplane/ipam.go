@@ -112,10 +112,23 @@ func initDB() error {
 				hostname TEXT UNIQUE NOT NULL,
 				subnet_name TEXT NOT NULL,
 				private_ip TEXT,
-				status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
+				status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'TEARDOWN_FAILED', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
 				created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 				updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 				expires_at INTEGER,
+				server_id TEXT,
+				port_id TEXT,
+				fixed_ip TEXT,
+				provisioned_at INTEGER,
+				teardown_step TEXT NOT NULL DEFAULT '',
+				teardown_attempts INTEGER NOT NULL DEFAULT 0,
+				teardown_step_attempts INTEGER NOT NULL DEFAULT 0,
+				teardown_started_at INTEGER,
+				teardown_route_removed_at INTEGER,
+				teardown_resources_deleted_at INTEGER,
+				teardown_verified_gone_at INTEGER,
+				teardown_released_at INTEGER,
+				teardown_last_error TEXT,
 				FOREIGN KEY(subnet_name) REFERENCES subnets(name)
 			);
 		`)
@@ -123,7 +136,7 @@ func initDB() error {
 			return fmt.Errorf("error creating sandboxes table: %w", err)
 		}
 	} else if err == nil {
-		if !strings.Contains(sbSQL, "FAILED_HEALTH_CHECK") || !strings.Contains(sbSQL, "EXPIRING") {
+		if !strings.Contains(sbSQL, "FAILED_HEALTH_CHECK") || !strings.Contains(sbSQL, "EXPIRING") || !strings.Contains(sbSQL, "TEARDOWN_FAILED") {
 			// Migrate: recreate table with expanded CHECK constraint, in one transaction,
 			// with row-count verification before and after.
 			if err := migrateSandboxesSchema(db); err != nil {
@@ -157,6 +170,9 @@ func initDB() error {
 	}
 	if err := ensureProvisionColumns(db); err != nil {
 		return fmt.Errorf("provisioning schema migration failed: %w", err)
+	}
+	if err := ensureTeardownColumns(db); err != nil {
+		return fmt.Errorf("teardown schema migration failed: %w", err)
 	}
 
 	// 4. Config generations table
@@ -228,24 +244,27 @@ func migrateSandboxesSchema(db *sql.DB) error {
 	}
 	defer tx.Rollback()
 
-	// Check if old sandboxes table has expires_at column
-	var oldHasExpiresAt bool
+	// Preserve additive provisioning/teardown columns while expanding the state CHECK.
+	oldCols := map[string]bool{}
 	infoRows, infoErr := tx.Query("PRAGMA table_info(sandboxes)")
-	if infoErr == nil {
-		for infoRows.Next() {
-			var cid int
-			var name, typeStr string
-			var notNull int
-			var dfltValue interface{}
-			var pk int
-			if err := infoRows.Scan(&cid, &name, &typeStr, &notNull, &dfltValue, &pk); err == nil {
-				if name == "expires_at" {
-					oldHasExpiresAt = true
-				}
-			}
-		}
-		infoRows.Close()
+	if infoErr != nil {
+		return fmt.Errorf("inspect old sandboxes schema: %w", infoErr)
 	}
+	for infoRows.Next() {
+		var cid, notNull, pk int
+		var name, typeStr string
+		var dfltValue any
+		if err := infoRows.Scan(&cid, &name, &typeStr, &notNull, &dfltValue, &pk); err != nil {
+			infoRows.Close()
+			return err
+		}
+		oldCols[name] = true
+	}
+	if err := infoRows.Err(); err != nil {
+		infoRows.Close()
+		return err
+	}
+	infoRows.Close()
 
 	// Count rows before migration
 	var countBefore int
@@ -260,10 +279,23 @@ func migrateSandboxesSchema(db *sql.DB) error {
 			hostname TEXT UNIQUE NOT NULL,
 			subnet_name TEXT NOT NULL,
 			private_ip TEXT,
-			status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
+		status TEXT CHECK(status IN ('REQUESTED', 'PROVISIONING', 'ACTIVE', 'EXPIRING', 'TEARING_DOWN', 'TEARDOWN_FAILED', 'FAILED', 'FAILED_HEALTH_CHECK', 'RELEASED', 'ROLLBACK')) DEFAULT 'REQUESTED',
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			expires_at INTEGER,
+			server_id TEXT,
+			port_id TEXT,
+			fixed_ip TEXT,
+			provisioned_at INTEGER,
+			teardown_step TEXT NOT NULL DEFAULT '',
+			teardown_attempts INTEGER NOT NULL DEFAULT 0,
+			teardown_step_attempts INTEGER NOT NULL DEFAULT 0,
+			teardown_started_at INTEGER,
+			teardown_route_removed_at INTEGER,
+			teardown_resources_deleted_at INTEGER,
+			teardown_verified_gone_at INTEGER,
+			teardown_released_at INTEGER,
+			teardown_last_error TEXT,
 			FOREIGN KEY(subnet_name) REFERENCES subnets(name)
 		);
 	`)
@@ -271,17 +303,23 @@ func migrateSandboxesSchema(db *sql.DB) error {
 		return fmt.Errorf("create sandboxes_new: %w", err)
 	}
 
-	if oldHasExpiresAt {
-		_, err = tx.Exec(`
-			INSERT INTO sandboxes_new (id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at, expires_at)
-			SELECT id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at, expires_at FROM sandboxes;
-		`)
-	} else {
-		_, err = tx.Exec(`
-			INSERT INTO sandboxes_new (id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at)
-			SELECT id, sandbox_id, hostname, subnet_name, private_ip, status, created_at, updated_at FROM sandboxes;
-		`)
+	columns := []string{"expires_at", "server_id", "port_id", "fixed_ip", "provisioned_at", "teardown_step", "teardown_attempts", "teardown_step_attempts", "teardown_started_at", "teardown_route_removed_at", "teardown_resources_deleted_at", "teardown_verified_gone_at", "teardown_released_at", "teardown_last_error"}
+	selects := make([]string, 0, len(columns))
+	for _, column := range columns {
+		if oldCols[column] {
+			selects = append(selects, column)
+			continue
+		}
+		fallback := "NULL"
+		if column == "teardown_step" {
+			fallback = "''"
+		} else if column == "teardown_attempts" || column == "teardown_step_attempts" {
+			fallback = "0"
+		}
+		selects = append(selects, fallback)
 	}
+	_, err = tx.Exec(`INSERT INTO sandboxes_new (id,sandbox_id,hostname,subnet_name,private_ip,status,created_at,updated_at,` + strings.Join(columns, ",") + `)
+		SELECT id,sandbox_id,hostname,subnet_name,private_ip,status,created_at,updated_at,` + strings.Join(selects, ",") + ` FROM sandboxes`)
 	if err != nil {
 		return fmt.Errorf("copy rows to sandboxes_new: %w", err)
 	}

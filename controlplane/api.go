@@ -146,7 +146,10 @@ func setupAPIRoutes() http.Handler {
 	mux.HandleFunc("/api/leases/reclaim", handleReclaim)
 
 	mux.HandleFunc("/api/sandboxes/provision", handleProvision)
+	mux.HandleFunc("/api/sandboxes/", handleSandboxTeardown)
 	mux.HandleFunc("/api/sandboxes/extend", handleExtendSandbox)
+	mux.HandleFunc("/api/reconcile", handleReconcile)
+	mux.HandleFunc("/api/reconcile/apply", handleReconcileApply)
 	mux.HandleFunc("/api/gateways/sync", handleGatewaySync)
 	mux.HandleFunc("/api/gateways/rollback", handleGatewayRollback)
 
@@ -407,6 +410,13 @@ func runAPIServer(port int) {
 	}
 	if err := initDB(); err != nil {
 		log.Fatalf("FATAL: initialize control-plane database: %v", err)
+	}
+	if report, err := reconcileReport(context.Background()); err != nil {
+		log.Printf("WARNING: startup reconciliation failed: %v", err)
+	} else if len(report.MissingNeutronPorts)+len(report.OrphanNeutronPorts)+len(report.IPMismatches)+len(report.MissingServers) > 0 {
+		log.Printf("WARNING: startup reconciliation drift: db_without_port=%d neutron_orphans=%d ip_mismatches=%d missing_servers=%d", len(report.MissingNeutronPorts), len(report.OrphanNeutronPorts), len(report.IPMismatches), len(report.MissingServers))
+	} else {
+		log.Printf("startup reconciliation: no drift detected")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

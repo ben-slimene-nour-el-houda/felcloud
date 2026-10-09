@@ -26,6 +26,16 @@ type Provisioner interface {
 	CreateSandbox(ctx context.Context, req CreateReq) (*SandboxResources, error)
 	DeleteSandbox(ctx context.Context, serverID, portID string) error
 	GetServer(ctx context.Context, serverID string) (status string, err error)
+	ListSandboxPorts(ctx context.Context) ([]SandboxPort, error)
+}
+
+var ErrOpenStackNotFound = errors.New("OpenStack resource not found")
+
+type SandboxPort struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	DeviceID string   `json:"device_id"`
+	FixedIPs []string `json:"fixed_ips"`
 }
 
 type CreateReq struct {
@@ -62,11 +72,36 @@ type MockProvisioner struct {
 	StatusErr error
 	Deleted   []string
 	NextIP    func() string
+	Calls     map[string]int
+	Failures  map[string]map[int]error
+	Servers   map[string]bool
+	Ports     []SandboxPort
+}
+
+func (m *MockProvisioner) failLocked(step string) error {
+	if m.Calls == nil {
+		m.Calls = map[string]int{}
+	}
+	m.Calls[step]++
+	if byCall := m.Failures[step]; byCall != nil {
+		return byCall[m.Calls[step]]
+	}
+	return nil
+}
+
+func (m *MockProvisioner) FailStep(step string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.failLocked(step)
 }
 
 func (m *MockProvisioner) CreateSandbox(_ context.Context, req CreateReq) (*SandboxResources, error) {
 	m.mu.Lock()
 	m.Created++
+	if err := m.failLocked("create"); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	m.mu.Unlock()
 	if m.CreateErr != nil {
 		return nil, m.CreateErr
@@ -78,17 +113,49 @@ func (m *MockProvisioner) CreateSandbox(_ context.Context, req CreateReq) (*Sand
 	if m.NextIP != nil {
 		ip = m.NextIP()
 	}
-	return &SandboxResources{ServerID: "mock-server-" + req.Team, PortID: "mock-port-" + req.Team, FixedIP: ip, PortDurationMS: 11, ServerCreateDurationMS: 22}, nil
+	serverID, portID := "mock-server-"+req.Team, "mock-port-"+req.Team
+	m.mu.Lock()
+	if m.Servers == nil {
+		m.Servers = map[string]bool{}
+	}
+	m.Servers[serverID] = true
+	m.Ports = append(m.Ports, SandboxPort{ID: portID, Name: "sandbox-" + req.Team, DeviceID: serverID, FixedIPs: []string{ip}})
+	m.mu.Unlock()
+	return &SandboxResources{ServerID: serverID, PortID: portID, FixedIP: ip, PortDurationMS: 11, ServerCreateDurationMS: 22}, nil
 }
 func (m *MockProvisioner) DeleteSandbox(_ context.Context, serverID, portID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Deleted = append(m.Deleted, serverID, portID)
+	if serverID != "" {
+		if err := m.failLocked("delete_server"); err != nil {
+			return err
+		}
+		delete(m.Servers, serverID)
+	}
+	if portID != "" {
+		if err := m.failLocked("delete_port"); err != nil {
+			return err
+		}
+		filtered := m.Ports[:0]
+		for _, port := range m.Ports {
+			if port.ID != portID {
+				filtered = append(filtered, port)
+			}
+		}
+		m.Ports = filtered
+	}
 	return nil
 }
-func (m *MockProvisioner) GetServer(context.Context, string) (string, error) {
+func (m *MockProvisioner) GetServer(_ context.Context, serverID string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.failLocked("get_server"); err != nil {
+		return "", err
+	}
+	if m.Servers != nil && !m.Servers[serverID] {
+		return "", ErrOpenStackNotFound
+	}
 	if m.StatusErr != nil {
 		return "", m.StatusErr
 	}
@@ -100,6 +167,20 @@ func (m *MockProvisioner) GetServer(context.Context, string) (string, error) {
 		m.Statuses = m.Statuses[1:]
 	}
 	return status, nil
+}
+
+func (m *MockProvisioner) ListSandboxPorts(context.Context) ([]SandboxPort, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.failLocked("list_ports"); err != nil {
+		return nil, err
+	}
+	ports := make([]SandboxPort, len(m.Ports))
+	copy(ports, m.Ports)
+	for i := range ports {
+		ports[i].FixedIPs = append([]string(nil), ports[i].FixedIPs...)
+	}
+	return ports, nil
 }
 
 type OpenStackProvisioner struct {
@@ -407,7 +488,29 @@ func (p *OpenStackProvisioner) GetServer(ctx context.Context, serverID string) (
 	r := servers.Get(ctx, p.compute, serverID)
 	s, e := r.Extract()
 	if e != nil {
+		if gophercloud.ResponseCodeIs(e, 404) {
+			return "", ErrOpenStackNotFound
+		}
 		return "", e
 	}
 	return s.Status, nil
+}
+
+func (p *OpenStackProvisioner) ListSandboxPorts(ctx context.Context) ([]SandboxPort, error) {
+	var found []SandboxPort
+	err := ports.List(p.network, ports.ListOpts{NetworkID: p.cfg.NetworkID}).EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+		list, err := ports.ExtractPorts(page)
+		if err != nil {
+			return false, err
+		}
+		for _, port := range list {
+			entry := SandboxPort{ID: port.ID, Name: port.Name, DeviceID: port.DeviceID}
+			for _, fixed := range port.FixedIPs {
+				entry.FixedIPs = append(entry.FixedIPs, fixed.IPAddress)
+			}
+			found = append(found, entry)
+		}
+		return true, nil
+	})
+	return found, err
 }

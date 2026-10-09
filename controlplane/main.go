@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -46,9 +46,7 @@ var (
 )
 
 var (
-	reaperTickMutex       sync.Mutex
-	teardownAttemptsMutex sync.Mutex
-	teardownAttempts      = make(map[string]int)
+	reaperTickMutex sync.Mutex
 
 	lastTickUnix         atomic.Int64
 	lastTickDurationMs   atomic.Int64
@@ -57,40 +55,6 @@ var (
 	teardownFailures     atomic.Int64
 	eventsPruned         atomic.Int64
 )
-
-var teardownSteps = []teardownStep{
-	{
-		name: "release_ips",
-		run: func(db DBQueryer, s sandboxRef) error {
-			now := time.Unix(nowUnix(), 0).UTC()
-			quarantineUntilStr := now.Add(time.Duration(defaultQuarantineSeconds) * time.Second).Format("2006-01-02 15:04:05")
-			quarantinedAtStr := now.Format("2006-01-02 15:04:05")
-			_, err := db.Exec(`
-				UPDATE ip_allocations
-				SET status = 'QUARANTINED', quarantined_at = ?, quarantine_until = ?
-				WHERE entity_name = ? AND status = 'ALLOCATED';
-			`, quarantinedAtStr, quarantineUntilStr, s.id)
-			if err != nil {
-				return fmt.Errorf("release_ips: failed to quarantine allocations for '%s': %w", s.id, err)
-			}
-			return nil
-		},
-	},
-	{
-		name: "delete_openstack_resources",
-		run: func(db DBQueryer, s sandboxRef) error {
-			log.Printf("delete_openstack_resources: not implemented yet (sandbox=%s)", s.id)
-			return nil
-		},
-	},
-	{
-		name: "remove_route_and_sync",
-		run: func(db DBQueryer, s sandboxRef) error {
-			log.Printf("remove_route_and_sync: not implemented yet (sandbox=%s)", s.id)
-			return nil
-		},
-	},
-}
 
 func validateRoutingDomain(domain string) error {
 	if len(domain) == 0 || len(domain) > 190 {
@@ -250,6 +214,13 @@ func initEnv() {
 	reaperBatchSize = repBatch
 	teardownMaxAttempts = repMaxAtt
 	eventsRetentionSeconds = repRet
+	tdTimeout, tdConcurrency, tdErr := parseTeardownConfig(os.Getenv)
+	if tdErr != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", tdErr)
+		os.Exit(1)
+	}
+	teardownTimeout = tdTimeout
+	teardownConcurrency = tdConcurrency
 }
 
 var provisionLimiter chan struct{}
@@ -265,6 +236,7 @@ func printUsage() {
 	fmt.Println("  ipam-control allocate --name <team> [--ip <ip>] [--subnet <subnet>]")
 	fmt.Println("  ipam-control sync [--dry-run]")
 	fmt.Println("  ipam-control rollback")
+	fmt.Println("  ipam-control teardown --name <team>")
 	fmt.Println("  ipam-control serve [--port <port>]")
 }
 
@@ -360,6 +332,35 @@ func main() {
 		if !success {
 			os.Exit(1)
 		}
+
+	case "teardown":
+		var name string
+		for i := 2; i < len(os.Args); i++ {
+			if os.Args[i] == "--name" && i+1 < len(os.Args) {
+				name = os.Args[i+1]
+			}
+		}
+		if !dnsLabelRE.MatchString(name) {
+			fmt.Fprintln(os.Stderr, "Error: --name must be a lowercase DNS label of 1-63 characters.")
+			os.Exit(1)
+		}
+		if err := initDB(); err != nil {
+			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := configureProvisioner(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+		defer cancel()
+		result, err := teardownSandbox(ctx, name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Teardown Error: %v\n", err)
+			os.Exit(1)
+		}
+		out, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(out))
 
 	case "sync":
 		dryRun := false
