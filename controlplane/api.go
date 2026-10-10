@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +27,22 @@ func setupAPIRoutes() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
 			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+			return
+		}
+		db, err := getDBConnection()
+		if err != nil {
+			sendJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "DOWN", "db": "ERROR", "timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		defer db.Close()
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			sendJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"status": "DOWN", "db": "ERROR", "timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
 			return
 		}
 		sendJSON(w, http.StatusOK, map[string]string{
@@ -155,7 +169,7 @@ func setupAPIRoutes() http.Handler {
 
 	mux.HandleFunc("/api/events", handleEvents)
 
-	return mux
+	return securityHandlerOrUnavailable(mux)
 }
 
 func handleAllocate(w http.ResponseWriter, r *http.Request) {
@@ -163,33 +177,44 @@ func handleAllocate(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
-	var params map[string]interface{}
-	_ = json.Unmarshal(body, &params)
-	if params == nil {
-		params = make(map[string]interface{})
+	var params struct {
+		SandboxID  string `json:"sandbox_id"`
+		Name       string `json:"name"`
+		Hostname   string `json:"hostname"`
+		IPAddress  string `json:"ip_address"`
+		IP         string `json:"ip"`
+		TTLSeconds *int64 `json:"ttl_seconds"`
+		TTL        *int64 `json:"ttl"`
+	}
+	if err := decodeStrictJSON(w, r, &params); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
 	}
 
-	sandboxID, _ := params["sandbox_id"].(string)
+	sandboxID := params.SandboxID
 	if sandboxID == "" {
-		sandboxID, _ = params["name"].(string)
+		sandboxID = params.Name
 	}
-	hostname, _ := params["hostname"].(string)
-	preferredIP, _ := params["ip_address"].(string)
+	hostname := params.Hostname
+	preferredIP := params.IPAddress
 	if preferredIP == "" {
-		preferredIP, _ = params["ip"].(string)
+		preferredIP = params.IP
 	}
 
-	if sandboxID == "" {
-		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing sandbox_id / name"})
+	if sandboxID == "" || !dnsLabelRE.MatchString(sandboxID) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "sandbox_id/name must be a lowercase DNS label of 1-63 characters"})
+		return
+	}
+	if preferredIP != "" && !validIPv4Address(preferredIP) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "ip_address must be a literal IPv4 address"})
 		return
 	}
 
 	var ttlSec int64
-	if tVal, ok := params["ttl_seconds"].(float64); ok {
-		ttlSec = int64(tVal)
-	} else if tVal, ok := params["ttl"].(float64); ok {
-		ttlSec = int64(tVal)
+	if params.TTLSeconds != nil {
+		ttlSec = *params.TTLSeconds
+	} else if params.TTL != nil {
+		ttlSec = *params.TTL
 	}
 
 	res, err := allocateLeaseTTL(sandboxID, hostname, "sandbox", preferredIP, ttlSec)
@@ -216,18 +241,13 @@ func handleExtendSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-
 	var req extendRequest
-	if err := dec.Decode(&req); err != nil {
+	if err := decodeStrictJSON(w, r, &req); err != nil {
 		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
 		return
 	}
 
-	re := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`)
-	if !re.MatchString(req.SandboxID) {
+	if !dnsLabelRE.MatchString(req.SandboxID) {
 		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid sandbox_id format"})
 		return
 	}
@@ -285,31 +305,45 @@ func handleRelease(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
-	var params map[string]interface{}
-	_ = json.Unmarshal(body, &params)
-	if params == nil {
-		params = make(map[string]interface{})
+	var params struct {
+		SandboxID         string `json:"sandbox_id"`
+		Name              string `json:"name"`
+		IPAddress         string `json:"ip_address"`
+		IP                string `json:"ip"`
+		CooldownSeconds   *int   `json:"cooldown_seconds"`
+		QuarantineSeconds *int   `json:"quarantine_seconds"`
+	}
+	if err := decodeStrictJSON(w, r, &params); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
 	}
 
-	sandboxID, _ := params["sandbox_id"].(string)
+	sandboxID := params.SandboxID
 	if sandboxID == "" {
-		sandboxID, _ = params["name"].(string)
+		sandboxID = params.Name
 	}
-	ipAddress, _ := params["ip_address"].(string)
+	ipAddress := params.IPAddress
 	if ipAddress == "" {
-		ipAddress, _ = params["ip"].(string)
+		ipAddress = params.IP
 	}
 
 	cooldown := 0
-	if c, ok := params["cooldown_seconds"].(float64); ok {
-		cooldown = int(c)
-	} else if c, ok := params["quarantine_seconds"].(float64); ok {
-		cooldown = int(c)
+	if params.CooldownSeconds != nil {
+		cooldown = *params.CooldownSeconds
+	} else if params.QuarantineSeconds != nil {
+		cooldown = *params.QuarantineSeconds
 	}
 
 	if sandboxID == "" && ipAddress == "" {
 		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Missing sandbox_id or ip_address"})
+		return
+	}
+	if sandboxID != "" && !dnsLabelRE.MatchString(sandboxID) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "sandbox_id must be a lowercase DNS label"})
+		return
+	}
+	if ipAddress != "" && !validIPv4Address(ipAddress) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "ip_address must be a literal IPv4 address"})
 		return
 	}
 
@@ -330,6 +364,11 @@ func handleReclaim(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
+	var request struct{}
+	if err := decodeStrictJSON(w, r, &request); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
 	count := reclaimExpiredQuarantines()
 	sendJSON(w, http.StatusOK, map[string]int{"reclaimed_count": count})
 }
@@ -340,15 +379,8 @@ func handleProvision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateReq
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := decodeStrictJSON(w, r, &req); err != nil {
 		provisionError(w, http.StatusBadRequest, "", "decode", errors.New("invalid request payload"))
-		return
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		provisionError(w, http.StatusBadRequest, req.Team, "decode", errors.New("request must contain one JSON object"))
 		return
 	}
 	if req.Team == "" {
@@ -379,12 +411,15 @@ func handleGatewaySync(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
-	var params map[string]interface{}
-	_ = json.Unmarshal(body, &params)
+	var params struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if err := decodeStrictJSON(w, r, &params); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
 
-	dryRun, _ := params["dry_run"].(bool)
-	success, msg := syncHAProxyDualGateways(dryRun)
+	success, msg := syncHAProxyDualGateways(params.DryRun)
 	code := http.StatusOK
 	if !success {
 		code = http.StatusInternalServerError
@@ -397,6 +432,11 @@ func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
+	var request struct{}
+	if err := decodeStrictJSON(w, r, &request); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
 	success := rollbackConfig()
 	code := http.StatusOK
 	if !success {
@@ -405,6 +445,11 @@ func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, code, map[string]bool{"success": success})
 }
 func runAPIServer(port int) {
+	securityConfig, err := loadAPISecurityConfig()
+	if err != nil {
+		log.Fatalf("FATAL: API security configuration: %v", err)
+	}
+	logSecurityConfiguration(securityConfig)
 	if err := configureProvisioner(context.Background()); err != nil {
 		log.Fatalf("FATAL: provisioner configuration: %v", err)
 	}

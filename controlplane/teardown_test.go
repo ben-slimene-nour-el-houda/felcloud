@@ -285,7 +285,7 @@ func TestTeardownEndpointConcurrentRequestGetsAccepted(t *testing.T) {
 	}()
 	<-started
 	second := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes/tear-concurrent/teardown", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sandboxes/tear-concurrent/teardown", strings.NewReader(`{}`))
 	handler.ServeHTTP(second, req)
 	if second.Code != http.StatusAccepted {
 		t.Fatalf("concurrent request status=%d body=%s", second.Code, second.Body.String())

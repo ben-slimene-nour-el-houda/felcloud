@@ -14,6 +14,25 @@ BASE_URL="${RECYCLE_BASE_URL:-${BASE_URL:-http://127.0.0.1:8080}}"
 COOLDOWN_SECONDS="${RECYCLE_COOLDOWN_SECONDS:-5}"
 SANDBOX_ID="recycle-test-$(date +%s)"
 HOSTNAME="${SANDBOX_ID}.${ROUTING_DOMAIN:-cstam.felcloud.tn}"
+ADMIN_TOKEN="${ADMIN_TOKEN:-}"
+
+if [[ ! "$SANDBOX_ID" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+  echo "Generated SANDBOX_ID is not a lowercase DNS label." >&2
+  exit 2
+fi
+if [[ ! "$COOLDOWN_SECONDS" =~ ^[0-9]{1,4}$ ]] || (( 10#$COOLDOWN_SECONDS < 1 || 10#$COOLDOWN_SECONDS > 3600 )); then
+  echo "RECYCLE_COOLDOWN_SECONDS must be an integer from 1 to 3600." >&2
+  exit 2
+fi
+COOLDOWN_SECONDS=$((10#$COOLDOWN_SECONDS))
+if [[ -n "$ADMIN_TOKEN" && ( ${#ADMIN_TOKEN} -lt 24 || "$ADMIN_TOKEN" == *[[:space:]]* ) ]]; then
+  echo "ADMIN_TOKEN must be at least 24 characters and contain no whitespace." >&2
+  exit 2
+fi
+if [[ -z "$ADMIN_TOKEN" && "${AUTH_DISABLED:-false}" != "true" ]]; then
+  echo "ADMIN_TOKEN is required unless AUTH_DISABLED=true." >&2
+  exit 2
+fi
 
 ALLOCATE_ENDPOINT="$BASE_URL/ipam/leases/allocate"
 RELEASE_ENDPOINT="$BASE_URL/ipam/leases/release"
@@ -38,8 +57,27 @@ if ! curl -fsS "$HEALTH_ENDPOINT" >/dev/null 2>&1; then
 fi
 
 parse_json() {
-  python3 -c "import json, sys; data=json.load(sys.stdin); print(data.get('$1', ''))"
+  JSON_KEY="$1" python3 -c 'import json, os, sys; data=json.load(sys.stdin); print(data.get(os.environ["JSON_KEY"], ""))'
 }
+
+json_payload() {
+  PAYLOAD_SANDBOX_ID="$1" PAYLOAD_HOSTNAME="$2" PAYLOAD_IP="$3" PAYLOAD_COOLDOWN="$4" python3 -c '
+import json, os
+payload = {"sandbox_id": os.environ["PAYLOAD_SANDBOX_ID"]}
+if os.environ["PAYLOAD_HOSTNAME"]:
+    payload["hostname"] = os.environ["PAYLOAD_HOSTNAME"]
+if os.environ["PAYLOAD_IP"]:
+    payload["ip_address"] = os.environ["PAYLOAD_IP"]
+if os.environ["PAYLOAD_COOLDOWN"]:
+    payload["cooldown_seconds"] = int(os.environ["PAYLOAD_COOLDOWN"])
+print(json.dumps(payload))
+'
+}
+
+AUTH_HEADERS=(-H 'Content-Type: application/json')
+if [[ -n "$ADMIN_TOKEN" ]]; then
+  AUTH_HEADERS+=(-H "Authorization: Bearer ${ADMIN_TOKEN}")
+fi
 
 echo "======================================================================"
 echo "          FELCLOUD IP RECYCLING & QUARANTINE TEST                     "
@@ -51,8 +89,8 @@ echo "======================================================================"
 
 echo "--> Step 1: Requesting initial IP allocation..."
 ALLOC_P1="$(curl -fsS -X POST "$ALLOCATE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}\",\"hostname\":\"${HOSTNAME}\"}")"
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "$SANDBOX_ID" "$HOSTNAME" "" "")")"
 
 FIRST_IP="$(echo "$ALLOC_P1" | parse_json "ip_address")"
 if [[ -z "$FIRST_IP" ]]; then
@@ -63,8 +101,8 @@ echo "✓ Allocated IP: ${FIRST_IP}"
 
 echo "--> Step 2: Releasing IP lease into QUARANTINE (${COOLDOWN_SECONDS}s cooldown)..."
 RELEASE_RES="$(curl -fsS -X POST "$RELEASE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}\",\"ip_address\":\"${FIRST_IP}\",\"cooldown_seconds\":${COOLDOWN_SECONDS}}")"
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "$SANDBOX_ID" "" "$FIRST_IP" "$COOLDOWN_SECONDS")")"
 
 RELEASE_STATUS="$(echo "$RELEASE_RES" | parse_json "status")"
 echo "✓ Release Response: Status=${RELEASE_STATUS}"
@@ -75,8 +113,8 @@ fi
 
 echo "--> Step 3: Attempting immediate reallocation while in quarantine..."
 IMMEDIATE_ALLOC="$(curl -fsS -X POST "$ALLOCATE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}-imm\",\"hostname\":\"${HOSTNAME}-imm\"}")"
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "${SANDBOX_ID}-imm" "${HOSTNAME}-imm" "" "")")"
 
 IMMEDIATE_IP="$(echo "$IMMEDIATE_ALLOC" | parse_json "ip_address")"
 echo "Immediate allocation result: ${IMMEDIATE_IP}"
@@ -89,20 +127,20 @@ echo "✓ PASS: Quarantined IP ${FIRST_IP} was NOT reallocated (Got alternate: $
 
 # Release the immediate one to keep clean
 curl -fsS -X POST "$RELEASE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}-imm\",\"ip_address\":\"${IMMEDIATE_IP}\",\"cooldown_seconds\":1}" >/dev/null
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "${SANDBOX_ID}-imm" "" "$IMMEDIATE_IP" 1)" >/dev/null
 
 echo "--> Step 4: Waiting for quarantine cooldown (${COOLDOWN_SECONDS}s)..."
 sleep $(( COOLDOWN_SECONDS + 1 ))
 
 echo "--> Step 5: Triggering reclamation of expired quarantines..."
-RECLAIM_RES="$(curl -fsS -X POST "$RECLAIM_ENDPOINT" -H 'Content-Type: application/json' -d '{}')"
+RECLAIM_RES="$(curl -fsS -X POST "$RECLAIM_ENDPOINT" "${AUTH_HEADERS[@]}" -d '{}')"
 echo "✓ Reclaim response: ${RECLAIM_RES}"
 
 echo "--> Step 6: Verifying original IP can now be safely reallocated..."
 FINAL_ALLOC="$(curl -fsS -X POST "$ALLOCATE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}-final\",\"hostname\":\"${HOSTNAME}-final\",\"ip_address\":\"${FIRST_IP}\"}")"
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "${SANDBOX_ID}-final" "${HOSTNAME}-final" "$FIRST_IP" "")")"
 
 FINAL_IP="$(echo "$FINAL_ALLOC" | parse_json "ip_address")"
 if [[ "$FINAL_IP" == "$FIRST_IP" ]]; then
@@ -113,8 +151,8 @@ fi
 
 # Clean up final test allocation
 curl -fsS -X POST "$RELEASE_ENDPOINT" \
-  -H 'Content-Type: application/json' \
-  -d "{\"sandbox_id\":\"${SANDBOX_ID}-final\",\"ip_address\":\"${FINAL_IP}\",\"cooldown_seconds\":1}" >/dev/null
+  "${AUTH_HEADERS[@]}" \
+  -d "$(json_payload "${SANDBOX_ID}-final" "" "$FINAL_IP" 1)" >/dev/null
 
 echo ""
 echo "======================================================================"

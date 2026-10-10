@@ -19,6 +19,7 @@ import (
 
 func setupTestDB(t *testing.T) string {
 	t.Helper()
+	t.Setenv("AUTH_DISABLED", "true")
 	tmpDir := t.TempDir()
 	dbFile := filepath.Join(tmpDir, "test_ipam.db")
 	dbPath = dbFile

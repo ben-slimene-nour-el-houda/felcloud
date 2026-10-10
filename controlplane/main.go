@@ -238,6 +238,7 @@ func printUsage() {
 	fmt.Println("  ipam-control rollback")
 	fmt.Println("  ipam-control teardown --name <team>")
 	fmt.Println("  ipam-control serve [--port <port>]")
+	fmt.Println("  ipam-control gateway-api")
 }
 
 func main() {
@@ -379,6 +380,9 @@ func main() {
 			}
 		}
 		runAPIServer(port)
+
+	case "gateway-api":
+		runGatewayAPIServer()
 
 	default:
 		fmt.Printf("Unknown action: %s\n", action)

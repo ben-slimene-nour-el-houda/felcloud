@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -167,19 +165,9 @@ func handleReconcileApply(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
 	var request reconcileRequest
-	if err := dec.Decode(&request); err != nil {
+	if err := decodeStrictJSON(w, r, &request); err != nil {
 		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request payload"})
-		return
-	}
-	if err := dec.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
-		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "request must contain one JSON object"})
-		return
-	} else if err == nil {
-		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "request must contain one JSON object"})
 		return
 	}
 	if len(request.Actions) == 0 {
