@@ -1,128 +1,199 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# FelCloud Measured VRRP Failover Test Suite
-# Tests:
-# 1. HAProxy-only failure on GW1 (Validates Keepalived tracking script weight -60: 150 + (-60) = 90 < 100)
-# 2. Full Keepalived process failure on GW1
-# 3. High-resolution sub-second failover measurement & packet loss calculation
-# ==============================================================================
+# Measures an actual VIP failover by stopping Keepalived on its live holder.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VIP_IP="${VIP_IP:-10.20.20.246}"
-GW1_HOST="${GW1_HOST:-gw1}"
-GW2_HOST="${GW2_HOST:-gw2}"
-TARGET_URL="${TARGET_URL:-http://${VIP_IP}}"
-TEST_HOST_HEADER="${TEST_HOST_HEADER:-team1.${ROUTING_DOMAIN:-cstam.felcloud.tn}}"
-FAILURE_MODE="${FAILURE_MODE:-haproxy-only}" # options: haproxy-only, keepalived
+GATEWAY_API_BASE_URL="${GATEWAY_API_BASE_URL:-${CONTROL_PLANE_BASE_URL:-}}"
+CONTROL_PLANE_TOKEN="${CONTROL_PLANE_TOKEN:-}"
+EVENTS_TOKEN="${EVENTS_TOKEN:-}"
+VIP_IP="${VIP_IP:-${VIP_ADDRESS:-10.20.20.246}}"
+TARGET_URL="${FAILOVER_PROBE_URL:-${TARGET_URL:-http://${VIP_IP}/}}"
+TEST_HOST_HEADER="${FAILOVER_PROBE_HOST:-${TEST_HOST_HEADER:-team1.${ROUTING_DOMAIN:-cstam.felcloud.tn}}}"
 ANSIBLE_INVENTORY="${ANSIBLE_INVENTORY:-$ROOT_DIR/ansible/inventory/hosts.yml}"
+FAILOVER_THRESHOLD_MS="${FAILOVER_THRESHOLD_MS:-3000}"
+POLL_INTERVAL_MS="${POLL_INTERVAL_MS:-75}"
 REMOTE_USER="${REMOTE_USER:-ansible}"
-POLL_INTERVAL_MS="${POLL_INTERVAL_MS:-100}"
 
-now_ms() {
-  python3 -c 'import time; print(int(time.time() * 1000))'
-}
+FAILOVER_FROM="unknown"
+FAILOVER_TO="unknown"
+FAILOVER_RESULT="failed"
+FAILOVER_REASON=""
+DOWNTIME_MS=0
+STOPPED_GATEWAY=""
+PROBE_HEADERS=""
 
-run_remote_cmd() {
-  local host="$1"
-  local cmd="$2"
+now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
-  if command -v ansible >/dev/null 2>&1 && [[ -f "$ANSIBLE_INVENTORY" ]]; then
-    ansible -i "$ANSIBLE_INVENTORY" "$host" -a "$cmd" -b --vault-password-file "$ROOT_DIR/ansible/.vault_pass" 2>/dev/null || \
-    ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${host}" "$cmd"
-    return
+api_curl() {
+  local url="$1"
+  if [[ -n "$CONTROL_PLANE_TOKEN" ]]; then
+    curl -fsS --connect-timeout 2 --max-time 8 -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN}" "$url"
+  else
+    curl -fsS --connect-timeout 2 --max-time 8 "$url"
   fi
-
-  ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${host}" "$cmd"
 }
 
-check_http_probe() {
-  curl -s -o /dev/null -w "%{http_code}" -m 1 -H "Host: ${TEST_HOST_HEADER}" "$TARGET_URL" 2>/dev/null || echo "000"
+get_vip_holder() {
+  local body
+  body="$(api_curl "${GATEWAY_API_BASE_URL%/}/api/gateways/status?refresh=true")" || return 1
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("vip_holder", "unknown"))' <<<"$body"
 }
 
-echo "======================================================================"
-echo "          FELCLOUD MEASURED VRRP FAILOVER BENCHMARK                   "
-echo "======================================================================"
-echo "Target VIP:        ${VIP_IP}"
-echo "Target URL:        ${TARGET_URL}"
-echo "Host Header:       ${TEST_HOST_HEADER}"
-echo "Failure Mode:      ${FAILURE_MODE}"
-echo "======================================================================"
+run_remote_keepalived() {
+  local gateway="$1" action="$2"
+  if command -v ansible >/dev/null 2>&1 && [[ -f "$ANSIBLE_INVENTORY" ]]; then
+    ansible -i "$ANSIBLE_INVENTORY" "$gateway" -m command \
+      -a "systemctl ${action} keepalived" -b \
+      --vault-password-file "$ROOT_DIR/ansible/.vault_pass"
+  else
+    ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${gateway}" \
+      "sudo systemctl ${action} keepalived"
+  fi
+}
 
-echo "--> Step 1: Validating initial baseline reachability..."
-INITIAL_STATUS="$(check_http_probe)"
-echo "Initial probe status code: ${INITIAL_STATUS}"
+probe_vip() {
+  local status gateway
+  : >"$PROBE_HEADERS"
+  status="$(curl -sS --connect-timeout 1 --max-time 1 -D "$PROBE_HEADERS" -o /dev/null \
+    -w '%{http_code}' -H "Host: ${TEST_HOST_HEADER}" "$TARGET_URL" 2>/dev/null || true)"
+  gateway="$(awk 'tolower($1) == "x-gateway-id:" {gsub("\r", "", $2); value=$2} END {print value}' "$PROBE_HEADERS")"
+  printf '%s\t%s\n' "${status:-000}" "${gateway:-unknown}"
+}
 
-echo "--> Step 2: Triggering simulated failure on GW1 (Mode: ${FAILURE_MODE})..."
-START_FAIL_MS="$(now_ms)"
+post_failover_event() {
+  [[ -n "$GATEWAY_API_BASE_URL" ]] || return 0
+  local payload
+  payload="$(python3 - "$FAILOVER_FROM" "$FAILOVER_TO" "$DOWNTIME_MS" "$FAILOVER_RESULT" "$FAILOVER_REASON" <<'PY'
+import json, sys
+source, target, duration, result, reason = sys.argv[1:]
+detail = f"from={source} to={target} result={result}"
+if reason:
+    detail += f" reason={reason}"
+print(json.dumps({"type": "failover", "duration_ms": int(duration), "detail": detail}))
+PY
+)"
+  if [[ -n "$CONTROL_PLANE_TOKEN" ]]; then
+    curl -fsS --connect-timeout 2 --max-time 5 -X POST \
+      -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN}" -H 'Content-Type: application/json' \
+      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
+      echo "WARN: could not post failover timing event" >&2
+  elif [[ -n "$EVENTS_TOKEN" ]]; then
+    curl -fsS --connect-timeout 2 --max-time 5 -X POST \
+      -H "X-Events-Token: ${EVENTS_TOKEN}" -H 'Content-Type: application/json' \
+      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
+      echo "WARN: could not post failover timing event" >&2
+  else
+    curl -fsS --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' \
+      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
+      echo "WARN: could not post failover timing event" >&2
+  fi
+}
 
-if [[ "$FAILURE_MODE" == "haproxy-only" ]]; then
-  echo "Stopping HAProxy service on GW1 (Keepalived weight should drop from 150 to 90)..."
-  run_remote_cmd "$GW1_HOST" "systemctl stop haproxy" || true
-else
-  echo "Stopping Keepalived service on GW1..."
-  run_remote_cmd "$GW1_HOST" "systemctl stop keepalived" || true
+finish() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  if [[ -n "$STOPPED_GATEWAY" ]]; then
+    echo "Restoring keepalived on ${STOPPED_GATEWAY}..."
+    if ! run_remote_keepalived "$STOPPED_GATEWAY" start; then
+      echo "FAIL: could not restart keepalived on ${STOPPED_GATEWAY}" >&2
+      FAILOVER_RESULT="failed"
+      FAILOVER_REASON="${FAILOVER_REASON:+${FAILOVER_REASON}; }keepalived restart failed"
+      exit_code=1
+    fi
+  fi
+  post_failover_event
+  [[ -z "$PROBE_HEADERS" ]] || rm -f "$PROBE_HEADERS"
+  exit "$exit_code"
+}
+trap finish EXIT
+
+if [[ -z "$GATEWAY_API_BASE_URL" ]]; then
+  FAILOVER_REASON="GATEWAY_API_BASE_URL is required to read live gateway status"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
+if ! [[ "$FAILOVER_THRESHOLD_MS" =~ ^[1-9][0-9]*$ ]] || (( FAILOVER_THRESHOLD_MS > 60000 )); then
+  FAILOVER_REASON="FAILOVER_THRESHOLD_MS must be 1..60000"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
+if ! [[ "$POLL_INTERVAL_MS" =~ ^[1-9][0-9]*$ ]]; then
+  FAILOVER_REASON="POLL_INTERVAL_MS must be a positive integer"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
+PROBE_HEADERS="$(mktemp)"
+
+echo "Reading live VIP holder from ${GATEWAY_API_BASE_URL%/}/api/gateways/status..."
+if ! FAILOVER_FROM="$(get_vip_holder)"; then
+  FAILOVER_REASON="could not read live gateway status"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
+FAILOVER_TO="$FAILOVER_FROM"
+if [[ "$FAILOVER_FROM" != gw1 && "$FAILOVER_FROM" != gw2 ]]; then
+  FAILOVER_REASON="status API reported unknown VIP holder: ${FAILOVER_FROM}"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
 fi
 
-TRIGGERED_MS="$(now_ms)"
-echo "Failure command executed at +$(( TRIGGERED_MS - START_FAIL_MS ))ms. Polling VIP..."
+baseline="$(probe_vip)"
+baseline_status="${baseline%%$'\t'*}"
+baseline_gateway="${baseline#*$'\t'}"
+if (( baseline_status < 200 || baseline_status >= 400 )) || [[ "$baseline_gateway" != "$FAILOVER_FROM" ]]; then
+  FAILOVER_REASON="baseline VIP probe was unhealthy or disagreed with status API (HTTP ${baseline_status}, header ${baseline_gateway})"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
 
-# Measure downtime and failover recovery
-OUTAGE_START=0
+STOPPED_GATEWAY="$FAILOVER_FROM"
+START_MS="$(now_ms)"
+echo "Stopping keepalived on live VIP holder ${STOPPED_GATEWAY}..."
+if ! run_remote_keepalived "$STOPPED_GATEWAY" stop; then
+  FAILOVER_REASON="failed to stop keepalived on ${STOPPED_GATEWAY}"
+  echo "FAIL: ${FAILOVER_REASON}" >&2
+  exit 1
+fi
+
+OUTAGE_START_MS=0
 RECOVERED_MS=0
-ATTEMPTS=0
-ERRORS=0
-
-for i in $(seq 1 300); do
-  CODE="$(check_http_probe)"
-  CURRENT_MS="$(now_ms)"
-  
-  if [[ "$CODE" != "200" && "$CODE" != "301" && "$CODE" != "302" ]]; then
-    ERRORS=$(( ERRORS + 1 ))
-    if [[ $OUTAGE_START -eq 0 ]]; then
-      OUTAGE_START=$CURRENT_MS
-    fi
+DEADLINE_MS=$(( START_MS + FAILOVER_THRESHOLD_MS ))
+while (( $(now_ms) < DEADLINE_MS )); do
+  sample="$(probe_vip)"
+  status="${sample%%$'\t'*}"
+  responding_gateway="${sample#*$'\t'}"
+  observed_ms="$(now_ms)"
+  if ! [[ "$status" =~ ^[0-9]{3}$ ]] || (( status < 200 || status >= 500 )); then
+    if (( OUTAGE_START_MS == 0 )); then OUTAGE_START_MS="$observed_ms"; fi
+  elif [[ "$responding_gateway" == "$FAILOVER_FROM" ]]; then
+    : # The original holder still answers; continue waiting for the new holder.
+  elif [[ "$responding_gateway" == gw1 || "$responding_gateway" == gw2 ]]; then
+    FAILOVER_TO="$responding_gateway"
+    RECOVERED_MS="$observed_ms"
+    break
   else
-    if [[ $OUTAGE_START -ne 0 && $RECOVERED_MS -eq 0 ]]; then
-      RECOVERED_MS=$CURRENT_MS
-      break
-    fi
+    if (( OUTAGE_START_MS == 0 )); then OUTAGE_START_MS="$observed_ms"; fi
   fi
-  python3 -c "import time; time.sleep(${POLL_INTERVAL_MS} / 1000.0)"
+  sleep "0.$(printf '%03d' "$POLL_INTERVAL_MS")"
 done
 
-if [[ $RECOVERED_MS -eq 0 ]]; then
-  RECOVERED_MS="$(now_ms)"
-fi
-
-if [[ $OUTAGE_START -gt 0 ]]; then
-  MEASURED_DOWNTIME_MS=$(( RECOVERED_MS - OUTAGE_START ))
+if (( RECOVERED_MS > 0 )); then
+  after_holder="$(get_vip_holder || printf unknown)"
+  elapsed_ms=$(( RECOVERED_MS - START_MS ))
+  if [[ "$after_holder" == "$FAILOVER_TO" ]] && (( elapsed_ms <= FAILOVER_THRESHOLD_MS )); then
+    FAILOVER_RESULT="success"
+    if (( OUTAGE_START_MS > 0 )); then DOWNTIME_MS=$(( RECOVERED_MS - OUTAGE_START_MS )); fi
+    echo "PASS: VIP moved from ${FAILOVER_FROM} to ${FAILOVER_TO}; service resumed in ${elapsed_ms}ms (downtime ${DOWNTIME_MS}ms)."
+    exit 0
+  fi
+  FAILOVER_TO="$after_holder"
+  FAILOVER_REASON="HTTP responder changed to ${responding_gateway}, but live status reports ${after_holder} or threshold was exceeded (${elapsed_ms}ms)"
 else
-  MEASURED_DOWNTIME_MS=0
+  now="$(now_ms)"
+  if (( OUTAGE_START_MS > 0 )); then DOWNTIME_MS=$(( now - OUTAGE_START_MS )); fi
+  FAILOVER_REASON="VIP did not move to a different responding gateway within ${FAILOVER_THRESHOLD_MS}ms"
 fi
 
-TOTAL_TEST_DURATION_MS=$(( RECOVERED_MS - START_FAIL_MS ))
-
-echo "--> Step 3: Measuring network packet loss during switchover..."
-PING_LOSS="$(ping -c 10 -i 0.2 -q "$VIP_IP" 2>/dev/null | awk -F'%' '/packet loss/ {print $1}' | awk '{print $NF}' || echo '0')"
-
-echo ""
-echo "======================================================================"
-echo "                      FAILOVER TEST RESULTS                           "
-echo "======================================================================"
-printf "Failure Trigger Mode:        %s\n" "$FAILURE_MODE"
-printf "Keepalived Script Weight:    -60 (GW1: 150 + (-60) = 90 < GW2: 100)\n"
-printf "Outage Detected:             %s\n" "$([[ $OUTAGE_START -gt 0 ]] && echo 'YES' || echo 'SUB-POLLING (<100ms)')"
-printf "Measured Failover Downtime:  %d ms\n" "$MEASURED_DOWNTIME_MS"
-printf "Total Time to Normalcy:      %d ms\n" "$TOTAL_TEST_DURATION_MS"
-printf "Edge VIP Packet Loss:        %s%%\n" "$PING_LOSS"
-printf "GW2 Takeover Status:         %s (HTTP %s)\n" "$(( (CODE >= 200 && CODE < 300) ? 1 : 0 ))" "$CODE"
-echo "======================================================================"
-
-echo "--> Step 4: Restoring GW1 service..."
-if [[ "$FAILURE_MODE" == "haproxy-only" ]]; then
-  run_remote_cmd "$GW1_HOST" "systemctl start haproxy" || true
-else
-  run_remote_cmd "$GW1_HOST" "systemctl start keepalived" || true
-fi
-echo "✓ GW1 service restored."
+echo "FAIL: ${FAILOVER_REASON} (before=${FAILOVER_FROM}, after=${FAILOVER_TO}, downtime=${DOWNTIME_MS}ms)" >&2
+exit 1

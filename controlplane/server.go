@@ -177,12 +177,12 @@ func logRequest(next http.HandlerFunc) http.HandlerFunc {
 var allowedGateways = map[string]bool{"gw1": true, "gw2": true}
 var allowedSources = map[string]bool{"haproxy": true, "keepalived": true}
 var allowedEventTypes = map[string]bool{
-	"failover":        true,
-	"rollback":        true,
+	"failover":         true,
+	"rollback":         true,
 	"keepalived_state": true,
-	"sync":            true,
-	"failover_test":   true,
-	"health_check":    true,
+	"sync":             true,
+	"failover_test":    true,
+	"health_check":     true,
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
@@ -209,6 +209,9 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
+		}
+		if r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1" {
+			gwCache.Invalidate()
 		}
 		pr := gwCache.Get(store)
 
@@ -281,7 +284,15 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			if strings.Contains(errStr, "timed out") {
 				code = http.StatusGatewayTimeout // 504 = timeout specifically
 			}
-			errJSON(w, code, "log fetch failed", errStr)
+			// Include applied_limit so callers can confirm clamping even in error path
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":         "log fetch failed",
+				"detail":        errStr,
+				"code":          code,
+				"applied_limit": limit,
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -326,26 +337,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 
 	// ── POST /api/gateways/failover ────────────────────────────────────────────
 	mux.HandleFunc("/api/gateways/failover", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			errJSON(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-		if body["confirm"] != true && body["confirm"] != "true" {
-			errJSON(w, http.StatusBadRequest, "confirm:true required")
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"success":    true,
-			"before":     "gw1",
-			"after":      "gw2",
-			"downtime_ms": 0,
-			"mode":       body["mode"],
-		})
+		handleGatewayFailover(store, w, r)
 	})))
 
 	// ── POST /api/gateways/sync ────────────────────────────────────────────────
@@ -489,13 +481,13 @@ func gwEventsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 // ── /api/gateways/events POST ─────────────────────────────────────────────────
 
 type eventsPostBody struct {
-	Type       string  `json:"type"`
-	State      string  `json:"state"`
-	Host       string  `json:"hostname"`
-	TsMs       int64   `json:"ts_ms"`
-	DurationMs int64   `json:"duration_ms"`
-	Detail     string  `json:"detail"`
-	SandboxID  string  `json:"sandbox_id"`
+	Type       string `json:"type"`
+	State      string `json:"state"`
+	Host       string `json:"hostname"`
+	TsMs       int64  `json:"ts_ms"`
+	DurationMs int64  `json:"duration_ms"`
+	Detail     string `json:"detail"`
+	SandboxID  string `json:"sandbox_id"`
 }
 
 func gwEventsPost(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
@@ -583,11 +575,11 @@ func gwGenerationsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 			// Count backend stanzas as a proxy for "number of active routes"
 			backendCount := strings.Count(snapshot, "\nbackend ")
 			gens = append(gens, map[string]any{
-				"id":             id,
-				"generation_id":  genID,
-				"status":         status,
-				"created_at":     createdAt,
-				"backend_count":  backendCount,
+				"id":            id,
+				"generation_id": genID,
+				"status":        status,
+				"created_at":    createdAt,
+				"backend_count": backendCount,
 			})
 		}
 	}

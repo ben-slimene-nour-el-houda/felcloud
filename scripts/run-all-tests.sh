@@ -5,7 +5,7 @@
 # 1. IPAM Transactional Allocation, Quarantine & Auto-Reclamation
 # 2. Pre-Flight Sandbox Health Check before Route Opening
 # 3. Dual-Gateway Pre-Validation & Automatic Rollback on Invalid Configuration
-# 4. Keepalived Script Weight & Guaranteed HAProxy-Only Failover Logic
+# 4. Static Keepalived Weight Review (does not exercise live failover)
 # 5. HTTPS / TLS Configuration & Dual Port 80/443 ACL Routing
 # 6. REST API Server Health & Endpoints
 # 7. Go Control Plane Unit & Race Tests
@@ -185,7 +185,7 @@ EOF
   fi
 fi
 
-# Test 4: Keepalived Failover Weight Mathematics (HAProxy-Only Failure)
+# Test 4: Static Keepalived Failover Weight Check (not a live failover test)
 echo ""
 echo "[TEST 4] Keepalived VRRP Script Weight Review..."
 if python3 - "$ROOT_DIR" <<'EOF'
@@ -207,7 +207,7 @@ assert dropped_priority < gw2_priority, f"GW1 reduced priority ({dropped_priorit
 EOF
 
 then
-  record_pass "Guaranteed failover confirmed on HAProxy-only failure (150 + (-60) = 90 < 100)"
+  record_pass "Static priority/weight arithmetic passes; live failover was not tested"
 else
   record_fail "Keepalived weight review failed"
 fi

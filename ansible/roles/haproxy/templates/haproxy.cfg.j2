@@ -38,6 +38,7 @@ frontend health_check
 frontend http_front
     bind *:80
     mode http
+    http-response set-header X-Gateway-ID {{ inventory_hostname }}
 
 {% if teams is defined %}
 {% for team in teams %}
@@ -51,6 +52,7 @@ frontend http_front
 frontend https_front
     bind *:443 ssl crt {{ haproxy_tls_cert_file | default('/etc/haproxy/certs/felcloud-gateway.pem') }} alpn h2,http/1.1
     mode http
+    http-response set-header X-Gateway-ID {{ inventory_hostname }}
 
 {% if teams is defined %}
 {% for team in teams %}
