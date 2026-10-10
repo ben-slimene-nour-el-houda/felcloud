@@ -1,0 +1,943 @@
+{
+  "aggregates": {
+    "ip_uniqueness": true,
+    "provisions_per_minute": 3181.013,
+    "success_rate_percent": 100.0,
+    "sync_coalescing_ratio": 1.333,
+    "sync_coalescing_savings_percent": 25.0,
+    "timings_ms": {
+      "allocate": {
+        "max": 138.0,
+        "p50": 32.0,
+        "p95": 138.0
+      },
+      "health": {
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "port": {
+        "max": 11.0,
+        "p50": 11.0,
+        "p95": 11.0
+      },
+      "server_active": {
+        "max": 22.0,
+        "p50": 22.0,
+        "p95": 22.0
+      },
+      "sync": {
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "teardown_ms": {
+        "max": 182.437,
+        "p50": 66.912,
+        "p95": 182.437
+      },
+      "total": {
+        "max": 164.0,
+        "p50": 99.0,
+        "p95": 164.0
+      }
+    }
+  },
+  "assertions": [
+    {
+      "detail": "12/12; failures by step/status: none",
+      "name": "success count",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "12/12 unique; subnet=10.20.30.0/24; excluded addresses checked",
+      "name": "unique valid sandbox IPs",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "servers=12/12, ports=12/12",
+      "name": "unique server_id and port_id values",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "lease endpoint HTTP 200; checked 12 successful teams and duplicate allocated IPs",
+      "name": "one allocated lease per successful team",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "Set VIP_IP or PUBLIC_IP to enable routed HTTP verification",
+      "name": "successful hostnames respond via VIP/PUBLIC IP",
+      "passed": true,
+      "skipped": true
+    },
+    {
+      "detail": "endpoint HTTP 200; stuck=[]",
+      "name": "no sandbox remains PROVISIONING",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "9 SYNC events versus 12 successful provisions (HTTP 200)",
+      "name": "gateway sync events observed",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "12/12 returned 200",
+      "name": "teardown requests succeeded",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "endpoint HTTP 200; verified 12 leases",
+      "name": "leases enter QUARANTINED",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "completed within 120 seconds=True",
+      "name": "quarantined leases become FREE",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "all 12 states RELEASED=True",
+      "name": "torn-down sandboxes are RELEASED",
+      "passed": true,
+      "skipped": false
+    },
+    {
+      "detail": "mock mode does not query OpenStack",
+      "name": "OpenStack server/port cleanup",
+      "passed": true,
+      "skipped": true
+    },
+    {
+      "detail": "100.0% >= 100.0%",
+      "name": "success rate threshold",
+      "passed": true,
+      "skipped": false
+    }
+  ],
+  "burst_wall_ms": 226.343,
+  "config": {
+    "api_url": "http://127.0.0.1:8080",
+    "concurrency": 12,
+    "http_timeout_seconds": 300,
+    "mock": true,
+    "out_dir": "docs/benchmarks/stress-20261010T112958Z",
+    "prefix": "stress",
+    "public_ip": "",
+    "rate_limit_per_min": "1000",
+    "routing_domain": "cstam.felcloud.tn",
+    "sandbox_cidr": "10.20.30.0/24",
+    "success_threshold_percent": 100.0,
+    "teams": 12,
+    "teardown": true,
+    "vip_ip": ""
+  },
+  "date_utc": "2026-10-10T11:32:18.122629+00:00",
+  "exit_code": 0,
+  "gateway_sync_events": 9,
+  "git_commit": "3ec92f7444ed5585d83aadd29ecb0f096b2d3651",
+  "mode": "mock",
+  "provisions_succeeded": 12,
+  "teams": [
+    {
+      "allocate": 138,
+      "fixed_ip": "10.20.30.13",
+      "health": 0,
+      "hostname": "stress-1-sx5f.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-1-sx5f",
+      "provision_status": 201,
+      "provision_wall_ms": 186.482,
+      "response_body": {
+        "fixed_ip": "10.20.30.13",
+        "hostname": "stress-1-sx5f.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-1-sx5f",
+        "sandbox_id": "stress-1-sx5f",
+        "server_id": "mock-server-stress-1-sx5f",
+        "state": "ACTIVE",
+        "team": "stress-1-sx5f",
+        "timings_ms": {
+          "allocate": 138,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 164
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-1-sx5f",
+      "step": "",
+      "sync": 0,
+      "team": "stress-1-sx5f",
+      "teardown_body": {
+        "sandbox_id": "stress-1-sx5f",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 130,
+          "release_lease": 1,
+          "remove_route": 0,
+          "total": 145,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 182.43728699962958,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 130,
+        "release_lease": 1,
+        "remove_route": 0,
+        "total": 145,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 182.437,
+      "timings_ms": {
+        "allocate": 138,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 164
+      },
+      "total": 164
+    },
+    {
+      "allocate": 25,
+      "fixed_ip": "10.20.30.2",
+      "health": 0,
+      "hostname": "stress-2-1d37.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-2-1d37",
+      "provision_status": 201,
+      "provision_wall_ms": 75.814,
+      "response_body": {
+        "fixed_ip": "10.20.30.2",
+        "hostname": "stress-2-1d37.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-2-1d37",
+        "sandbox_id": "stress-2-1d37",
+        "server_id": "mock-server-stress-2-1d37",
+        "state": "ACTIVE",
+        "team": "stress-2-1d37",
+        "timings_ms": {
+          "allocate": 25,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 59
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-2-1d37",
+      "step": "",
+      "sync": 0,
+      "team": "stress-2-1d37",
+      "teardown_body": {
+        "sandbox_id": "stress-2-1d37",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 20,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 29,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 42.178611000053934,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 20,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 29,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 42.179,
+      "timings_ms": {
+        "allocate": 25,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 59
+      },
+      "total": 59
+    },
+    {
+      "allocate": 14,
+      "fixed_ip": "10.20.30.8",
+      "health": 0,
+      "hostname": "stress-3-9emb.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-3-9emb",
+      "provision_status": 201,
+      "provision_wall_ms": 221.27,
+      "response_body": {
+        "fixed_ip": "10.20.30.8",
+        "hostname": "stress-3-9emb.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-3-9emb",
+        "sandbox_id": "stress-3-9emb",
+        "server_id": "mock-server-stress-3-9emb",
+        "state": "ACTIVE",
+        "team": "stress-3-9emb",
+        "timings_ms": {
+          "allocate": 14,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 138
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-3-9emb",
+      "step": "",
+      "sync": 0,
+      "team": "stress-3-9emb",
+      "teardown_body": {
+        "sandbox_id": "stress-3-9emb",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 19,
+          "release_lease": 1,
+          "remove_route": 0,
+          "total": 55,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 66.51463900016097,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 19,
+        "release_lease": 1,
+        "remove_route": 0,
+        "total": 55,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 66.515,
+      "timings_ms": {
+        "allocate": 14,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 138
+      },
+      "total": 138
+    },
+    {
+      "allocate": 118,
+      "fixed_ip": "10.20.30.11",
+      "health": 0,
+      "hostname": "stress-4-femt.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-4-femt",
+      "provision_status": 201,
+      "provision_wall_ms": 165.956,
+      "response_body": {
+        "fixed_ip": "10.20.30.11",
+        "hostname": "stress-4-femt.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-4-femt",
+        "sandbox_id": "stress-4-femt",
+        "server_id": "mock-server-stress-4-femt",
+        "state": "ACTIVE",
+        "team": "stress-4-femt",
+        "timings_ms": {
+          "allocate": 118,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 148
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-4-femt",
+      "step": "",
+      "sync": 0,
+      "team": "stress-4-femt",
+      "teardown_body": {
+        "sandbox_id": "stress-4-femt",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 80,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 92,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 101.17028500008018,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 80,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 92,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 101.17,
+      "timings_ms": {
+        "allocate": 118,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 148
+      },
+      "total": 148
+    },
+    {
+      "allocate": 20,
+      "fixed_ip": "10.20.30.3",
+      "health": 0,
+      "hostname": "stress-5-s2q7.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-5-s2q7",
+      "provision_status": 201,
+      "provision_wall_ms": 81.131,
+      "response_body": {
+        "fixed_ip": "10.20.30.3",
+        "hostname": "stress-5-s2q7.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-5-s2q7",
+        "sandbox_id": "stress-5-s2q7",
+        "server_id": "mock-server-stress-5-s2q7",
+        "state": "ACTIVE",
+        "team": "stress-5-s2q7",
+        "timings_ms": {
+          "allocate": 20,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 66
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-5-s2q7",
+      "step": "",
+      "sync": 0,
+      "team": "stress-5-s2q7",
+      "teardown_body": {
+        "sandbox_id": "stress-5-s2q7",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 34,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 45,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 59.768588000224554,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 34,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 45,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 59.769,
+      "timings_ms": {
+        "allocate": 20,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 66
+      },
+      "total": 66
+    },
+    {
+      "allocate": 51,
+      "fixed_ip": "10.20.30.5",
+      "health": 0,
+      "hostname": "stress-6-w48a.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-6-w48a",
+      "provision_status": 201,
+      "provision_wall_ms": 135.084,
+      "response_body": {
+        "fixed_ip": "10.20.30.5",
+        "hostname": "stress-6-w48a.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-6-w48a",
+        "sandbox_id": "stress-6-w48a",
+        "server_id": "mock-server-stress-6-w48a",
+        "state": "ACTIVE",
+        "team": "stress-6-w48a",
+        "timings_ms": {
+          "allocate": 51,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 119
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-6-w48a",
+      "step": "",
+      "sync": 0,
+      "team": "stress-6-w48a",
+      "teardown_body": {
+        "sandbox_id": "stress-6-w48a",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 35,
+          "release_lease": 1,
+          "remove_route": 0,
+          "total": 45,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 54.738527000154136,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 35,
+        "release_lease": 1,
+        "remove_route": 0,
+        "total": 45,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 54.739,
+      "timings_ms": {
+        "allocate": 51,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 119
+      },
+      "total": 119
+    },
+    {
+      "allocate": 91,
+      "fixed_ip": "10.20.30.9",
+      "health": 0,
+      "hostname": "stress-7-6bnj.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-7-6bnj",
+      "provision_status": 201,
+      "provision_wall_ms": 136.519,
+      "response_body": {
+        "fixed_ip": "10.20.30.9",
+        "hostname": "stress-7-6bnj.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-7-6bnj",
+        "sandbox_id": "stress-7-6bnj",
+        "server_id": "mock-server-stress-7-6bnj",
+        "state": "ACTIVE",
+        "team": "stress-7-6bnj",
+        "timings_ms": {
+          "allocate": 91,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 123
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-7-6bnj",
+      "step": "",
+      "sync": 0,
+      "team": "stress-7-6bnj",
+      "teardown_body": {
+        "sandbox_id": "stress-7-6bnj",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 54,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 68,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 79.57801599968661,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 54,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 68,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 79.578,
+      "timings_ms": {
+        "allocate": 91,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 123
+      },
+      "total": 123
+    },
+    {
+      "allocate": 40,
+      "fixed_ip": "10.20.30.12",
+      "health": 0,
+      "hostname": "stress-8-lx8v.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-8-lx8v",
+      "provision_status": 201,
+      "provision_wall_ms": 169.19,
+      "response_body": {
+        "fixed_ip": "10.20.30.12",
+        "hostname": "stress-8-lx8v.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-8-lx8v",
+        "sandbox_id": "stress-8-lx8v",
+        "server_id": "mock-server-stress-8-lx8v",
+        "state": "ACTIVE",
+        "team": "stress-8-lx8v",
+        "timings_ms": {
+          "allocate": 40,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 58
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-8-lx8v",
+      "step": "",
+      "sync": 0,
+      "team": "stress-8-lx8v",
+      "teardown_body": {
+        "sandbox_id": "stress-8-lx8v",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 80,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 93,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 104.97674399994139,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 80,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 93,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 104.977,
+      "timings_ms": {
+        "allocate": 40,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 58
+      },
+      "total": 58
+    },
+    {
+      "allocate": 69,
+      "fixed_ip": "10.20.30.7",
+      "health": 0,
+      "hostname": "stress-9-pw8i.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-9-pw8i",
+      "provision_status": 201,
+      "provision_wall_ms": 155.067,
+      "response_body": {
+        "fixed_ip": "10.20.30.7",
+        "hostname": "stress-9-pw8i.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-9-pw8i",
+        "sandbox_id": "stress-9-pw8i",
+        "server_id": "mock-server-stress-9-pw8i",
+        "state": "ACTIVE",
+        "team": "stress-9-pw8i",
+        "timings_ms": {
+          "allocate": 69,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 140
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-9-pw8i",
+      "step": "",
+      "sync": 0,
+      "team": "stress-9-pw8i",
+      "teardown_body": {
+        "sandbox_id": "stress-9-pw8i",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 55,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 70,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 82.6735689997804,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 55,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 70,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 82.674,
+      "timings_ms": {
+        "allocate": 69,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 140
+      },
+      "total": 140
+    },
+    {
+      "allocate": 8,
+      "fixed_ip": "10.20.30.10",
+      "health": 0,
+      "hostname": "stress-10-4zr5.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-10-4zr5",
+      "provision_status": 201,
+      "provision_wall_ms": 160.04,
+      "response_body": {
+        "fixed_ip": "10.20.30.10",
+        "hostname": "stress-10-4zr5.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-10-4zr5",
+        "sandbox_id": "stress-10-4zr5",
+        "server_id": "mock-server-stress-10-4zr5",
+        "state": "ACTIVE",
+        "team": "stress-10-4zr5",
+        "timings_ms": {
+          "allocate": 8,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 49
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-10-4zr5",
+      "step": "",
+      "sync": 0,
+      "team": "stress-10-4zr5",
+      "teardown_body": {
+        "sandbox_id": "stress-10-4zr5",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 105,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 116,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 126.43449799998052,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 105,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 116,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 126.434,
+      "timings_ms": {
+        "allocate": 8,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 49
+      },
+      "total": 49
+    },
+    {
+      "allocate": 32,
+      "fixed_ip": "10.20.30.4",
+      "health": 0,
+      "hostname": "stress-11-43sv.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-11-43sv",
+      "provision_status": 201,
+      "provision_wall_ms": 107.683,
+      "response_body": {
+        "fixed_ip": "10.20.30.4",
+        "hostname": "stress-11-43sv.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-11-43sv",
+        "sandbox_id": "stress-11-43sv",
+        "server_id": "mock-server-stress-11-43sv",
+        "state": "ACTIVE",
+        "team": "stress-11-43sv",
+        "timings_ms": {
+          "allocate": 32,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 99
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-11-43sv",
+      "step": "",
+      "sync": 0,
+      "team": "stress-11-43sv",
+      "teardown_body": {
+        "sandbox_id": "stress-11-43sv",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 19,
+          "release_lease": 1,
+          "remove_route": 0,
+          "total": 38,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 45.94617200018547,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 19,
+        "release_lease": 1,
+        "remove_route": 0,
+        "total": 38,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 45.946,
+      "timings_ms": {
+        "allocate": 32,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 99
+      },
+      "total": 99
+    },
+    {
+      "allocate": 9,
+      "fixed_ip": "10.20.30.6",
+      "health": 0,
+      "hostname": "stress-12-9res.cstam.felcloud.tn",
+      "port": 11,
+      "port_id": "mock-port-stress-12-9res",
+      "provision_status": 201,
+      "provision_wall_ms": 108.241,
+      "response_body": {
+        "fixed_ip": "10.20.30.6",
+        "hostname": "stress-12-9res.cstam.felcloud.tn",
+        "port_id": "mock-port-stress-12-9res",
+        "sandbox_id": "stress-12-9res",
+        "server_id": "mock-server-stress-12-9res",
+        "state": "ACTIVE",
+        "team": "stress-12-9res",
+        "timings_ms": {
+          "allocate": 9,
+          "health": 0,
+          "port": 11,
+          "server_active": 22,
+          "sync": 0,
+          "total": 41
+        }
+      },
+      "server_active": 22,
+      "server_id": "mock-server-stress-12-9res",
+      "step": "",
+      "sync": 0,
+      "team": "stress-12-9res",
+      "teardown_body": {
+        "sandbox_id": "stress-12-9res",
+        "state": "RELEASED",
+        "timings_ms": {
+          "delete_port": 0,
+          "delete_server": 0,
+          "mark_tearing_down": 17,
+          "release_lease": 0,
+          "remove_route": 0,
+          "total": 62,
+          "verify_gone": 0
+        }
+      },
+      "teardown_ms": 66.91247200069483,
+      "teardown_status": 200,
+      "teardown_timings_ms": {
+        "delete_port": 0,
+        "delete_server": 0,
+        "mark_tearing_down": 17,
+        "release_lease": 0,
+        "remove_route": 0,
+        "total": 62,
+        "verify_gone": 0
+      },
+      "teardown_wall_ms": 66.912,
+      "timings_ms": {
+        "allocate": 9,
+        "health": 0,
+        "port": 11,
+        "server_active": 22,
+        "sync": 0,
+        "total": 41
+      },
+      "total": 41
+    }
+  ]
+}

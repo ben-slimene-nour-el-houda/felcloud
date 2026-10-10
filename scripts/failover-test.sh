@@ -19,6 +19,26 @@ ANSIBLE_INVENTORY="${ANSIBLE_INVENTORY:-$ROOT_DIR/ansible/inventory/hosts.yml}"
 REMOTE_USER="${REMOTE_USER:-ansible}"
 POLL_INTERVAL_MS="${POLL_INTERVAL_MS:-100}"
 
+if [[ ! "$POLL_INTERVAL_MS" =~ ^[0-9]{1,4}$ ]] || (( 10#$POLL_INTERVAL_MS < 1 || 10#$POLL_INTERVAL_MS > 5000 )); then
+  echo "POLL_INTERVAL_MS must be an integer from 1 to 5000." >&2
+  exit 2
+fi
+POLL_INTERVAL_MS=$((10#$POLL_INTERVAL_MS))
+if [[ ! "$REMOTE_USER" =~ ^[a-z_][a-zA-Z0-9_.-]*$ ]]; then
+  echo "REMOTE_USER contains invalid characters." >&2
+  exit 2
+fi
+for host in "$GW1_HOST" "$GW2_HOST"; do
+  if [[ ! "$host" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "Gateway host names may contain only letters, digits, dots, underscores, and hyphens." >&2
+    exit 2
+  fi
+done
+if [[ ! "$TEST_HOST_HEADER" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:[0-9]{1,5})?$ ]]; then
+  echo "TEST_HOST_HEADER must be a lowercase DNS name with an optional port." >&2
+  exit 2
+fi
+
 now_ms() {
   python3 -c 'import time; print(int(time.time() * 1000))'
 }
@@ -88,7 +108,7 @@ for i in $(seq 1 300); do
       break
     fi
   fi
-  python3 -c "import time; time.sleep(${POLL_INTERVAL_MS} / 1000.0)"
+  POLL_INTERVAL_MS="$POLL_INTERVAL_MS" python3 -c 'import os, time; time.sleep(int(os.environ["POLL_INTERVAL_MS"]) / 1000.0)'
 done
 
 if [[ $RECOVERED_MS -eq 0 ]]; then

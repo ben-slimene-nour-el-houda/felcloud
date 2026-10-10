@@ -46,12 +46,25 @@ var safeSSHHostRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var safeSSHUserRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
 
 func configureHealthProbe() error {
+	if os.Getenv("PROVISIONER") == "mock" {
+		healthProbeMode = "skip"
+		healthProbeSSH = healthProbeSSHConfig{}
+		return nil
+	}
 	mode := strings.TrimSpace(os.Getenv("HEALTH_PROBE_MODE"))
 	if mode == "" {
 		mode = "direct"
 	}
+	if mode == "skip" {
+		if os.Getenv("PROVISIONER") != "mock" {
+			return fmt.Errorf("HEALTH_PROBE_MODE=skip is allowed only with PROVISIONER=mock")
+		}
+		healthProbeMode = mode
+		healthProbeSSH = healthProbeSSHConfig{}
+		return nil
+	}
 	if mode != "direct" && mode != "gateway-ssh" {
-		return fmt.Errorf("HEALTH_PROBE_MODE must be direct or gateway-ssh")
+		return fmt.Errorf("HEALTH_PROBE_MODE must be direct, gateway-ssh, or skip with PROVISIONER=mock")
 	}
 	healthProbeMode = mode
 	if mode == "direct" {

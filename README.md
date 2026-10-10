@@ -11,16 +11,14 @@
 ![Ansible](https://img.shields.io/badge/Ansible-Gateways-EE0000?style=flat&logo=ansible&logoColor=white&labelColor=555555)
 ![HAProxy](https://img.shields.io/badge/HAProxy-L7%20Routing%20%2B%20TLS-106DA9?style=flat&logo=haproxy&logoColor=white&labelColor=555555)
 ![Keepalived](https://img.shields.io/badge/Keepalived-VRRP%20HA%20(Weight%20-60)-2C7BB6?style=flat&labelColor=555555)
-![Python](https://img.shields.io/badge/Python-IPAM%20%26%20REST%20API-3776AB?style=flat&logo=python&logoColor=white&labelColor=555555)
 ![Status](https://img.shields.io/badge/Status-MVP%20(Phase%201)-F59E0B?style=flat&labelColor=555555)
 
 </div>
 
 > This document describes the actual architecture, implementation details, and verification runbooks of the **FelCloud Resilient IP Gateway** repository.
 
-> **⚠️ MVP Notice:** This repository is the **Phase 1 MVP**. Some
-> components use simpler, faster-to-deliver solutions. The **target architecture stays the same**;
-> only the implementation of selected components will be migrated.
+> **⚠️ MVP Notice:** This repository is the **Phase 1 MVP**. The control plane is
+> implemented in Go with SQLite; PostgreSQL and further gateway orchestration remain planned evolutions.
 
 ---
 
@@ -51,19 +49,19 @@
 
 The project addresses three key challenges for multi-tenant sandbox platforms on OpenStack:
 1. **Public IPv4 scarcity**: Multiplexing traffic for isolated team backends through a shared public entry point.
-2. **High availability without single points of failure**: Redundant dual-gateway cluster with active/standby VRRP and guaranteed failover.
-3. **Automated, safe lifecycle operations**: Transactional IP allocation, address quarantine, pre-flight backend health checks, and zero-downtime configuration rollouts with automatic rollback protection.
+2. **High availability without single points of failure**: Redundant dual-gateway cluster with active/standby VRRP; failover behavior must be verified by an actual run.
+3. **Automated lifecycle operations**: Transactional IP allocation, address quarantine, pre-flight backend health checks, and gateway configuration validation before deployment.
 
 ### Key Features
 
 - **Reproducible Infrastructure as Code:** Networks, subnets, routers, security groups, VIP reservation, anti-affinity gateway instances, and jump hosts defined in Pulumi Go ([infra/main.go](infra/main.go)).
-- **Guaranteed VRRP Failover:** Keepalived cluster with negative weight check script ensuring active node priority drops from $150 + (-60) = 90 < 100$, guaranteeing failover on HAProxy process failure ([section 4](#4-high-availability)).
+- **VRRP Failover Configuration:** Keepalived is configured with a negative weight check script intended to lower the active node priority from $150 + (-60) = 90 < 100$. This configuration is not proof of a successful failover; verify it with measured run results ([section 4](#4-high-availability)).
 - **Dual HTTP/HTTPS Routing with TLS:** HAProxy terminates TLS on port 443 with wildcard SANs (`*.local`, `*.felcloud.local`) and routes HTTP (port 80) and HTTPS (port 443) by Host header ([section 5](#5-l7-routing-with-haproxy)).
 
 - **HAProxy Data Plane API (DPA):** Deployed and configured on port 5555 with systemd management ([section 6](#6-data-plane-api)).
 - **Transactional IPAM with Address Quarantine:** SQLite-backed address allocator with automatic quarantine cooldown and address reclamation ([section 8](#8-ipam-and-team-lifecycle)).
 - **Pre-Flight Backend Health Checks:** Validates HTTP/TCP health before opening routes in HAProxy to prevent 502/503 errors.
-- **Zero-Downtime Reload with Auto-Rollback:** Dual-gateway syntax pre-validation before reload, generation-aware backups, and automatic rollback to the previous working generation on error.
+- **Gateway Configuration Validation:** The control plane validates generated HAProxy configuration before deployment. The rollback API currently returns a placeholder response and does not restore the live gateway configuration.
 - **Automated Test Suite:** Benchmarks measured VRRP failover times, verifies IP recycling, and tests end-to-end routing ([section 12](#12-verification-and-testing)).
 
 ---
@@ -96,7 +94,7 @@ flowchart TB
         GW1M["gw1 mgmt: 10.20.10.24<br/>(DPA: 5555)"]
         GW2M["gw2 mgmt: 10.20.10.164<br/>(DPA: 5555)"]
         BASM["bastion mgmt: 10.20.10.246"]
-        IPAM["Control Plane (MVP: Python + SQLite)<br/>Target: Go + PostgreSQL<br/>REST API Port 8080"]
+        IPAM["Control Plane (Go + SQLite)<br/>Target: Go + PostgreSQL<br/>REST API Port 8080"]
     end
 
     subgraph SBX["felcloud-sandbox - 10.20.30.0/24 (Isolated)"]
@@ -133,20 +131,21 @@ flowchart TB
 
 ### MVP vs Target Implementation
 
-The network topology, HA model (VRRP), L7 routing and security model are **final**.
-Only the control-plane tooling changes.
+The network topology, HA model (VRRP), L7 routing and security model are the
+current design. The Go control plane is implemented; PostgreSQL and further
+automation remain target evolutions.
 
 | Component | MVP (this repo) | Target | Why MVP differs |
 |---|---|---|---|
-| **Control plane** | Python (`ipam/ipam_control.py`) | Go service (API / orchestrator) on `10.20.10.50` | Faster to prototype under time constraints |
+| **Control plane** | Go service (API / orchestrator) on `10.20.10.50` | Go service with expanded orchestration | Current control plane |
 | **State / IPAM DB** | SQLite (local file) | PostgreSQL on `10.20.10.30` | No extra VM or DB operations needed for the MVP |
 | **Gateway config sync** | Dual `haproxy -c` validation + `systemctl reload` | HAProxy Data Plane API transactions (port 5555) | DPA is deployed and ready, orchestration not yet wired |
 | **Sandbox VM lifecycle** | Pulumi / provisioning script | Managed by the Go control plane | Out of MVP scope |
 | **Quarantine reclaim** | Explicit `/ipam/leases/reclaim` call | Background reclaim worker | Simpler to test and demo |
 | **Ansible execution** | Operator machine | Bastion VM (Mgmt + Edge) | Operator access was sufficient for the MVP |
 
-**Migration principle:** the REST API contract (`/ipam/leases/*`, `/api/sandboxes/provision`,
-`/api/gateways/*`) is preserved, so scripts and tests keep working after the Go migration.
+The Go control plane exposes the REST API contract (`/ipam/leases/*`,
+`/api/sandboxes/provision`, `/api/gateways/*`).
 
 ### Public Entry and DNS
 
@@ -287,17 +286,17 @@ flowchart LR
 | **`sg-sandbox`** | TCP 80, TCP 8080 strictly from `sg-gateway` | Tenant isolation; **blocks all East-West traffic between sandboxes** |
 | **`sg-management`** | TCP 5555 (DPA) and internal mgmt from `10.20.10.0/24`<br>TCP 22 via Bastion | Control plane and SSH access |
 
-> **Target note:** The Go control plane migration will additionally require control plane → PostgreSQL
+> **Target note:** The planned PostgreSQL deployment will require control plane → PostgreSQL
 > (TCP 5432) and control plane → DPA (TCP 5555) paths within `sg-management`.
 
 ---
 
 ## 8. IPAM and Team Lifecycle
 
-The IPAM control plane ([ipam/ipam_control.py](ipam/ipam_control.py)) manages IP allocation, address quarantine, pre-flight health checks, and REST API access.
-
-> **MVP note:** This Python implementation (SQLite, single process) is the MVP control plane. It will be
-> replaced by a Go service backed by PostgreSQL, preserving the REST API contract below.
+The Go IPAM control plane in [controlplane/](controlplane/) manages IP
+allocation, address quarantine, pre-flight health checks, and authenticated
+REST API access. SQLite is used for local state; `ipam/ipam.db` is a runtime
+database file and is not tracked in git.
 
 ### Address Quarantine & Reclamation
 
@@ -324,7 +323,7 @@ Before opening a route in HAProxy:
 | `POST` | `/ipam/leases/reclaim` | Reclaim expired quarantined IPs |
 | `POST` | `/api/sandboxes/provision` | Automated sandbox provisioning & health check |
 | `POST` | `/api/gateways/sync` | Zero-downtime dual-gateway sync |
-| `POST` | `/api/gateways/rollback` | Rollback to previous configuration generation |
+| `POST` | `/api/gateways/rollback` | Placeholder endpoint; it does not restore live gateway configuration |
 
 ---
 
@@ -337,8 +336,8 @@ Before opening a route in HAProxy:
 | **Configuration** | Ansible with Ansible Vault | Same (run from Bastion) | Gateway configuration and orchestration |
 | **High Availability** | Keepalived (VRRP v2, Weight -60) | Same | Virtual IP failover cluster |
 | **Reverse Proxy** | HAProxy 2.8+ with TLS & DPA | Same | L7 HTTP/HTTPS reverse proxy & Data Plane API |
-| **Control Plane & IPAM** | Python 3, SQLite, HTTP REST API | Go, PostgreSQL | IP allocations, quarantine, health checks |
-| **Testing** | Bash, Python, Curl | Same + Go tests | Automated test suite & failover benchmarking |
+| **Control Plane & IPAM** | Go, SQLite, HTTP REST API | Go, PostgreSQL | IP allocations, quarantine, health checks |
+| **Testing** | Bash, Go tests, Curl | Same | Automated test suite & failover benchmarking |
 
 ---
 
@@ -380,9 +379,9 @@ Click any path to open the file or folder.
 - [infra/bastion.go](infra/bastion.go) - Bastion jump host VM
 - [infra/sandboxes.go](infra/sandboxes.go) - Demonstration team backend VMs
 
-### Control Plane (MVP) - [ipam/](ipam/)
+### Control Plane - [controlplane/](controlplane/)
 
-- [ipam/ipam_control.py](ipam/ipam_control.py) - MVP IPAM CLI, quarantine logic, sync & REST API server
+- [controlplane/](controlplane/) - Go IPAM CLI, quarantine logic, gateway sync, and REST API server
 
 ### Scripts - [scripts/](scripts/)
 
@@ -401,7 +400,7 @@ Click any path to open the file or folder.
 
 - Go 1.22+ and Pulumi CLI
 - Ansible with `ansible.posix` collection
-- Python 3 with `yaml` (for legacy script invocation)
+- Python 3 for supporting scripts and benchmark tooling
 - OpenStack credentials configured (e.g. `source openrc.sh`)
 
 ### Deployment Steps
@@ -417,17 +416,21 @@ Click any path to open the file or folder.
    ansible-playbook -i ansible/inventory/hosts.yml ansible/site.yml \
      --vault-password-file ansible/.vault_pass
    ```
-4. **Initialize IPAM** ([ipam/ipam_control.py](ipam/ipam_control.py), MVP Python control plane):
+4. **Build and start the Go control plane:**
+   ```bash
+   go build -o /tmp/felcloud-controlplane ./controlplane
+   export ADMIN_TOKEN="$(openssl rand -hex 32)"
+   export LISTEN_ADDR=127.0.0.1
+   # Use mock only for local development without OpenStack provisioning.
+   export PROVISIONER=mock
+   /tmp/felcloud-controlplane serve --port 8080
+   ```
 
-   ```bash
-   cd controlplane && go build -o ../ipam/ipam-control . && cd ..
-   ./ipam/ipam-control init
-   ./ipam/ipam-control list
-   ```
-5. **Start Control Plane REST API (MVP):**
-   ```bash
-   ./ipam/ipam-control serve --port 8080
-   ```
+   `ADMIN_TOKEN` must contain at least 24 characters. Set `PROVISIONER=mock`
+   only for local/offline development; live provisioning requires the
+   configured OpenStack environment. `LISTEN_ADDR` selects the bind address.
+   All API routes except `GET /health` require
+   `Authorization: Bearer $ADMIN_TOKEN`.
 
 ---
 
@@ -441,25 +444,28 @@ This section is the demo runbook. It proves each Phase 1 requirement with a repe
 |---|---|---|---|---|
 | 1 | IPAM quarantine & reclamation | A released IP is not reused until the cooldown expires | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
 | 2 | Pre-flight health check | A route is opened only for a healthy backend (no 502/503) | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 3 | Syntax pre-validation & rollback | A bad config never reaches the gateways | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 4 | Keepalived weight review | HAProxy failure alone triggers failover (150 + (-60) = 90 < 100) | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
+| 3 | HAProxy config generation & validation | Generated routing config has expected structure; incomplete config is rejected | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
+| 4 | Keepalived weight review | Configured priority arithmetic favors the standby after a tracked failure | Automated review, not failover proof | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
 | 5 | HTTPS 443 & Host-header routing | TLS termination and routing by Host header | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
 | 6 | Data Plane API units | DPA config and systemd units are in place | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 7 | Measured VRRP failover | Real switchover time and packet loss on the live VIP | Live | [scripts/failover-test.sh](scripts/failover-test.sh) |
-| 8 | IP quarantine & recycling | End-to-end IP lifecycle against the running control plane | Live | [scripts/recycle-test.sh](scripts/recycle-test.sh) |
+| 7 | Go control-plane tests | Unit tests, vet, and race checks | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
+| 8 | Measured VRRP failover | Switchover time and packet loss on a deployed VIP; requires stored, observed gateway results | Live | [scripts/failover-test.sh](scripts/failover-test.sh) |
 
-Tests 1 to 6 are static and logic checks that run anywhere. Tests 7 and 8 need the deployed environment.
+The runner has seven selectable checks. Checks 1-7 are local/static or mock
+tests; measured failover requires a deployed gateway environment and is not
+asserted by the weight calculation alone.
 
 ### 12.2 Environment Check
 
 Confirm the platform is up before starting the demo.
 
 ```bash
-# Control plane (MVP) is serving
+# Control plane is serving (health is the only unauthenticated endpoint)
 curl -s http://localhost:8080/health
 
 # Current leases and quarantine timers
-curl -s http://localhost:8080/ipam/leases
+curl -s http://localhost:8080/ipam/leases \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # DNS resolves tenant hostnames to the public floating IP
 nslookup cloudpulse.cstam.felcloud.tn
@@ -471,7 +477,7 @@ nslookup cloudpulse.cstam.felcloud.tn
 | `/ipam/leases` | JSON list of allocations |
 | `nslookup` | `197.5.133.119` |
 
-### 12.3 Automated Test Suite (Tests 1-6)
+### 12.3 Automated Test Suite (Seven Selectable Checks)
 
 ```bash
 ./scripts/run-all-tests.sh
@@ -545,9 +551,9 @@ Optionally, show that the Data Plane API answers on the management network (run 
 curl -s -u <dpa_user>:<dpa_password> http://10.20.10.24:5555/v3/info
 ```
 
-### 12.5 VRRP Failover Demo (Test 7)
+### 12.5 VRRP Failover Demo (Test 8)
 
-**Goal:** kill HAProxy on the active gateway and show the VIP moving to the backup with minimal loss.
+**Goal:** exercise HAProxy-tracked VRRP failover and record observed results. The configured priority arithmetic does not guarantee a successful transition. The current script prints measurements but does not persist a verified failover result file.
 
 **Terminal 1: continuous traffic:**
 
@@ -575,7 +581,7 @@ ip -4 addr | grep 10.20.20.246
 # On gw1: simulate the failure
 sudo systemctl stop haproxy
 
-# On gw2: the VIP should appear within seconds
+# On gw2: check whether the VIP moved to the backup
 ip -4 addr | grep 10.20.20.246
 
 # On gw1: recover (the VIP returns to gw1 once priority is back to 150)
@@ -584,13 +590,24 @@ sudo systemctl start haproxy
 
 | Metric | What to show | Pass criterion |
 |---|---|---|
-| Priority drop | gw1: 150 → 90 after the check script fails | 90 < 100 (gw2) |
-| VIP owner | The VIP moves from gw1 to gw2 | VIP present on gw2 |
-| Switchover time | Reported by `failover-test.sh` | Record the measured value |
-| Packet loss / failed requests | Gap in Terminal 1 output | Short, bounded gap, then `200` resumes |
-| Recovery | After `start haproxy` on gw1 | Traffic keeps flowing, VIP returns to gw1 |
+| Priority drop | gw1: 150 → 90 after the check script fails | Confirm observed priority |
+| VIP owner | Observe the VIP on gw1 and gw2 | Record actual before/after owners |
+| Switchover time | Printed by `failover-test.sh` | Record the measured value |
+| Packet loss / failed requests | Gap in Terminal 1 output | Record actual failed/total requests |
+| Recovery | After `start haproxy` on gw1 | Verify traffic and VIP recovery |
 
-### 12.6 Quarantine and Recycling Demo (Test 8)
+The current `failover-test.sh` output is not itself a stored benchmark result
+and does not verify the responding gateway in a machine-readable format. Do
+not treat the configuration review or printed constants as proof; the
+benchmark report accepts only separately stored runs with observed gateway
+identity verification.
+
+### 12.6 Quarantine and Recycling Demo
+
+This script builds a temporary Go control-plane binary, starts an isolated
+mock server with a temporary SQLite database, and removes both on exit. To
+target an already-running server explicitly, set `RECYCLE_BASE_URL` and
+`ADMIN_TOKEN`.
 
 ```bash
 ./scripts/recycle-test.sh
@@ -600,20 +617,32 @@ Or step by step through the REST API:
 
 ```bash
 # 1. Allocate a lease
-curl -s -X POST http://localhost:8080/ipam/leases/allocate
+curl -s -X POST http://localhost:8080/ipam/leases/allocate \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sandbox_id":"demo-team-a"}'
 
 # 2. Release it (the IP enters QUARANTINED)
 curl -s -X POST http://localhost:8080/ipam/leases/release \
-  -H "Content-Type: application/json" -d '{"ip": "<allocated_ip>"}'
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sandbox_id":"demo-team-a","ip_address":"<allocated_ip>"}'
 
 # 3. Allocate again immediately: a DIFFERENT IP must be returned
-curl -s -X POST http://localhost:8080/ipam/leases/allocate
+curl -s -X POST http://localhost:8080/ipam/leases/allocate \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sandbox_id":"demo-team-b"}'
 
 # 4. Check the quarantine timer
-curl -s http://localhost:8080/ipam/leases
+curl -s http://localhost:8080/ipam/leases \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 5. After the cooldown (e.g. 60s), reclaim: the IP returns to FREE
-curl -s -X POST http://localhost:8080/ipam/leases/reclaim
+curl -s -X POST http://localhost:8080/ipam/leases/reclaim \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 | Step | Expected |
@@ -623,16 +652,16 @@ curl -s -X POST http://localhost:8080/ipam/leases/reclaim
 | After cooldown + reclaim | The IP is `FREE` and can be allocated again |
 
 
-> **MVP scope:** these tests validate the Python + SQLite control plane and the current gateway
-> sync flow. When the Go control plane and PostgreSQL are in place, the same scripts and REST
-> contract are reused as the regression suite (see [section 14](#14-planned-evolutions)).
+> **Scope:** these checks exercise the Go + SQLite control plane and current
+> gateway sync flow. `ipam/ipam.db` is a runtime database file and is not
+> tracked in git. PostgreSQL remains a planned evolution.
 
 
 ## 13. Phase 1 (MVP) Deliverables Checklist
 
 | Deliverable | Status |
 |---|---|
-| Dual-gateway HA cluster (VRRP, weight -60, guaranteed failover) | ✅ Implemented |
+| Dual-gateway HA cluster (VRRP, configured weight -60) | ✅ Implemented |
 
 | Pulumi Go IaC for all cloud resources | ✅ Implemented |
 | Ansible roles for HAProxy, Keepalived, common, interface_resolve | ✅ Implemented |
@@ -644,8 +673,9 @@ curl -s -X POST http://localhost:8080/ipam/leases/reclaim
 
 | IPAM with address quarantine and reclamation | ✅ Implemented |
 | Pre-flight backend health checks | ✅ Implemented |
-| Zero-downtime reload with auto-rollback | ✅ Implemented |
-| Automated test suite (6 tests) | ✅ Implemented |
+| HAProxy configuration pre-validation | ✅ Implemented |
+| Rollback API restores live configuration | ❌ Not implemented |
+| Automated test suite (7 selectable checks) | ✅ Implemented |
 | Security: no open-world SSH CIDR, infra entity collision guard | ✅ Implemented |
 | Secrets in Ansible Vault only (no plaintext in repo) | ✅ Implemented |
 
@@ -653,15 +683,14 @@ curl -s -X POST http://localhost:8080/ipam/leases/reclaim
 
 ## 14. Planned Evolutions
 
-The MVP validates the architecture end to end. Because of time constraints, the following
-migrations are planned next (the architecture itself does not change):
+The current implementation uses Go and SQLite. The following evolutions are
+planned (the architecture itself does not change):
 
-1. **Go control plane** replacing the Python IPAM server (same REST API contract).
-2. **PostgreSQL** replacing SQLite (transactional allocation, concurrent replicas).
-3. **Data Plane API orchestration** replacing SSH + reload for route changes.
-4. **VM lifecycle management** integrated into the control plane.
-5. ACME / Let's Encrypt automated certificate renewals.
-6. Prometheus metrics exporter and Grafana dashboard.
+1. **PostgreSQL** replacing SQLite (transactional allocation, concurrent replicas).
+2. **Data Plane API orchestration** replacing SSH + reload for route changes.
+3. **VM lifecycle management** expanded in the control plane.
+4. ACME / Let's Encrypt automated certificate renewals.
+5. Prometheus metrics exporter and Grafana dashboard.
 
 ---
 

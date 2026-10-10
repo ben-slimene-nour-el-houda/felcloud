@@ -228,16 +228,17 @@ var provisionLimiter chan struct{}
 func printUsage() {
 	fmt.Println("FelCloud Resilient Gateway Control Plane CLI (Go)")
 	fmt.Println("Usage:")
-	fmt.Println("  ipam-control init")
-	fmt.Println("  ipam-control list")
-	fmt.Println("  ipam-control reclaim")
-	fmt.Println("  ipam-control add-team --name <team> [--ip <ip>] [--port <port>] [--skip-health-check]")
-	fmt.Println("  ipam-control remove-team --name <team> [--cooldown <seconds>]")
-	fmt.Println("  ipam-control allocate --name <team> [--ip <ip>] [--subnet <subnet>]")
-	fmt.Println("  ipam-control sync [--dry-run]")
-	fmt.Println("  ipam-control rollback")
-	fmt.Println("  ipam-control teardown --name <team>")
-	fmt.Println("  ipam-control serve [--port <port>]")
+	fmt.Println("  felcloud-controlplane init")
+	fmt.Println("  felcloud-controlplane list")
+	fmt.Println("  felcloud-controlplane reclaim")
+	fmt.Println("  felcloud-controlplane add-team --name <team> [--ip <ip>] [--port <port>] [--skip-health-check]")
+	fmt.Println("  felcloud-controlplane remove-team --name <team> [--cooldown <seconds>]")
+	fmt.Println("  felcloud-controlplane allocate --name <team> [--ip <ip>] [--subnet <subnet>]")
+	fmt.Println("  felcloud-controlplane sync [--dry-run]")
+	fmt.Println("  felcloud-controlplane rollback")
+	fmt.Println("  felcloud-controlplane teardown --name <team>")
+	fmt.Println("  felcloud-controlplane serve [--port <port>]")
+	fmt.Println("  felcloud-controlplane gateway-api")
 }
 
 func main() {
@@ -379,6 +380,9 @@ func main() {
 			}
 		}
 		runAPIServer(port)
+
+	case "gateway-api":
+		runGatewayAPIServer()
 
 	default:
 		fmt.Printf("Unknown action: %s\n", action)
