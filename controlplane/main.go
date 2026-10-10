@@ -372,13 +372,20 @@ func main() {
 		}
 
 	case "serve":
-		port := 8080
+		port := 8081
+		// Honour PORT env var as a fallback (original gateway.go behaviour).
+		if envPort := os.Getenv("PORT"); envPort != "" {
+			if p, err := strconv.Atoi(envPort); err == nil {
+				port = p
+			}
+		}
+		// --port flag always wins over the env var.
 		for i := 2; i < len(os.Args); i++ {
 			if os.Args[i] == "--port" && i+1 < len(os.Args) {
 				port, _ = strconv.Atoi(os.Args[i+1])
 			}
 		}
-		runAPIServer(port)
+		startGatewayServer(port)
 
 	default:
 		fmt.Printf("Unknown action: %s\n", action)
