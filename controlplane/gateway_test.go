@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +20,13 @@ func TestGatewaySyncDoesNotModifyTrackedVarsFile(t *testing.T) {
 			setupTestDB(t)
 			oldVarsPath, oldDomain := varsYmlPath, routingDomain
 			oldValidator, oldRunner := gatewayConfigValidator, gatewayPlaybookRunner
+			oldDeploy, oldHealth, oldFactory := gatewayDeploymentRunner, gatewayHealthCheck, gatewayStoreFactory
+			oldWindow := os.Getenv("HEALTH_REGRESSION_WINDOW_SECONDS")
 			t.Cleanup(func() {
 				varsYmlPath, routingDomain = oldVarsPath, oldDomain
 				gatewayConfigValidator, gatewayPlaybookRunner = oldValidator, oldRunner
+				gatewayDeploymentRunner, gatewayHealthCheck, gatewayStoreFactory = oldDeploy, oldHealth, oldFactory
+				_ = os.Setenv("HEALTH_REGRESSION_WINDOW_SECONDS", oldWindow)
 			})
 
 			varsYmlPath = filepath.Join(t.TempDir(), "vars.yml")
@@ -35,25 +40,25 @@ func TestGatewaySyncDoesNotModifyTrackedVarsFile(t *testing.T) {
 			}
 
 			gatewayConfigValidator = func(string) (bool, string) { return true, "valid" }
-			var gotRoutes, generatedPath string
-			gatewayPlaybookRunner = func(routesVarsPath string) (string, error) {
-				generatedPath = routesVarsPath
-				generated, err := os.ReadFile(routesVarsPath)
-				if err != nil {
-					return "", err
-				}
-				gotRoutes = string(generated)
-				if tc.failRun {
-					return "simulated Ansible failure", os.ErrInvalid
-				}
-				return "ok", nil
+			_ = os.Setenv("HEALTH_REGRESSION_WINDOW_SECONDS", "0")
+			db, err := getDBConnection()
+			if err != nil {
+				t.Fatal(err)
 			}
+			gatewayStoreFactory = func() (*gatewayStore, error) { return &gatewayStore{db: db}, nil }
+			deployed := ""
+			gatewayDeploymentRunner = func(genID, snapshot, active, standby string) (gatewayDeployment, error) {
+				deployed = snapshot
+				if tc.failRun {
+					return gatewayDeployment{}, os.ErrInvalid
+				}
+				return gatewayDeployment{Generation: genID, GW1Backup: "/backup/1", GW2Backup: "/backup/2"}, nil
+			}
+			baseline := gatewayHealthSnapshot{Probes: ProbeResult{VIPHolder: "gw1"}, VIPStatus: 200, Backends: map[string]string{}}
+			gatewayHealthCheck = func(context.Context, *gatewayStore) (gatewayHealthSnapshot, error) { return baseline, nil }
 			ok, _ := syncHAProxyDualGateways(false)
 			if ok == tc.failRun {
 				t.Fatalf("sync success=%v, want %v", ok, !tc.failRun)
-			}
-			if _, err := os.Stat(generatedPath); !os.IsNotExist(err) {
-				t.Fatalf("generated routes file still exists after sync: stat err=%v", err)
 			}
 			after, err := os.ReadFile(varsYmlPath)
 			if err != nil {
@@ -62,9 +67,45 @@ func TestGatewaySyncDoesNotModifyTrackedVarsFile(t *testing.T) {
 			if string(after) != string(original) {
 				t.Fatalf("sync modified vars.yml\nbefore: %q\nafter:  %q", original, after)
 			}
-			if !strings.Contains(gotRoutes, "sync-team") || !strings.Contains(gotRoutes, "10.20.30.73") || !strings.Contains(gotRoutes, "custom.example") {
-				t.Fatalf("generated routes vars missing provisioned route: %s", gotRoutes)
+			if !strings.Contains(deployed, "sync-team") || !strings.Contains(deployed, "10.20.30.73") || !strings.Contains(deployed, "custom.example") {
+				t.Fatalf("candidate snapshot missing provisioned route: %s", deployed)
 			}
 		})
+	}
+}
+
+func TestGatewayConfigForHostAddsGatewayIdentityToPublicFrontends(t *testing.T) {
+	base := "frontend http_front\n    mode http\n    bind *:80\n\nfrontend https_front\n    mode http\n    bind *:443\n"
+	for _, host := range []string{"gw1", "gw2"} {
+		got := gatewayConfigForHost(base, host)
+		if strings.Count(got, "http-response set-header X-Gateway-ID "+host) != 2 {
+			t.Fatalf("expected public HTTP and HTTPS headers for %s, got:\n%s", host, got)
+		}
+	}
+	withPlaceholder := "frontend http_front\n    mode http\n    http-response set-header X-Gateway-ID __FELCLOUD_GATEWAY_ID__\n"
+	if got := gatewayConfigForHost(withPlaceholder, "gw2"); strings.Count(got, "X-Gateway-ID gw2") != 1 {
+		t.Fatalf("placeholder header was not safely replaced: %s", got)
+	}
+}
+
+func TestParseBackendStatesKeepsGatewayIdentity(t *testing.T) {
+	output := "gw1 | CHANGED | rc=0 >>\n# pxname, svname, status\nteam-a_backend, team-a_srv, UP 2/3\n\ngw2 | CHANGED | rc=0 >>\n# pxname, svname, status\nteam-a_backend, team-a_srv, DOWN 0/3\n"
+	got := parseBackendStates(output)
+	if !strings.HasPrefix(got["gw1/team-a_backend/team-a_srv"], "UP") || !strings.HasPrefix(got["gw2/team-a_backend/team-a_srv"], "DOWN") {
+		t.Fatalf("unexpected per-gateway backend states: %#v", got)
+	}
+}
+
+func TestHealthWindowDetectsBackendBecomingDown(t *testing.T) {
+	oldCheck := gatewayHealthCheck
+	oldWindow := os.Getenv("HEALTH_REGRESSION_WINDOW_SECONDS")
+	t.Cleanup(func() { gatewayHealthCheck = oldCheck; _ = os.Setenv("HEALTH_REGRESSION_WINDOW_SECONDS", oldWindow) })
+	_ = os.Setenv("HEALTH_REGRESSION_WINDOW_SECONDS", "0")
+	gatewayHealthCheck = func(context.Context, *gatewayStore) (gatewayHealthSnapshot, error) {
+		return gatewayHealthSnapshot{VIPStatus: 200, Backends: map[string]string{"gw1/team-a/srv": "DOWN 0/2"}}, nil
+	}
+	err := verifyGatewayHealthWindow(nil, gatewayHealthSnapshot{Backends: map[string]string{"gw1/team-a/srv": "UP 2/2"}})
+	if err == nil || !strings.Contains(err.Error(), "became DOWN") {
+		t.Fatalf("expected backend regression, got %v", err)
 	}
 }

@@ -379,17 +379,22 @@ func handleGatewaySync(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
+	if !failoverMu.TryLock() {
+		sendJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+		return
+	}
+	defer failoverMu.Unlock()
 	body, _ := io.ReadAll(r.Body)
 	var params map[string]interface{}
 	_ = json.Unmarshal(body, &params)
 
 	dryRun, _ := params["dry_run"].(bool)
-	success, msg := syncHAProxyDualGateways(dryRun)
+	success, msg, duration := syncHAProxyDualGatewaysTimed(dryRun, "manual")
 	code := http.StatusOK
 	if !success {
-		code = http.StatusInternalServerError
+		code = http.StatusBadGateway
 	}
-	sendJSON(w, code, map[string]interface{}{"success": success, "message": msg})
+	sendJSON(w, code, map[string]interface{}{"success": success, "message": msg, "duration_ms": duration})
 }
 
 func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
@@ -397,12 +402,31 @@ func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	success := rollbackConfig()
-	code := http.StatusOK
-	if !success {
-		code = http.StatusInternalServerError
+	if !failoverMu.TryLock() {
+		sendJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+		return
 	}
-	sendJSON(w, code, map[string]bool{"success": success})
+	defer failoverMu.Unlock()
+	var body struct {
+		TargetGeneration string `json:"target_generation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	generation, duration, err := rollbackConfigWithOptions(body.TargetGeneration, "manual", "operator request")
+	code := http.StatusOK
+	if err != nil {
+		code = http.StatusBadGateway
+	}
+	sendJSON(w, code, map[string]interface{}{"success": err == nil, "generation": generation, "duration_ms": duration, "error": errorText(err)})
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 func runAPIServer(port int) {
 	if err := configureProvisioner(context.Background()); err != nil {

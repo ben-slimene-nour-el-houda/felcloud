@@ -167,6 +167,7 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("frontend http_front\n")
 	sb.WriteString("    bind *:80\n")
 	sb.WriteString("    mode http\n")
+	sb.WriteString("    http-response set-header X-Gateway-ID __FELCLOUD_GATEWAY_ID__\n")
 	for _, t := range teams {
 		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
 		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
@@ -176,6 +177,7 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("frontend https_front\n")
 	sb.WriteString("    bind *:443 ssl crt /etc/haproxy/certs/felcloud-gateway.pem alpn h2,http/1.1\n")
 	sb.WriteString("    mode http\n")
+	sb.WriteString("    http-response set-header X-Gateway-ID __FELCLOUD_GATEWAY_ID__\n")
 	for _, t := range teams {
 		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
 		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
@@ -254,88 +256,105 @@ func createGeneratedRoutesVars(teams []TeamEntry) (string, func(), error) {
 }
 
 func rollbackConfig() bool {
-	db, err := getDBConnection()
-	if err != nil {
-		return false
-	}
-	defer db.Close()
-
-	var genID, snapshot string
-	err = db.QueryRow("SELECT generation_id, config_snapshot FROM config_generations WHERE status = 'COMMITTED' ORDER BY id DESC LIMIT 1").Scan(&genID, &snapshot)
-	if err != nil {
-		fmt.Println("✗ No previous committed generation found for rollback.")
-		return false
-	}
-
-	fmt.Printf("--> Rolling back to Generation [%s]...\n", genID)
-	os.WriteFile("/tmp/haproxy_rollback.cfg", []byte(snapshot), 0644)
-	recordEvent(db, "", "rollback", genID, 0)
-	fmt.Printf("✓ Configuration restored to previous generation [%s].\n", genID)
-	return true
+	_, _, err := rollbackConfigWithOptions("", "manual", "CLI rollback")
+	return err == nil
 }
 
 func syncHAProxyDualGateways(dryRun bool) (bool, string) {
+	ok, msg, _ := syncHAProxyDualGatewaysTimed(dryRun, "manual")
+	return ok, msg
+}
+
+func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, int64) {
+	started := time.Now()
 	teams, err := updateAnsibleTeams()
 	if err != nil {
-		return false, fmt.Sprintf("Failed to load sandbox routes: %v", err)
+		msg := fmt.Sprintf("Failed to load sandbox routes: %v", err)
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, msg, duration)
+		return false, msg, duration
 	}
 	candidateCfg := generateHAProxyConfig(teams)
 
-	isValid, validationMsg := gatewayConfigValidator(candidateCfg)
-	if !isValid {
-		fmt.Printf("✗ CRITICAL: Candidate HAProxy configuration failed validation:\n%s\n", validationMsg)
-		fmt.Println("✗ Aborting reload! Active gateway configuration untouched.")
-		db, _ := getDBConnection()
-		if db != nil {
-			recordEvent(db, "", "sync_failed", validationMsg, 0)
-			db.Close()
-		}
-		return false, fmt.Sprintf("Validation failed: %s", validationMsg)
-	}
-
-	fmt.Println("✓ Candidate configuration pre-validation passed.")
 	if dryRun {
-		return true, "Dry-run validation successful"
+		isValid, validationMsg := gatewayConfigValidator(candidateCfg)
+		if !isValid {
+			msg := fmt.Sprintf("Validation failed: %s", validationMsg)
+			duration := time.Since(started).Milliseconds()
+			recordGatewayOperationEvent("sync_failed", trigger, msg, duration)
+			return false, msg, duration
+		}
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync", trigger, "dry-run validation successful", duration)
+		return true, "Dry-run validation successful", duration
 	}
 
-	genID := fmt.Sprintf("gen-%s", time.Now().UTC().Format("20060102150405"))
+	store, err := gatewayStoreFactory()
+	if err != nil {
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
+		return false, err.Error(), duration
+	}
+	defer store.close()
+	active, standby, baseline, err := loadActiveAndStandby(store)
+	if err != nil {
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
+		return false, err.Error(), duration
+	}
+	genID := generationID("gen")
 	db, err := getDBConnection()
 	if err != nil {
-		return false, err.Error()
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
+		return false, err.Error(), duration
 	}
 
 	_, err = db.Exec("INSERT INTO config_generations (generation_id, config_snapshot, status) VALUES (?, ?, 'VALIDATED')", genID, candidateCfg)
 	db.Close()
 	if err != nil {
-		return false, fmt.Sprintf("Failed to record config generation: %v", err)
+		msg := fmt.Sprintf("Failed to record config generation: %v", err)
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, msg, duration)
+		return false, msg, duration
 	}
 
-	fmt.Printf("\n--> Deploying Generation [%s] across GW1 and GW2...\n", genID)
-	routesPath, cleanupRoutes, err := createGeneratedRoutesVars(teams)
-	if err != nil {
-		return false, err.Error()
-	}
-	defer cleanupRoutes()
-	output, err := gatewayPlaybookRunner(routesPath)
+	deployment, err := gatewayDeploymentRunner(genID, candidateCfg, active, standby)
 	if err == nil {
-		fmt.Printf("✓ Generation [%s] successfully validated and reloaded across GW1 and GW2 with zero downtime.\n", genID)
+		err = verifyGatewayHealthWindow(store, baseline)
+	}
+	if err != nil {
+		msg := err.Error()
 		db, _ := getDBConnection()
 		if db != nil {
-			db.Exec("UPDATE config_generations SET status = 'COMMITTED' WHERE generation_id = ?", genID)
-			recordEvent(db, "", "sync_ok", genID, 0)
+			db.Exec("UPDATE config_generations SET status='FAILED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
+			recordEvent(db, "", "sync_failed", fmt.Sprintf("trigger=%s reason=%s", trigger, msg), time.Since(started).Milliseconds())
 			db.Close()
 		}
-		return true, fmt.Sprintf("Generation %s applied", genID)
+		_, _, rollbackErr := rollbackConfigWithOptions("", "auto", msg)
+		if rollbackErr != nil {
+			msg += "; automatic rollback failed: " + rollbackErr.Error()
+		}
+		return false, msg, time.Since(started).Milliseconds()
 	}
-
-	fmt.Println("✗ Ansible deployment failed! Triggering automatic rollback...")
-	db, _ = getDBConnection()
-	if db != nil {
-		recordEvent(db, "", "sync_failed", output, 0)
-		db.Close()
+	db, err = getDBConnection()
+	if err != nil {
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
+		return false, err.Error(), duration
 	}
-	rollbackConfig()
-	return false, fmt.Sprintf("Ansible error: %s", output)
+	_, err = db.Exec("UPDATE config_generations SET status='COMMITTED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
+	if err == nil {
+		recordEvent(db, "", "sync", fmt.Sprintf("trigger=%s reason=deploy generation=%s", trigger, genID), time.Since(started).Milliseconds())
+	}
+	db.Close()
+	if err != nil {
+		duration := time.Since(started).Milliseconds()
+		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
+		return false, err.Error(), duration
+	}
+	gwCache.Invalidate()
+	return true, fmt.Sprintf("Generation %s applied", genID), time.Since(started).Milliseconds()
 }
 
 func runGatewayPlaybook(routesVarsPath string) (string, error) {

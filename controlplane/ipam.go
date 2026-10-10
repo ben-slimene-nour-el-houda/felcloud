@@ -183,11 +183,16 @@ func initDB() error {
 			generation_id TEXT UNIQUE NOT NULL,
 			config_snapshot TEXT NOT NULL,
 			status TEXT CHECK(status IN ('PROPOSED', 'VALIDATED', 'COMMITTED', 'ROLLED_BACK', 'FAILED')) DEFAULT 'PROPOSED',
+			gw1_backup TEXT,
+			gw2_backup TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
 	if err != nil {
 		return fmt.Errorf("error creating config_generations table: %w", err)
+	}
+	if err := ensureConfigGenerationBackupColumns(db); err != nil {
+		return fmt.Errorf("config generation backup migration failed: %w", err)
 	}
 
 	// 5. Events table & index
@@ -235,6 +240,38 @@ func initDB() error {
 	}
 
 	fmt.Println("✓ IPAM database initialized successfully with quarantine and lifecycle tracking.")
+	return nil
+}
+
+func ensureConfigGenerationBackupColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(config_generations)`)
+	if err != nil {
+		return err
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, name := range []string{"gw1_backup", "gw2_backup"} {
+		if !columns[name] {
+			if _, err := db.Exec(`ALTER TABLE config_generations ADD COLUMN ` + name + ` TEXT`); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

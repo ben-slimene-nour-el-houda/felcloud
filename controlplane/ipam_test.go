@@ -33,6 +33,42 @@ func setupTestDB(t *testing.T) string {
 	return dbFile
 }
 
+func TestConfigGenerationBackupMigrationIsAdditiveAndIdempotent(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DROP TABLE config_generations; CREATE TABLE config_generations (id INTEGER PRIMARY KEY, generation_id TEXT UNIQUE NOT NULL, config_snapshot TEXT NOT NULL, status TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureConfigGenerationBackupColumns(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureConfigGenerationBackupColumns(db); err != nil {
+		t.Fatalf("second migration should be safe: %v", err)
+	}
+	rows, err := db.Query(`PRAGMA table_info(config_generations)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); err != nil {
+			t.Fatal(err)
+		}
+		columns[name] = true
+	}
+	if !columns["gw1_backup"] || !columns["gw2_backup"] {
+		t.Fatalf("backup columns missing after migration: %#v", columns)
+	}
+}
+
 func dbExecSandboxManagedBy(t *testing.T, sandboxID, owner string) (sql.Result, error) {
 	t.Helper()
 	db, err := getDBConnection()

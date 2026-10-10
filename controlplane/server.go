@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -346,18 +347,24 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		if !failoverMu.TryLock() {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+			return
+		}
+		defer failoverMu.Unlock()
 		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			body = map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			errJSON(w, http.StatusBadRequest, "invalid JSON", err.Error())
+			return
 		}
 		dryRun, _ := body["dry_run"].(bool)
-		success, msg := syncHAProxyDualGateways(dryRun)
+		success, msg, duration := syncHAProxyDualGatewaysTimed(dryRun, "manual")
 		if !success {
-			errJSON(w, http.StatusInternalServerError, "sync failed", msg)
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "sync failed", "reason": msg, "duration_ms": duration})
 			return
 		}
 		gwCache.Invalidate()
-		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": msg})
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": msg, "duration_ms": duration})
 	})))
 
 	// ── POST /api/gateways/rollback ────────────────────────────────────────────
@@ -366,12 +373,25 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if !rollbackConfig() {
-			errJSON(w, http.StatusInternalServerError, "rollback failed")
+		if !failoverMu.TryLock() {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+			return
+		}
+		defer failoverMu.Unlock()
+		var body struct {
+			TargetGeneration string `json:"target_generation"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			errJSON(w, http.StatusBadRequest, "invalid JSON", err.Error())
+			return
+		}
+		generation, duration, err := rollbackConfigWithOptions(body.TargetGeneration, "manual", "operator request")
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "rollback failed", "reason": err.Error(), "duration_ms": duration})
 			return
 		}
 		gwCache.Invalidate()
-		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "generation": generation, "duration_ms": duration})
 	})))
 
 	// ── GET /api/sandboxes ─────────────────────────────────────────────────────
@@ -558,7 +578,7 @@ func gwGenerationsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 	defer db.Close()
 
 	rows, err := db.Query(`
-		SELECT id, generation_id, status, created_at, config_snapshot
+		SELECT id, generation_id, status, created_at, config_snapshot, COALESCE(gw1_backup,''), COALESCE(gw2_backup,'')
 		FROM config_generations
 		ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
@@ -570,8 +590,8 @@ func gwGenerationsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 	var gens []map[string]any
 	for rows.Next() {
 		var id int
-		var genID, status, createdAt, snapshot string
-		if err := rows.Scan(&id, &genID, &status, &createdAt, &snapshot); err == nil {
+		var genID, status, createdAt, snapshot, gw1Backup, gw2Backup string
+		if err := rows.Scan(&id, &genID, &status, &createdAt, &snapshot, &gw1Backup, &gw2Backup); err == nil {
 			// Count backend stanzas as a proxy for "number of active routes"
 			backendCount := strings.Count(snapshot, "\nbackend ")
 			gens = append(gens, map[string]any{
@@ -580,6 +600,8 @@ func gwGenerationsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 				"status":        status,
 				"created_at":    createdAt,
 				"backend_count": backendCount,
+				"gw1_backup":    gw1Backup,
+				"gw2_backup":    gw2Backup,
 			})
 		}
 	}

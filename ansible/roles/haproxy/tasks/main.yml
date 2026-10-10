@@ -34,7 +34,8 @@
           -out {{ haproxy_temp_cert_dir.path }}/server.crt
           -days 3650
           -subj "/CN=*.felcloud.local/O=FelCloud/C=TN"
-          -addext "subjectAltName=DNS:*.felcloud.local,DNS:*.local,DNS:localhost,IP:{{ vip_address }},IP:{{ bastion_public_ip | default(lookup('env', 'BASTION_IP')) }}"
+          -addext "subjectAltName=DNS:*.felcloud.local,DNS:*.local,DNS:localhost,
+          IP:{{ vip_address }},IP:{{ bastion_public_ip | default(lookup('env', 'BASTION_IP')) }}"
       changed_when: true
 
     - name: Combine private key and certificate into PEM bundle for HAProxy
@@ -110,6 +111,24 @@
     mode: "0644"
   register: haproxy_dpa_unit_deploy
   notify: Reload systemd daemon
+
+- name: Check current HAProxy configuration before backup
+  ansible.builtin.stat:
+    path: /etc/haproxy/haproxy.cfg
+  register: haproxy_current_config
+
+- name: Back up current HAProxy configuration before regular role deployment
+  # Preserve each gateway's own current live file before a regular role deployment.
+  # The control-plane transactional playbook supplies an explicit generation id.
+  ansible.builtin.copy:
+    src: /etc/haproxy/haproxy.cfg
+    dest: >-
+      /etc/haproxy/backups/haproxy.cfg.{{ haproxy_generation_id | default(ansible_date_time.iso8601_micro | regex_replace('[^0-9]', '')) }}
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when: haproxy_current_config.stat.exists
 
 - name: Deploy HAProxy configuration template
   ansible.builtin.template:
