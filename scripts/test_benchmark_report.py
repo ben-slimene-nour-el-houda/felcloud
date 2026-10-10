@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 
-SCRIPT = Path(__file__).parent / "scripts" / "benchmark-report.py"
+SCRIPT = Path(__file__).parent / "benchmark-report.py"
 SPEC = importlib.util.spec_from_file_location("benchmark_report", SCRIPT)
 REPORT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(REPORT)
