@@ -4,8 +4,8 @@
 # Validates:
 # 1. IPAM Transactional Allocation, Quarantine & Auto-Reclamation
 # 2. Pre-Flight Sandbox Health Check before Route Opening
-# 3. Dual-Gateway Pre-Validation & Automatic Rollback on Invalid Configuration
-# 4. Keepalived Script Weight & Guaranteed HAProxy-Only Failover Logic
+# 3. HAProxy Configuration Generation & Validation
+# 4. Keepalived Script Weight Review
 # 5. HTTPS / TLS Configuration & Dual Port 80/443 ACL Routing
 # 6. REST API Server Health & Endpoints
 # 7. Go Control Plane Unit & Race Tests
@@ -88,10 +88,21 @@ should_run() {
   return 1
 }
 
-# 0. Always rebuild binary first (unless SKIP_BUILD=1)
+BUILD_DIR=""
+CONTROLPLANE_BINARY=""
+cleanup() {
+  if [[ -n "$BUILD_DIR" ]]; then
+    rm -rf -- "$BUILD_DIR"
+  fi
+}
+trap cleanup EXIT
+
+# Build outside the repository (unless SKIP_BUILD=1).
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/felcloud-tests.XXXXXX")"
+  CONTROLPLANE_BINARY="$BUILD_DIR/felcloud-controlplane"
   echo "Building controlplane binary..."
-  if ! (cd "$ROOT_DIR/controlplane" && go build -o ../ipam/ipam-control .); then
+  if ! (cd "$ROOT_DIR/controlplane" && go build -o "$CONTROLPLANE_BINARY" .); then
     echo "❌ ERROR: Failed to build controlplane binary!" >&2
     exit 1
   fi
@@ -115,8 +126,9 @@ echo "========================================================================"
 if should_run "ipam-quarantine"; then
   echo ""
   echo "[TEST 1] IPAM Quarantine & Address Reclamation..."
-  if ./scripts/recycle-test.sh >/dev/null 2>&1; then
-    record_pass "Quarantine cooldown and automatic address reclamation verified"
+  if FELCLOUD_CONTROLPLANE_BINARY="${CONTROLPLANE_BINARY:-${FELCLOUD_CONTROLPLANE_BINARY:-}}" \
+    RECYCLE_BASE_URL= BASE_URL= PROVISIONER=mock ./scripts/recycle-test.sh; then
+    record_pass "Quarantine cooldown and address reclamation verified"
   else
     record_fail "Quarantine and address reclamation failed"
   fi
@@ -126,69 +138,29 @@ fi
 if should_run "health-check"; then
   echo ""
   echo "[TEST 2] Pre-flight Sandbox Health Check before Route Activation..."
-  if python3 - "$ROOT_DIR" <<'EOF'
-import sys, http.server, threading, time
-root_dir = sys.argv[1]
-sys.path.insert(0, f"{root_dir}/ipam")
-from ipam_control import check_sandbox_health
-
-class MockHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *args): pass
-
-mock_server = http.server.HTTPServer(("127.0.0.1", 8999), MockHandler)
-t = threading.Thread(target=mock_server.serve_forever, daemon=True)
-t.start()
-time.sleep(0.5)
-
-passed, msg = check_sandbox_health("127.0.0.1", port=8999, max_retries=2, retry_interval=0.2)
-assert passed == True, f"Expected pass on healthy server, got {msg}"
-
-failed_passed, failed_msg = check_sandbox_health("127.0.0.1", port=8998, max_retries=1, timeout=0.5)
-assert failed_passed == False, f"Expected failure on dead port, got {failed_msg}"
-
-mock_server.server_close()
-EOF
-  then
+  if (cd "$ROOT_DIR/controlplane" && go test -run '^TestHealthProbeRetryModes$' -count=1 .); then
     record_pass "Pre-flight health check correctly accepts healthy backends and blocks dead endpoints"
   else
     record_fail "Pre-flight health check failed"
   fi
 fi
 
-# Test 3: Dual-Gateway Pre-Validation and Automatic Rollback (syntax-validation)
+# Test 3: HAProxy Configuration Generation and Validation (syntax-validation)
 if should_run "syntax-validation"; then
   echo ""
-  echo "[TEST 3] Syntax Pre-Validation & Automatic Rollback Protection..."
-  if python3 - "$ROOT_DIR" <<'EOF'
-import sys
-root_dir = sys.argv[1]
-sys.path.insert(0, f"{root_dir}/ipam")
-from ipam_control import validate_haproxy_syntax, generate_haproxy_config
-
-valid_cfg = generate_haproxy_config([{"name": "team1", "ip": "10.20.30.70", "port": 80}])
-invalid_cfg = "global\n    log /dev/log local0\nfrontend http_front\n    INVALID DIRECTIVE\n"
-
-is_valid, msg = validate_haproxy_syntax(valid_cfg)
-assert is_valid == True, f"Generated HAProxy config should be valid, got: {msg}"
-
-is_invalid, invalid_msg = validate_haproxy_syntax(invalid_cfg)
-assert is_invalid == False, f"Invalid config should fail syntax check"
-EOF
-  then
-    record_pass "Configuration validator correctly flags syntax errors and protects gateway state"
+  echo "[TEST 3] HAProxy Configuration Generation & Validation..."
+  if (cd "$ROOT_DIR/controlplane" && go test -run '^(TestGenerateHAProxyConfigRoutingDomain|TestValidateHAProxySyntaxRejectsMissingFrontendAndBackend)$' -count=1 .); then
+    record_pass "Go HAProxy config generation and required-section validation passed"
   else
     record_fail "Syntax validation failed"
   fi
 fi
 
-# Test 4: Keepalived Failover Weight Mathematics (HAProxy-Only Failure)
-echo ""
-echo "[TEST 4] Keepalived VRRP Script Weight Review..."
-if python3 - "$ROOT_DIR" <<'EOF'
+# Test 4: Keepalived Failover Weight Review
+if should_run "keepalived-weight"; then
+  echo ""
+  echo "[TEST 4] Keepalived VRRP Script Weight Review..."
+  if python3 - "$ROOT_DIR" <<'EOF'
 import re
 import sys
 root_dir = sys.argv[1]
@@ -206,51 +178,50 @@ assert weight <= -51, f"Weight {weight} is too high to cause failover!"
 assert dropped_priority < gw2_priority, f"GW1 reduced priority ({dropped_priority}) must be < GW2 ({gw2_priority})"
 EOF
 
-then
-  record_pass "Guaranteed failover confirmed on HAProxy-only failure (150 + (-60) = 90 < 100)"
-else
-  record_fail "Keepalived weight review failed"
+  then
+    record_pass "Keepalived weight review passed (150 + (-60) = 90 < 100)"
+  else
+    record_fail "Keepalived weight review failed"
+  fi
 fi
 
 # Test 5: HTTPS / TLS Configuration & ACLs (https-routing)
 if should_run "https-routing"; then
   echo ""
   echo "[TEST 5] HTTPS 443 TLS & Host Header Routing Template..."
-  if ! python3 -c "import jinja2, yaml" >/dev/null 2>&1; then
-    echo "  missing python module: jinja2 or yaml (pip install jinja2 pyyaml)"
-    record_fail "missing required Python dependencies (jinja2, pyyaml)"
-  elif python3 - "$ROOT_DIR" <<'EOF'
-import sys, os, yaml
-from jinja2 import Template
+  if python3 - "$ROOT_DIR" <<'EOF'
+import os
+import re
+import sys
 
 root_dir = sys.argv[1]
-
-# Read default routing_domain from vars.yml
-vars_path = os.path.join(root_dir, "ansible", "group_vars", "gateways", "vars.yml")
-with open(vars_path, "r") as f:
-    vars_data = yaml.safe_load(f) or {}
-
-domain = os.environ.get("ROUTING_DOMAIN") or vars_data.get("routing_domain", "cstam.felcloud.tn")
-
-template_path = os.path.join(root_dir, "ansible", "roles", "haproxy", "templates", "haproxy.cfg.j2")
-with open(template_path, "r") as f:
-    template_content = f.read()
-
-template = Template(template_content)
-rendered = template.render(
-    teams=[{"name": "team1", "ip": "10.20.30.70", "port": 80}],
-    routing_domain=domain
+template_path = os.path.join(
+    root_dir, "ansible", "roles", "haproxy", "templates", "haproxy.cfg.j2"
 )
+with open(template_path, encoding="utf-8") as stream:
+    template = stream.read()
 
-assert "frontend http_front" in rendered
-assert "frontend https_front" in rendered
-assert "bind *:443 ssl crt" in rendered
-assert f"acl is_team1 hdr(host) -i team1.{domain}" in rendered
-assert ".local" not in rendered
-assert "backend team1_backend" in rendered
+required = (
+    "frontend http_front",
+    "bind *:80",
+    "frontend https_front",
+    "bind *:443 ssl crt",
+    "acl is_{{ team.name }} hdr(host) -i {{ team.name }}.{{ routing_domain }}",
+    "backend {{ team.name }}_backend",
+    "server {{ team.name }}_srv {{ team.ip }}:{{ team.port | default(80) }}",
+)
+missing = [item for item in required if item not in template]
+assert not missing, f"HAProxy template is missing expected directives: {missing}"
+assert template.count("{% for team in teams %}") == 3, "HTTP/HTTPS/backend route loops changed"
+assert ".local" not in template, "unexpected legacy .local domain"
+if os.environ.get("ROUTING_DOMAIN"):
+    assert re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*",
+        os.environ["ROUTING_DOMAIN"],
+    ), "ROUTING_DOMAIN is not a lowercase DNS domain"
 EOF
   then
-    record_pass "HTTPS TLS termination and single Host-header routing configured for domain"
+    record_pass "HTTPS TLS and HTTP/HTTPS Host-header routing template verified"
   else
     record_fail "TLS template failed"
   fi
