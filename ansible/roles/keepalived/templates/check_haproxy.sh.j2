@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# check_haproxy.sh — Keepalived health-check script.
+# Deployed to /usr/local/bin/check_haproxy.sh by the keepalived Ansible role.
+# Exit 0  → haproxy is healthy  (keepalived keeps / gains priority)
+# Exit !0 → haproxy is unhealthy (weight penalty applied)
+#
+# Strategy (two-stage, short timeouts):
+#   1. systemctl is-active haproxy   — fastest, no network
+#   2. curl to the dedicated loopback health frontend (127.0.0.1:9000/healthz)
+#      This endpoint is separate from the public frontends, so a deliberate
+#      503 maintenance page, a 429 rate-limit response, or any backend error
+#      on ports 80/443 will NEVER mark this gateway as unhealthy.
+set -uo pipefail
+
+# Probe the dedicated internal health frontend only — NOT the public frontend.
+HAPROXY_HEALTH_URL="${HAPROXY_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
+CURL_TIMEOUT=2
+
+# ── Stage 1: service unit must be active ──────────────────────────────────────
+if ! systemctl is-active --quiet haproxy; then
+    exit 1
+fi
+
+# ── Stage 2: HTTP probe against internal health endpoint ──────────────────────
+# monitor-uri /healthz always returns 200 when haproxy is running; 000 means
+# the process is up per systemd but not yet accepting connections (race window).
+if command -v curl > /dev/null 2>&1; then
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+        --max-time "${CURL_TIMEOUT}" \
+        "${HAPROXY_HEALTH_URL}" 2>/dev/null || echo "000")
+    if [[ "${HTTP_CODE}" != "200" ]]; then
+        exit 1
+    fi
+fi
+
+exit 0

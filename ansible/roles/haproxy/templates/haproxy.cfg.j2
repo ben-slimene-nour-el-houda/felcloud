@@ -24,6 +24,15 @@ defaults
     errorfile 503 /etc/haproxy/errors/503.http
     errorfile 504 /etc/haproxy/errors/504.http
 
+# --- Internal health-check endpoint (loopback only, keepalived probe) ---
+# Bound to 127.0.0.1:9000 so it is never reachable from the internet.
+# monitor-uri responds 200 OK when haproxy is up; never returns 503 or 429.
+
+frontend health_check
+    bind 127.0.0.1:9000
+    mode http
+    monitor-uri /healthz
+
 # --- Hostname-Based ACL Routing (HTTP 80 & HTTPS 443) ---
 
 frontend http_front

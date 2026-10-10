@@ -11,7 +11,7 @@
       tags: [common]
     - role: interface_resolve
       tags: [interface_resolve]
-    - role: keepalived
-      tags: [keepalived]
     - role: haproxy
       tags: [haproxy]
+    - role: keepalived
+      tags: [keepalived]

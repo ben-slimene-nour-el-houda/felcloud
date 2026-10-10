@@ -31,4 +31,8 @@ vrrp_instance VI_1 {
     track_script {
         check_haproxy
     }
+
+    notify_master  "/usr/local/bin/notify_master.sh"
+    notify_backup  "/usr/local/bin/notify_backup.sh"
+    notify_fault   "/usr/local/bin/notify_fault.sh"
 }
