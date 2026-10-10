@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var dnsLabelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+var dnsLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var provisionNameLocks sync.Map
 var gatewaySyncFunc = func(dryRun bool) (bool, string) { return syncHAProxyDualGateways(dryRun) }
 var healthProbeTimeout = 90 * time.Second
@@ -21,6 +21,9 @@ var healthProbeRetryInterval = 500 * time.Millisecond
 var provisionHealthProbe = runHealthProbe
 
 func runHealthProbe(ctx context.Context, ip string) (bool, string) {
+	if healthProbeMode == "skip" {
+		return true, "health probe skipped (mock provisioner)"
+	}
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil || parsedIP.To4() == nil || parsedIP.String() != ip {
 		return false, "probe target must be a literal IPv4 address"

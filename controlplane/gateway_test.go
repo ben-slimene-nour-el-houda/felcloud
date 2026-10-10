@@ -109,3 +109,10 @@ func TestHealthWindowDetectsBackendBecomingDown(t *testing.T) {
 		t.Fatalf("expected backend regression, got %v", err)
 	}
 }
+
+func TestValidateHAProxySyntaxRejectsMissingFrontendAndBackend(t *testing.T) {
+	valid, message := validateHAProxySyntax("global\n    log /dev/log local0\n")
+	if valid {
+		t.Fatalf("validator accepted a config without frontend/backend definitions: %s", message)
+	}
+}

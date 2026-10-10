@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -195,6 +196,22 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/health", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		db, err := getDBConnection()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status": "DOWN", "db": "ERROR", "timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		defer db.Close()
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := db.PingContext(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status": "DOWN", "db": "ERROR", "timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -414,12 +431,27 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/api/leases", leasesHandler)
 	mux.HandleFunc("/ipam/leases", leasesHandler)
 
+	// Legacy control-plane API routes stay on the canonical router so they
+	// retain the same authentication, rate limiting, and request logging.
+	mux.HandleFunc("/ipam/leases/allocate", requireBearerToken(logRequest(handleAllocate)))
+	mux.HandleFunc("/api/leases/allocate", requireBearerToken(logRequest(handleAllocate)))
+	mux.HandleFunc("/ipam/leases/release", requireBearerToken(logRequest(handleRelease)))
+	mux.HandleFunc("/api/leases/release", requireBearerToken(logRequest(handleRelease)))
+	mux.HandleFunc("/ipam/leases/reclaim", requireBearerToken(logRequest(handleReclaim)))
+	mux.HandleFunc("/api/leases/reclaim", requireBearerToken(logRequest(handleReclaim)))
+	mux.HandleFunc("/api/sandboxes/provision", requireBearerToken(logRequest(handleProvision)))
+	mux.HandleFunc("/api/sandboxes/extend", requireBearerToken(logRequest(handleExtendSandbox)))
+	mux.HandleFunc("/api/sandboxes/", requireBearerToken(logRequest(handleSandboxTeardown)))
+	mux.HandleFunc("/api/reconcile", requireBearerToken(logRequest(handleReconcile)))
+	mux.HandleFunc("/api/reconcile/apply", requireBearerToken(logRequest(handleReconcileApply)))
+	mux.HandleFunc("/api/events", requireBearerToken(logRequest(handleEvents)))
+
 	// ── Catch-all ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("/", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		errJSON(w, http.StatusNotFound, "not found", r.URL.Path)
 	}))
 
-	return mux
+	return securityHandlerOrUnavailable(mux)
 }
 
 // ── /api/gateways/events GET ──────────────────────────────────────────────────
@@ -739,4 +771,14 @@ func startGatewayServer(port int) {
 	if err := http.ListenAndServe(addr, gatewayHandler(store)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runGatewayAPIServer() {
+	port := 8081
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if parsedPort, err := strconv.Atoi(envPort); err == nil {
+			port = parsedPort
+		}
+	}
+	startGatewayServer(port)
 }

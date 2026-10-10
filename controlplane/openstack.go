@@ -233,7 +233,9 @@ func configureProvisioner(ctx context.Context) error {
 		return err
 	}
 	if os.Getenv("PROVISIONER") == "mock" {
+		healthProbeMode = "skip"
 		provisioner = &MockProvisioner{}
+		gatewaySyncFunc = func(bool) (bool, string) { return true, "mock gateway sync" }
 		provisionTimeout = 180 * time.Second
 		if v := os.Getenv("PROVISION_TIMEOUT_SECONDS"); v != "" {
 			n, e := strconv.Atoi(v)
@@ -253,6 +255,7 @@ func configureProvisioner(ctx context.Context) error {
 		provisionSemaphore = make(chan struct{}, max)
 		return nil
 	}
+	gatewaySyncFunc = func(dryRun bool) (bool, string) { return syncHAProxyDualGateways(dryRun) }
 	cfg, err := loadProvisionConfig()
 	if err != nil {
 		return err

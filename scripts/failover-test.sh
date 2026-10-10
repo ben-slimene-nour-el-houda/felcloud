@@ -21,8 +21,23 @@ FAILOVER_REASON=""
 DOWNTIME_MS=0
 STOPPED_GATEWAY=""
 PROBE_HEADERS=""
+if [[ ! "$POLL_INTERVAL_MS" =~ ^[0-9]{1,4}$ ]] || (( 10#$POLL_INTERVAL_MS < 1 || 10#$POLL_INTERVAL_MS > 5000 )); then
+  echo "POLL_INTERVAL_MS must be an integer from 1 to 5000." >&2
+  exit 2
+fi
+POLL_INTERVAL_MS=$((10#$POLL_INTERVAL_MS))
+if [[ ! "$REMOTE_USER" =~ ^[a-z_][a-zA-Z0-9_.-]*$ ]]; then
+  echo "REMOTE_USER contains invalid characters." >&2
+  exit 2
+fi
+if [[ ! "$TEST_HOST_HEADER" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:[0-9]{1,5})?$ ]]; then
+  echo "TEST_HOST_HEADER must be a lowercase DNS name with an optional port." >&2
+  exit 2
+fi
 
-now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+now_ms() {
+  python3 -c 'import time; print(int(time.time() * 1000))'
+}
 
 api_curl() {
   local url="$1"

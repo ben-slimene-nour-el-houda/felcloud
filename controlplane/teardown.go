@@ -388,6 +388,11 @@ func handleSandboxTeardown(w http.ResponseWriter, r *http.Request) {
 			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 			return
 		}
+		var request struct{}
+		if err := decodeStrictJSON(w, r, &request); err != nil {
+			sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+			return
+		}
 		id = strings.TrimSuffix(id, "/teardown")
 	} else if r.Method != http.MethodDelete {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
