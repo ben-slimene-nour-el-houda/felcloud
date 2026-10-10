@@ -78,3 +78,126 @@ and both the `openstack` CLI and `OS_CLOUD` are available.
 (default 12, minimum 10), `PREFIX` (default `stress`), `CONCURRENCY` (default
 `TEAMS`), `HTTP_TIMEOUT_SECONDS` (default 300), `TEARDOWN` (default `true`),
 `OUT_DIR`, and `SUCCESS_THRESHOLD` (default 100 percent) control the run.
+
+## IP recycling benchmark
+
+Run `scripts/recycle-benchmark.sh` against an already-running control plane.
+It requires `API_URL` and an `ADMIN_TOKEN` of at least 24 non-whitespace
+characters, and validates `PREFIX` as a lowercase DNS label (maximum 63
+characters). `RECYCLE_CYCLES` defaults to 10 (range 1-1000),
+`IP_QUARANTINE_SECONDS` defaults to 60 (range 1-3600), and
+`HTTP_TIMEOUT_SECONDS` defaults to 300. `OUT_DIR` overrides the default
+`docs/benchmarks/recycle-<UTC timestamp>/`. The script does not start or stop
+the server. It polls lease status every 250 ms, with a 120-second maximum
+wait. Set `PROVISIONER=mock` in the runner environment for an explicit mock
+label; mock-prefixed resource IDs also force the output mode to mock.
+
+Each cycle provisions and deletes one sandbox, checks its quarantine/free
+transitions, provisions a second sandbox while the first IP is quarantined,
+then asks IPAM to allocate the original preferred IP after it becomes free.
+It releases the final allocation and verifies all run-owned sandbox rows are
+RELEASED with no ALLOCATED lease remaining. Cleanup leases may remain
+QUARANTINED and return to FREE through the normal cooldown. Results include
+the measured durations, effective cooldown, assertions, and cleanup commands
+on failure.
+The runner derives the actual cooldown from `quarantined_at` and
+`quarantine_until` in the lease API when available; otherwise it records the
+runner's `IP_QUARANTINE_SECONDS` as a fallback and labels the source. The
+observed time to FREE is checked against the remaining time in that lease
+window. Never point this script at production/live OpenStack unless that
+environment is intentionally reserved for destructive benchmarking.
+
+## Combined benchmark report
+
+Run `python3 scripts/benchmark-report.py` to use the latest `stress-*/results.json`
+and `recycle-*/results.json` under this directory and optional
+`FAILOVER_RESULTS=/path/to/results.json`. Specify `--stress PATH|latest` or
+`--recycle PATH|latest` to choose inputs; `--check` validates the selected
+schemas and reports missing datasets. `--failover PATH` overrides
+`FAILOVER_RESULTS`. Reports are written to `BENCHMARK_REPORT.md` and
+`report.json` here. Missing sections say **NOT MEASURED**.
+
+Mock stress/recycle input is rejected by default. For a dry-run rendering set
+`ALLOW_MOCK=true`; it displays a **MOCK DATA - NOT A BENCHMARK** banner, excludes
+mock measurements from benchmark tables, and labels every table it does render.
+Without that override, a mock input is an error. This is not a way to turn mock
+measurements into benchmark evidence.
+
+Example dry run using the recorded Task 7 mock result (with no recycle or
+failover measurements supplied):
+
+```sh
+ALLOW_MOCK=true python3 scripts/benchmark-report.py \
+  --stress docs/benchmarks/stress-20261010T112958Z/results.json \
+  --recycle latest
+```
+
+Example report output:
+
+```text
+# FelCloud Benchmark Report
+
+# MOCK DATA - NOT A BENCHMARK
+
+Mock input measurements are excluded from benchmark tables. ALLOW_MOCK=true permits this labelled dry-run report only.
+
+## Environment
+- Input modes: MOCK DATA - NOT A BENCHMARK
+
+## Provisioning latency (ms)
+MOCK DATA - NOT A BENCHMARK
+NOT MEASURED — mock data suppressed.
+
+## Load test
+MOCK DATA - NOT A BENCHMARK
+NOT MEASURED — mock data suppressed.
+
+## Gateway failover
+NOT MEASURED — no failover results input.
+```
+
+The report accepts stress results with `mode`, `date_utc`, `git_commit`,
+`config`, `teams`, and `aggregates`; recycle results with `schema_version`,
+`mode`, `date_utc`, `git_commit`, `config`, and `cycles`. Timing samples are
+read from successful stress team rows and the corresponding timing fields in
+each recycle cycle. Non-negative numeric values are required.
+
+### Failover input schema
+
+Provide failover results in `FAILOVER_RESULTS` (or `--failover`) as JSON:
+the numeric values below are illustrative schema placeholders, not measured
+benchmark data.
+
+```json
+{
+  "runs": [
+    {
+      "mode": "haproxy-only",
+      "failover_ms": 120,
+      "failed_requests": 2,
+      "total_requests": 100,
+      "serving_gateway_before": "gw1",
+      "serving_gateway_after": "gw2",
+      "verified_by": "responding-gateway-header"
+    }
+  ],
+  "date": "2026-10-10T12:00:00Z",
+  "commit": "0123456789abcdef"
+}
+```
+
+Allowed modes are `haproxy-only`, `keepalived`, and `gateway-reboot`.
+`verified_by` must be `responding-gateway-header` or `vip-owner`; the before
+and after gateway values must differ. A failover input must come from an
+actual run that verifies which gateway responded (for example, by reading a
+response header or checking the VIP owner). Merely printing a constant gateway
+name is not verification and must not be recorded in this schema.
+
+Percentiles use nearest-rank. Every latency statistic carries its sample size;
+n < 10 emits a warning. p95 is omitted for n < 20, where the report shows the
+maximum instead. The environment section reads cloud/flavor/image and server
+settings from the report-generation environment when available; absent values
+remain **NOT MEASURED**.
+
+Run the report-generator unit tests from the repository root with
+`python -m unittest`; they use inline fixture JSON and do not contact a server.
