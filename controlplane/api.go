@@ -23,139 +23,15 @@ func sendJSON(w http.ResponseWriter, code int, data interface{}) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
+// setupAPIRoutes is kept as a compatibility shim for older entry points.
+// The canonical server implementation is gatewayHandler() from server.go.
 func setupAPIRoutes() http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
-			return
-		}
-		sendJSON(w, http.StatusOK, map[string]string{
-			"status":    "UP",
-			"version":   "2.0",
-			"db":        "OK",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-		})
-	})
-
-	mux.HandleFunc("/ipam/leases", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
-			return
-		}
-		reclaimExpiredQuarantines()
-		db, err := getDBConnection()
-		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		defer db.Close()
-
-		rows, err := db.Query("SELECT id, ip_address, subnet_name, entity_name, entity_type, status, COALESCE(quarantined_at, '') as quarantined_at, COALESCE(quarantine_until, '') as quarantine_until, COALESCE(assigned_at, '') as assigned_at FROM ip_allocations ORDER BY subnet_name, ip_address")
-		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		var leases []map[string]interface{}
-		for rows.Next() {
-			var id int
-			var ip, sub, entity, eType, st, qAt, qUntil, aAt string
-			if err := rows.Scan(&id, &ip, &sub, &entity, &eType, &st, &qAt, &qUntil, &aAt); err == nil {
-				leases = append(leases, map[string]interface{}{
-					"id":               id,
-					"ip_address":       ip,
-					"subnet_name":      sub,
-					"entity_name":      entity,
-					"entity_type":      eType,
-					"status":           st,
-					"quarantined_at":   qAt,
-					"quarantine_until": qUntil,
-					"assigned_at":      aAt,
-				})
-			}
-		}
-		sendJSON(w, http.StatusOK, map[string]interface{}{"leases": leases})
-	})
-	mux.HandleFunc("/api/leases", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/ipam/leases", http.StatusTemporaryRedirect)
-	})
-
-	mux.HandleFunc("/api/sandboxes", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
-			return
-		}
-		db, err := getDBConnection()
-		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		defer db.Close()
-
-		rows, err := db.Query("SELECT id, sandbox_id, hostname, subnet_name, COALESCE(private_ip, '') as private_ip, status, created_at, updated_at, expires_at FROM sandboxes ORDER BY created_at")
-		if err != nil {
-			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		var sbs []map[string]interface{}
-		for rows.Next() {
-			var id int
-			var sID, host, sub, ip, st, cAt, uAt string
-			var expVal sql.NullInt64
-			if err := rows.Scan(&id, &sID, &host, &sub, &ip, &st, &cAt, &uAt, &expVal); err == nil {
-				sbMap := map[string]interface{}{
-					"id":          id,
-					"sandbox_id":  sID,
-					"hostname":    host,
-					"subnet_name": sub,
-					"private_ip":  ip,
-					"status":      st,
-					"created_at":  cAt,
-					"updated_at":  uAt,
-				}
-				if expVal.Valid {
-					now := nowUnix()
-					rem := expVal.Int64 - now
-					if rem < 0 {
-						rem = 0
-					}
-					sbMap["expires_at"] = expVal.Int64
-					sbMap["ttl_remaining_seconds"] = rem
-				} else {
-					sbMap["expires_at"] = nil
-					sbMap["ttl_remaining_seconds"] = nil
-				}
-				sbs = append(sbs, sbMap)
-			}
-		}
-		sendJSON(w, http.StatusOK, map[string]interface{}{"sandboxes": sbs})
-	})
-
-	mux.HandleFunc("/ipam/leases/allocate", handleAllocate)
-	mux.HandleFunc("/api/leases/allocate", handleAllocate)
-
-	mux.HandleFunc("/ipam/leases/release", handleRelease)
-	mux.HandleFunc("/api/leases/release", handleRelease)
-
-	mux.HandleFunc("/ipam/leases/reclaim", handleReclaim)
-	mux.HandleFunc("/api/leases/reclaim", handleReclaim)
-
-	mux.HandleFunc("/api/sandboxes/provision", handleProvision)
-	mux.HandleFunc("/api/sandboxes/", handleSandboxTeardown)
-	mux.HandleFunc("/api/sandboxes/extend", handleExtendSandbox)
-	mux.HandleFunc("/api/reconcile", handleReconcile)
-	mux.HandleFunc("/api/reconcile/apply", handleReconcileApply)
-	mux.HandleFunc("/api/gateways/sync", handleGatewaySync)
-	mux.HandleFunc("/api/gateways/rollback", handleGatewayRollback)
-
-	mux.HandleFunc("/api/events", handleEvents)
-
-	return mux
+	store, err := newGatewayStore()
+	if err != nil {
+		log.Printf("WARNING: legacy api setup fell back to in-memory store: %v", err)
+		store = &gatewayStore{db: nil}
+	}
+	return gatewayHandler(store)
 }
 
 func handleAllocate(w http.ResponseWriter, r *http.Request) {
@@ -428,36 +304,7 @@ func errorText(err error) string {
 	}
 	return err.Error()
 }
+
 func runAPIServer(port int) {
-	if err := configureProvisioner(context.Background()); err != nil {
-		log.Fatalf("FATAL: provisioner configuration: %v", err)
-	}
-	if err := initDB(); err != nil {
-		log.Fatalf("FATAL: initialize control-plane database: %v", err)
-	}
-	if report, err := reconcileReport(context.Background()); err != nil {
-		log.Printf("WARNING: startup reconciliation failed: %v", err)
-	} else if len(report.MissingNeutronPorts)+len(report.OrphanNeutronPorts)+len(report.IPMismatches)+len(report.MissingServers) > 0 {
-		log.Printf("WARNING: startup reconciliation drift: db_without_port=%d neutron_orphans=%d ip_mismatches=%d missing_servers=%d", len(report.MissingNeutronPorts), len(report.OrphanNeutronPorts), len(report.IPMismatches), len(report.MissingServers))
-	} else {
-		log.Printf("startup reconciliation: no drift detected")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	_, _ = startReaper(ctx)
-
-	host := os.Getenv("LISTEN_ADDR")
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-
-	server := &http.Server{
-		Addr:    addr,
-		Handler: setupAPIRoutes(),
-	}
-	fmt.Printf("✓ FelCloud IPAM & Gateway Control Plane API (Go) running on http://%s\n", addr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fmt.Printf("HTTP Server Error: %v\n", err)
-	}
+	startGatewayServer(port)
 }
