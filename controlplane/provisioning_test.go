@@ -239,6 +239,7 @@ func TestConfigureHealthProbeTimeout(t *testing.T) {
 
 func TestConfigureHealthProbeMode(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_MODE", "")
+	t.Setenv("PROVISIONER", "")
 	if err := configureHealthProbe(); err != nil {
 		t.Fatal(err)
 	}
@@ -248,6 +249,44 @@ func TestConfigureHealthProbeMode(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_MODE", "unsupported")
 	if err := configureHealthProbe(); err == nil {
 		t.Fatal("expected invalid mode to fail")
+	}
+	t.Setenv("HEALTH_PROBE_MODE", "skip")
+	if err := configureHealthProbe(); err == nil {
+		t.Fatal("expected skip mode to be rejected for a real provisioner")
+	}
+	t.Setenv("PROVISIONER", "mock")
+	t.Setenv("HEALTH_PROBE_MODE", "gateway-ssh")
+	if err := configureHealthProbe(); err != nil {
+		t.Fatalf("mock skip mode rejected: %v", err)
+	}
+	ok, result := runHealthProbe(context.Background(), "not-an-ip")
+	if !ok || result != "health probe skipped (mock provisioner)" {
+		t.Fatalf("mock skip probe=(%v,%q)", ok, result)
+	}
+}
+
+func TestMockOnlyProvisioningHooks(t *testing.T) {
+	oldProvisioner, oldSync, oldTimeout, oldSemaphore, oldMode := provisioner, gatewaySyncFunc, provisionTimeout, provisionSemaphore, healthProbeMode
+	t.Cleanup(func() {
+		provisioner, gatewaySyncFunc, provisionTimeout, provisionSemaphore, healthProbeMode = oldProvisioner, oldSync, oldTimeout, oldSemaphore, oldMode
+	})
+
+	t.Setenv("PROVISIONER", "mock")
+	t.Setenv("HEALTH_PROBE_MODE", "gateway-ssh")
+	if err := configureProvisioner(context.Background()); err != nil {
+		t.Fatalf("configure mock provisioner: %v", err)
+	}
+	if healthProbeMode != "skip" {
+		t.Fatalf("mock health probe mode=%q, want skip", healthProbeMode)
+	}
+	if ok, message := gatewaySyncFunc(false); !ok || message != "mock gateway sync" {
+		t.Fatalf("mock gateway sync=(%v, %q)", ok, message)
+	}
+
+	t.Setenv("PROVISIONER", "")
+	t.Setenv("HEALTH_PROBE_MODE", "skip")
+	if err := configureProvisioner(context.Background()); err == nil {
+		t.Fatal("real provisioner unexpectedly accepted mock-only health/sync hooks")
 	}
 }
 

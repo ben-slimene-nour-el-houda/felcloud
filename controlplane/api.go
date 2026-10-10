@@ -453,6 +453,9 @@ func runAPIServer(port int) {
 	if err := configureProvisioner(context.Background()); err != nil {
 		log.Fatalf("FATAL: provisioner configuration: %v", err)
 	}
+	if os.Getenv("PROVISIONER") == "mock" {
+		log.Printf("!!! WARNING: PROVISIONER=mock enabled; provisioning and gateway sync results are simulated, NOT live benchmarks !!!")
+	}
 	if err := initDB(); err != nil {
 		log.Fatalf("FATAL: initialize control-plane database: %v", err)
 	}
