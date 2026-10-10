@@ -8,12 +8,94 @@
 # 4. Keepalived Script Weight & Guaranteed HAProxy-Only Failover Logic
 # 5. HTTPS / TLS Configuration & Dual Port 80/443 ACL Routing
 # 6. REST API Server Health & Endpoints
+# 7. Go Control Plane Unit & Race Tests
 # ==============================================================================
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS_COUNT=0
 FAIL_COUNT=0
+
+VALID_TESTS=(
+  "ipam-quarantine"
+  "health-check"
+  "syntax-validation"
+  "keepalived-weight"
+  "https-routing"
+  "dpapi-templates"
+  "gotest"
+)
+
+SELECTED_TESTS=()
+
+print_valid_names() {
+  echo "Valid test names:" >&2
+  for name in "${VALID_TESTS[@]}"; do
+    echo "  - $name" >&2
+  done
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --list)
+      echo "Available test names:"
+      for name in "${VALID_TESTS[@]}"; do
+        echo "  - $name"
+      done
+      exit 0
+      ;;
+    --test)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --test option requires a test name argument." >&2
+        print_valid_names
+        exit 2
+      fi
+      TEST_NAME="$2"
+      shift 2
+      IS_VALID=0
+      for name in "${VALID_TESTS[@]}"; do
+        if [[ "$TEST_NAME" == "$name" ]]; then
+          IS_VALID=1
+          break
+        fi
+      done
+      if [[ $IS_VALID -eq 0 ]]; then
+        echo "Error: Unknown test name '$TEST_NAME'." >&2
+        print_valid_names
+        exit 2
+      fi
+      SELECTED_TESTS+=("$TEST_NAME")
+      ;;
+    *)
+      echo "Error: Unknown option or argument '$1'." >&2
+      print_valid_names
+      exit 2
+      ;;
+  esac
+done
+
+if [[ ${#SELECTED_TESTS[@]} -eq 0 ]]; then
+  SELECTED_TESTS=("${VALID_TESTS[@]}")
+fi
+
+should_run() {
+  local target="$1"
+  for sel in "${SELECTED_TESTS[@]}"; do
+    if [[ "$sel" == "$target" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 0. Always rebuild binary first (unless SKIP_BUILD=1)
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  echo "Building controlplane binary..."
+  if ! (cd "$ROOT_DIR/controlplane" && go build -o ../ipam/ipam-control .); then
+    echo "❌ ERROR: Failed to build controlplane binary!" >&2
+    exit 1
+  fi
+fi
 
 record_pass() {
   echo "  ✅ PASS: $1"
@@ -29,19 +111,22 @@ echo "========================================================================"
 echo "          FELCLOUD RESILIENT GATEWAY AUTOMATED TEST SUITE               "
 echo "========================================================================"
 
-# Test 1: IPAM Quarantine & Reclamation
-echo ""
-echo "[TEST 1] IPAM Quarantine & Address Reclamation..."
-if ./scripts/recycle-test.sh >/dev/null 2>&1; then
-  record_pass "Quarantine cooldown and automatic address reclamation verified"
-else
-  record_fail "Quarantine and address reclamation failed"
+# Test 1: IPAM Quarantine & Reclamation (ipam-quarantine)
+if should_run "ipam-quarantine"; then
+  echo ""
+  echo "[TEST 1] IPAM Quarantine & Address Reclamation..."
+  if ./scripts/recycle-test.sh >/dev/null 2>&1; then
+    record_pass "Quarantine cooldown and automatic address reclamation verified"
+  else
+    record_fail "Quarantine and address reclamation failed"
+  fi
 fi
 
-# Test 2: Pre-flight health check logic
-echo ""
-echo "[TEST 2] Pre-flight Sandbox Health Check before Route Activation..."
-if python3 - "$ROOT_DIR" <<'EOF'
+# Test 2: Pre-flight health check logic (health-check)
+if should_run "health-check"; then
+  echo ""
+  echo "[TEST 2] Pre-flight Sandbox Health Check before Route Activation..."
+  if python3 - "$ROOT_DIR" <<'EOF'
 import sys, http.server, threading, time
 root_dir = sys.argv[1]
 sys.path.insert(0, f"{root_dir}/ipam")
@@ -67,16 +152,18 @@ assert failed_passed == False, f"Expected failure on dead port, got {failed_msg}
 
 mock_server.server_close()
 EOF
-then
-  record_pass "Pre-flight health check correctly accepts healthy backends and blocks dead endpoints"
-else
-  record_fail "Pre-flight health check failed"
+  then
+    record_pass "Pre-flight health check correctly accepts healthy backends and blocks dead endpoints"
+  else
+    record_fail "Pre-flight health check failed"
+  fi
 fi
 
-# Test 3: Dual-Gateway Pre-Validation and Automatic Rollback
-echo ""
-echo "[TEST 3] Syntax Pre-Validation & Automatic Rollback Protection..."
-if python3 - "$ROOT_DIR" <<'EOF'
+# Test 3: Dual-Gateway Pre-Validation and Automatic Rollback (syntax-validation)
+if should_run "syntax-validation"; then
+  echo ""
+  echo "[TEST 3] Syntax Pre-Validation & Automatic Rollback Protection..."
+  if python3 - "$ROOT_DIR" <<'EOF'
 import sys
 root_dir = sys.argv[1]
 sys.path.insert(0, f"{root_dir}/ipam")
@@ -91,10 +178,11 @@ assert is_valid == True, f"Generated HAProxy config should be valid, got: {msg}"
 is_invalid, invalid_msg = validate_haproxy_syntax(invalid_cfg)
 assert is_invalid == False, f"Invalid config should fail syntax check"
 EOF
-then
-  record_pass "Configuration validator correctly flags syntax errors and protects gateway state"
-else
-  record_fail "Syntax validation failed"
+  then
+    record_pass "Configuration validator correctly flags syntax errors and protects gateway state"
+  else
+    record_fail "Syntax validation failed"
+  fi
 fi
 
 # Test 4: Keepalived Failover Weight Mathematics (HAProxy-Only Failure)
@@ -117,42 +205,77 @@ dropped_priority = gw1_priority + weight
 assert weight <= -51, f"Weight {weight} is too high to cause failover!"
 assert dropped_priority < gw2_priority, f"GW1 reduced priority ({dropped_priority}) must be < GW2 ({gw2_priority})"
 EOF
+
 then
   record_pass "Guaranteed failover confirmed on HAProxy-only failure (150 + (-60) = 90 < 100)"
 else
   record_fail "Keepalived weight review failed"
 fi
 
-# Test 5: HTTPS / TLS Configuration & ACLs
-echo ""
-echo "[TEST 5] HTTPS 443 TLS & Host Header Routing Template..."
-if python3 - "$ROOT_DIR" <<'EOF'
-import sys
-root_dir = sys.argv[1]
-sys.path.insert(0, f"{root_dir}/ipam")
-from ipam_control import generate_haproxy_config
+# Test 5: HTTPS / TLS Configuration & ACLs (https-routing)
+if should_run "https-routing"; then
+  echo ""
+  echo "[TEST 5] HTTPS 443 TLS & Host Header Routing Template..."
+  if ! python3 -c "import jinja2, yaml" >/dev/null 2>&1; then
+    echo "  missing python module: jinja2 or yaml (pip install jinja2 pyyaml)"
+    record_fail "missing required Python dependencies (jinja2, pyyaml)"
+  elif python3 - "$ROOT_DIR" <<'EOF'
+import sys, os, yaml
+from jinja2 import Template
 
-cfg = generate_haproxy_config([{"name": "team1", "ip": "10.20.30.70", "port": 80}])
-assert "frontend http_front" in cfg
-assert "frontend https_front" in cfg
-assert "bind *:443 ssl crt" in cfg
-assert "team1.local" in cfg
-assert "team1.felcloud.local" in cfg
-assert "backend team1_backend" in cfg
+root_dir = sys.argv[1]
+
+# Read default routing_domain from vars.yml
+vars_path = os.path.join(root_dir, "ansible", "group_vars", "gateways", "vars.yml")
+with open(vars_path, "r") as f:
+    vars_data = yaml.safe_load(f) or {}
+
+domain = os.environ.get("ROUTING_DOMAIN") or vars_data.get("routing_domain", "cstam.felcloud.tn")
+
+template_path = os.path.join(root_dir, "ansible", "roles", "haproxy", "templates", "haproxy.cfg.j2")
+with open(template_path, "r") as f:
+    template_content = f.read()
+
+template = Template(template_content)
+rendered = template.render(
+    teams=[{"name": "team1", "ip": "10.20.30.70", "port": 80}],
+    routing_domain=domain
+)
+
+assert "frontend http_front" in rendered
+assert "frontend https_front" in rendered
+assert "bind *:443 ssl crt" in rendered
+assert f"acl is_team1 hdr(host) -i team1.{domain}" in rendered
+assert ".local" not in rendered
+assert "backend team1_backend" in rendered
 EOF
-then
-  record_pass "HTTPS TLS termination and dual Host-header routing configured"
-else
-  record_fail "TLS template failed"
+  then
+    record_pass "HTTPS TLS termination and single Host-header routing configured for domain"
+  else
+    record_fail "TLS template failed"
+  fi
 fi
 
-# Test 6: Data Plane API Configuration
-echo ""
-echo "[TEST 6] HAProxy Data Plane API Configuration & Service Units..."
-if [[ -f "$ROOT_DIR/ansible/roles/haproxy/templates/dataplaneapi.yaml.j2" && -f "$ROOT_DIR/ansible/roles/haproxy/templates/dataplaneapi.service.j2" ]]; then
-  record_pass "Data Plane API templates and systemd units verified"
-else
-  record_fail "Data Plane API templates missing"
+# Test 6: Data Plane API Configuration (dpapi-templates)
+if should_run "dpapi-templates"; then
+  echo ""
+  echo "[TEST 6] HAProxy Data Plane API Configuration & Service Units..."
+  if [[ -f "$ROOT_DIR/ansible/roles/haproxy/templates/dataplaneapi.yaml.j2" && -f "$ROOT_DIR/ansible/roles/haproxy/templates/dataplaneapi.service.j2" ]]; then
+    record_pass "Data Plane API templates and systemd units verified"
+  else
+    record_fail "Data Plane API templates missing"
+  fi
+fi
+
+# Test 7: Go Control Plane Unit & Race Tests (gotest)
+if should_run "gotest"; then
+  echo ""
+  echo "[TEST 7] Go Control Plane Unit & Race Tests..."
+  if (cd "$ROOT_DIR/controlplane" && go vet ./... && go test ./... -race -count=1 >/dev/null 2>&1); then
+    record_pass "Go control plane unit tests and race detector passed"
+  else
+    record_fail "Go control plane unit tests or race detector failed"
+  fi
 fi
 
 echo ""

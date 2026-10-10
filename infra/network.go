@@ -52,6 +52,9 @@ func CreateNetworks(ctx *pulumi.Context, cfg *Config) (*NetworkOutputs, error) {
 		NetworkId: sandboxNet.ID(),
 		Cidr:      pulumi.String(cfg.SandboxCIDR),
 		IpVersion: pulumi.Int(4),
+		// NoGateway prevents DHCP from advertising a default route on this isolated network,
+		// avoiding competing default routes on multi-NIC gateway instances.
+		NoGateway: pulumi.Bool(true),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create felcloud-sandbox-subnet: %w", err)
@@ -71,6 +74,8 @@ func CreateNetworks(ctx *pulumi.Context, cfg *Config) (*NetworkOutputs, error) {
 		NetworkId: mgmtNet.ID(),
 		Cidr:      pulumi.String(cfg.MgmtCIDR),
 		IpVersion: pulumi.Int(4),
+		// NoGateway prevents DHCP from advertising a default route on this control-plane network.
+		NoGateway: pulumi.Bool(true),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create felcloud-mgmt-subnet: %w", err)

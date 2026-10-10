@@ -71,8 +71,11 @@ def main():
         "all": {
             "vars": {
                 "ansible_user": "ansible",
-                "ansible_ssh_private_key_file": key_path,
-                "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+                "ansible_ssh_private_key_file": "{{ inventory_dir }}/../.ssh/id_rsa_felcloud",
+                "ansible_ssh_common_args": (
+                    "-o ProxyJump=ansible@" + os.getenv("BASTION_IP", "203.0.113.119")
+                    + " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+                ),
                 "vip_address": vip_address,
                 "edge_cidr": "10.20.20.0/24",
                 "mgmt_cidr": "10.20.10.0/24",

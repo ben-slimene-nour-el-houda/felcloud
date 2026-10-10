@@ -32,7 +32,7 @@ frontend http_front
 
 {% if teams is defined %}
 {% for team in teams %}
-    acl is_{{ team.name }} hdr(host) -i {{ team.name }}.local {{ team.name }}.felcloud.local
+    acl is_{{ team.name }} hdr(host) -i {{ team.name }}.{{ routing_domain }}
     use_backend {{ team.name }}_backend if is_{{ team.name }}
 {% endfor %}
 {% endif %}
@@ -45,7 +45,7 @@ frontend https_front
 
 {% if teams is defined %}
 {% for team in teams %}
-    acl is_{{ team.name }} hdr(host) -i {{ team.name }}.local {{ team.name }}.felcloud.local
+    acl is_{{ team.name }} hdr(host) -i {{ team.name }}.{{ routing_domain }}
     use_backend {{ team.name }}_backend if is_{{ team.name }}
 {% endfor %}
 {% endif %}

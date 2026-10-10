@@ -10,4 +10,6 @@ keepalived_script_user: root
 keepalived_check_interval: 2
 keepalived_check_weight: -60
 
+routing_domain: cstam.felcloud.tn
+
 teams:

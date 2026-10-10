@@ -216,20 +216,59 @@ def _find_available_ip(subnet_name="sandbox"):
 
 def allocate_lease(sandbox_id, hostname, subnet_name="sandbox", preferred_ip=None):
     """Allocates an IP lease for a sandbox entity."""
+    # Validate sandbox_id to prevent injection into HAProxy config
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$", sandbox_id):
+        raise ValueError(
+            f"Invalid sandbox ID '{sandbox_id}': must be 1-32 characters starting with "
+            "alphanumeric, followed by alphanumerics, dashes, or underscores."
+        )
+
     reclaim_expired_quarantines()
     conn = get_db_connection()
     cursor = conn.cursor()
 
+    # Validate subnet exists and retrieve boundaries
+    subnet_row = cursor.execute(
+        "SELECT cidr, gateway_ip FROM subnets WHERE name = ?", (subnet_name,)
+    ).fetchone()
+    if not subnet_row:
+        conn.close()
+        raise ValueError(f"Subnet '{subnet_name}' does not exist in IPAM database.")
+    subnet_net = ipaddress.ip_network(subnet_row["cidr"])
+    gateway_ip_str = subnet_row["gateway_ip"]
+
     if preferred_ip is None:
         preferred_ip = _find_available_ip(subnet_name)
     else:
-        preferred_ip = str(ipaddress.ip_address(preferred_ip))
+        try:
+            target_ip_obj = ipaddress.ip_address(preferred_ip)
+        except ValueError:
+            conn.close()
+            raise ValueError(f"Invalid IP address '{preferred_ip}'.")
+        if (
+            target_ip_obj not in subnet_net
+            or str(target_ip_obj) == gateway_ip_str
+            or target_ip_obj in (subnet_net.network_address, subnet_net.broadcast_address)
+        ):
+            conn.close()
+            raise ValueError(
+                f"Requested IP {preferred_ip} is outside the valid host range for "
+                f"subnet '{subnet_name}' ({subnet_net}) or is a reserved address."
+            )
+        preferred_ip = str(target_ip_obj)
 
-    # Verify requested IP is not in active use or quarantine
+    # Verify requested IP is not in active use, protected infrastructure, or quarantine
     existing = cursor.execute(
         "SELECT * FROM ip_allocations WHERE ip_address = ?", (preferred_ip,)
     ).fetchone()
     if existing:
+        if existing["entity_type"] in ("GATEWAY", "BASTION", "VIP"):
+            conn.close()
+            raise ValueError(
+                f"CRITICAL: IP {preferred_ip} is permanently reserved for infrastructure "
+                f"entity '{existing['entity_name']}' (type: {existing['entity_type']}). "
+                "It cannot be allocated to a sandbox."
+            )
         if existing["status"] == "ALLOCATED" and existing["entity_name"] != sandbox_id:
             conn.close()
             raise ValueError(f"IP {preferred_ip} is currently ALLOCATED to {existing['entity_name']}.")
@@ -500,7 +539,13 @@ def generate_haproxy_config(teams_list):
 
 
 def update_ansible_teams():
-    """Generates the Ansible vars.yml matching the active IPAM database state."""
+    """Updates only the 'teams' key in Ansible vars.yml from the active IPAM database state.
+
+    Safe merge strategy: loads the existing vars.yml (preserving all manually tuned values),
+    overwrites only the 'teams' key, and removes the legacy plaintext haproxy_dpa_pass if
+    present (credentials must be stored in Ansible Vault only).
+    """
+    import yaml
     conn = get_db_connection()
     team_allocs = conn.execute(
         "SELECT s.sandbox_id, s.hostname, s.private_ip FROM sandboxes s WHERE s.status IN ('ACTIVE', 'PROVISIONING')"
@@ -515,27 +560,20 @@ def update_ansible_teams():
             "port": 80,
         })
 
-    vars_content = """---
-virtual_router_id: 51
-haproxy_dpa_port: 5555
-haproxy_dpa_user: admin
-haproxy_dpa_pass: felcloud_dpa_secret_2026
-haproxy_tls_cert_dir: /etc/haproxy/certs
-haproxy_tls_cert_file: /etc/haproxy/certs/felcloud-gateway.pem
-keepalived_script_user: root
-keepalived_check_interval: 2
-keepalived_check_weight: 60
+    # Safe merge: preserve existing keys, update only 'teams'
+    existing_data = {}
+    if os.path.exists(VARS_YML_PATH):
+        with open(VARS_YML_PATH, "r") as f:
+            existing_data = yaml.safe_load(f) or {}
 
-teams:
-"""
-    for team in teams_list:
-        vars_content += f"  - name: {team['name']}\n"
-        vars_content += f"    ip: {team['ip']}\n"
-        vars_content += f"    port: {team['port']}\n"
+    existing_data["teams"] = teams_list
+
+    # Remove legacy plaintext password if present — must be in Ansible Vault only
+    existing_data.pop("haproxy_dpa_pass", None)
 
     os.makedirs(os.path.dirname(VARS_YML_PATH), exist_ok=True)
     with open(VARS_YML_PATH, "w") as f:
-        f.write(vars_content)
+        yaml.dump(existing_data, f, default_flow_style=False, sort_keys=False)
 
     print(f"✓ Synchronized Ansible variables in {os.path.basename(VARS_YML_PATH)} with IPAM database.")
     return teams_list
@@ -576,13 +614,14 @@ def sync_haproxy_dual_gateways(dry_run=False):
     conn.close()
 
     print(f"\n--> Deploying Generation [{gen_id}] across GW1 and GW2...")
+    bastion_ip = os.getenv("BASTION_IP", "203.0.113.119")
     cmd = [
         "ansible-playbook",
         "-i", "../ansible/inventory/hosts.yml",
         "../ansible/site.yml",
         "--vault-password-file", "../ansible/.vault_pass",
         "--tags", "haproxy",
-        "-e", "ansible_ssh_common_args='-o ProxyJump=ansible@197.5.133.119 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'",
+        "-e", f"ansible_ssh_common_args='-o ProxyJump=ansible@{bastion_ip} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'",
     ]
 
     try:

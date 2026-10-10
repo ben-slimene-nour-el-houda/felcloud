@@ -59,6 +59,7 @@ The project addresses three key challenges for multi-tenant sandbox platforms on
 - **Reproducible Infrastructure as Code:** Networks, subnets, routers, security groups, VIP reservation, anti-affinity gateway instances, and jump hosts defined in Pulumi Go ([infra/main.go](infra/main.go)).
 - **Guaranteed VRRP Failover:** Keepalived cluster with negative weight check script ensuring active node priority drops from $150 + (-60) = 90 < 100$, guaranteeing failover on HAProxy process failure ([section 4](#4-high-availability)).
 - **Dual HTTP/HTTPS Routing with TLS:** HAProxy terminates TLS on port 443 with wildcard SANs (`*.local`, `*.felcloud.local`) and routes HTTP (port 80) and HTTPS (port 443) by Host header ([section 5](#5-l7-routing-with-haproxy)).
+
 - **HAProxy Data Plane API (DPA):** Deployed and configured on port 5555 with systemd management ([section 6](#6-data-plane-api)).
 - **Transactional IPAM with Address Quarantine:** SQLite-backed address allocator with automatic quarantine cooldown and address reclamation ([section 8](#8-ipam-and-team-lifecycle)).
 - **Pre-Flight Backend Health Checks:** Validates HTTP/TCP health before opening routes in HAProxy to prevent 502/503 errors.
@@ -79,7 +80,8 @@ Three isolated subnets partition the environment:
 ```mermaid
 flowchart TB
     Client["External Clients / Browser"]
-    PUB["Public Floating IP\n"]
+
+    PUB["Public Floating IP\n(set BASTION_IP in .env)"]
     Client -->|HTTP:80 / HTTPS:443| PUB
 
     subgraph EDGE["felcloud-edge - 10.20.20.0/24 (Router Attached)"]
@@ -112,8 +114,8 @@ flowchart TB
     GW1E --- GW1S
     GW2E --- GW2M
     GW2E --- GW2S
-    GW1S -->|"Host: team1.local"| T1
-    GW1S -->|"Host: team2.local"| T2
+    GW1S -->|"Host: team1.cstam.felcloud.tn"| T1
+    GW1S -->|"Host: team2.cstam.felcloud.tn"| T2
     GW2S -.->|"Standby Path"| T1
     GW2S -.->|"Standby Path"| T2
     BASE --- BASM
@@ -123,7 +125,7 @@ flowchart TB
 
 ### Request Flow
 
-1. Client sends an HTTP (port 80) or HTTPS (port 443) request with a `Host:` header (e.g., `team1.local` or `team1.felcloud.local`).
+1. Client sends an HTTP (port 80) or HTTPS (port 443) request with a `Host:` header (e.g., `team1.cstam.felcloud.tn` matching `<team>.<ROUTING_DOMAIN>`).
 2. Traffic reaches the edge router and targets the Virtual IP (`10.20.20.246`), carried actively by the VRRP Master (`gw1`).
 3. HAProxy terminates TLS on port 443 (or accepts HTTP on port 80), evaluates Host ACL rules, and matches the backend.
 4. HAProxy proxies traffic across the `felcloud-sandbox` network to the team VM on port 80.
@@ -235,7 +237,7 @@ sequenceDiagram
 - **Dual-Port Listeners:**
   - `frontend http_front`: Listens on `*:80`
   - `frontend https_front`: Listens on `*:443 ssl crt /etc/haproxy/certs/felcloud-gateway.pem alpn h2,http/1.1`
-- **Host Header Matching:** Evaluates `hdr(host) -i <team>.local <team>.felcloud.local` and routes to dedicated backends.
+- **Host Header Matching:** Evaluates `hdr(host) -i <team>.<ROUTING_DOMAIN>` and routes to dedicated backends.
 - **Health Checks & Timers:** Backends configured with `check inter 2000 rise 2 fall 3`.
 - **Default Maintenance:** Returns HTTP 503 Service Unavailable for unmatched hosts.
 
@@ -390,6 +392,7 @@ Click any path to open the file or folder.
 - [scripts/provision-sandbox.sh](scripts/provision-sandbox.sh) - Sandbox provisioning & route activation
 - [scripts/discover-felcloud.sh](scripts/discover-felcloud.sh) - OpenStack runtime discovery snapshot
 
+
 ---
 
 ## 11. Prerequisites and Getting Started
@@ -398,7 +401,7 @@ Click any path to open the file or folder.
 
 - Go 1.22+ and Pulumi CLI
 - Ansible with `ansible.posix` collection
-- Python 3 with `sqlite3` and `yaml`
+- Python 3 with `yaml` (for legacy script invocation)
 - OpenStack credentials configured (e.g. `source openrc.sh`)
 
 ### Deployment Steps
@@ -415,13 +418,15 @@ Click any path to open the file or folder.
      --vault-password-file ansible/.vault_pass
    ```
 4. **Initialize IPAM** ([ipam/ipam_control.py](ipam/ipam_control.py), MVP Python control plane):
+
    ```bash
-   python3 ipam/ipam_control.py init
-   python3 ipam/ipam_control.py list
+   cd controlplane && go build -o ../ipam/ipam-control . && cd ..
+   ./ipam/ipam-control init
+   ./ipam/ipam-control list
    ```
 5. **Start Control Plane REST API (MVP):**
    ```bash
-   python3 ipam/ipam_control.py serve --port 8080
+   ./ipam/ipam-control serve --port 8080
    ```
 
 ---
@@ -507,7 +512,9 @@ Passed: 6 / 6
 **Pass criterion:** `Passed: 6 / 6` and exit code `0`.
 
 ```bash
-echo $?   # expect 0
+
+# Test HAProxy-only failure switchover and packet loss
+FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://${BASTION_IP} ./scripts/failover-test.sh
 ```
 
 ### 12.4 Live Routing Proof
@@ -626,6 +633,7 @@ curl -s -X POST http://localhost:8080/ipam/leases/reclaim
 | Deliverable | Status |
 |---|---|
 | Dual-gateway HA cluster (VRRP, weight -60, guaranteed failover) | ✅ Implemented |
+
 | Pulumi Go IaC for all cloud resources | ✅ Implemented |
 | Ansible roles for HAProxy, Keepalived, common, interface_resolve | ✅ Implemented |
 | Config pre-validation before deploy (`validate:` directive) | ✅ Implemented |
@@ -633,7 +641,8 @@ curl -s -X POST http://localhost:8080/ipam/leases/reclaim
 | TLS termination on port 443 with wildcard SANs | ✅ Implemented |
 | Host-header L7 routing per team | ✅ Implemented |
 | HAProxy Data Plane API (port 5555) | ✅ Implemented |
-| IPAM with address quarantine and reclamation (Python + SQLite MVP) | ✅ Implemented |
+
+| IPAM with address quarantine and reclamation | ✅ Implemented |
 | Pre-flight backend health checks | ✅ Implemented |
 | Zero-downtime reload with auto-rollback | ✅ Implemented |
 | Automated test suite (6 tests) | ✅ Implemented |

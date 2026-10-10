@@ -1,10 +1,60 @@
-ansible/.vault_pass
-ansible/.ssh/
+# ==============================================================================
+# FelCloud Resilient IP Optimizer — .gitignore
+# ==============================================================================
+
+# Credentials, Secrets & Keys
 .env
 .env.*
 !.env.example
-docs/*.txt
-scripts/*.log
-__pycache__/
-*.pyc
+ansible/.vault_pass
+ansible/.ssh/
+*.pem
+*.key
+*.crt
+
+# Runtime Databases & Local State
+ipam/ipam.db
 *.db
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Python Bytecode & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Pulumi Local State & Stack Secrets
+.pulumi/
+infra/.pulumi/
+*.stack.json
+
+# Discovery Dumps, Logs & Test Outputs
+*.log
+scripts/*.log
+output/
+
+# Editor & OS Metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.ansible/
+
+# Compiled Binaries & Benchmarks
+infra/infra
+ipam/ipam-control
+benchmark/tmp/
+infra/infra
+ipam/ipam-control
+ipam/ipam.db
+ipam/__pycache__/
+.env
+controlplane/controlplane
+controlplane/controlplane

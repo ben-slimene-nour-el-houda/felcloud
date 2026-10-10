@@ -13,7 +13,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_URL="${RECYCLE_BASE_URL:-${BASE_URL:-http://127.0.0.1:8080}}"
 COOLDOWN_SECONDS="${RECYCLE_COOLDOWN_SECONDS:-5}"
 SANDBOX_ID="recycle-test-$(date +%s)"
-HOSTNAME="${SANDBOX_ID}.local"
+HOSTNAME="${SANDBOX_ID}.${ROUTING_DOMAIN:-cstam.felcloud.tn}"
 
 ALLOCATE_ENDPOINT="$BASE_URL/ipam/leases/allocate"
 RELEASE_ENDPOINT="$BASE_URL/ipam/leases/release"
