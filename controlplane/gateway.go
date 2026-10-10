@@ -8,13 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+var gatewayConfigValidator = validateHAProxySyntax
+var gatewayPlaybookRunner = runGatewayPlaybook
 
 func checkSandboxHealth(ipAddress string, port int, timeout time.Duration, maxRetries int, retryInterval time.Duration) (bool, string) {
 	if port <= 0 {
@@ -223,26 +225,32 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 		}
 	}
 
-	existingData := make(map[string]interface{})
-	if _, err := os.Stat(varsYmlPath); err == nil {
-		content, err := os.ReadFile(varsYmlPath)
-		if err == nil {
-			_ = yaml.Unmarshal(content, &existingData)
-		}
-	}
-
-	existingData["teams"] = teams
-	existingData["routing_domain"] = routingDomain
-	delete(existingData, "haproxy_dpa_pass")
-
-	_ = os.MkdirAll(filepath.Dir(varsYmlPath), 0755)
-	out, err := yaml.Marshal(existingData)
-	if err == nil {
-		os.WriteFile(varsYmlPath, out, 0644)
-		fmt.Printf("✓ Synchronized Ansible variables in %s with IPAM database.\n", filepath.Base(varsYmlPath))
-	}
-
 	return teams, nil
+}
+
+func createGeneratedRoutesVars(teams []TeamEntry) (string, func(), error) {
+	content, err := yaml.Marshal(map[string]interface{}{
+		"teams":          teams,
+		"routing_domain": routingDomain,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("encode generated gateway routes: %w", err)
+	}
+	file, err := os.CreateTemp("", "felcloud-routes-*.yml")
+	if err != nil {
+		return "", nil, fmt.Errorf("create generated gateway routes file: %w", err)
+	}
+	path := file.Name()
+	if _, err := file.Write(content); err != nil {
+		file.Close()
+		os.Remove(path)
+		return "", nil, fmt.Errorf("write generated gateway routes file: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", nil, fmt.Errorf("close generated gateway routes file: %w", err)
+	}
+	return path, func() { _ = os.Remove(path) }, nil
 }
 
 func rollbackConfig() bool {
@@ -267,10 +275,13 @@ func rollbackConfig() bool {
 }
 
 func syncHAProxyDualGateways(dryRun bool) (bool, string) {
-	teams, _ := updateAnsibleTeams()
+	teams, err := updateAnsibleTeams()
+	if err != nil {
+		return false, fmt.Sprintf("Failed to load sandbox routes: %v", err)
+	}
 	candidateCfg := generateHAProxyConfig(teams)
 
-	isValid, validationMsg := validateHAProxySyntax(candidateCfg)
+	isValid, validationMsg := gatewayConfigValidator(candidateCfg)
 	if !isValid {
 		fmt.Printf("✗ CRITICAL: Candidate HAProxy configuration failed validation:\n%s\n", validationMsg)
 		fmt.Println("✗ Aborting reload! Active gateway configuration untouched.")
@@ -300,25 +311,12 @@ func syncHAProxyDualGateways(dryRun bool) (bool, string) {
 	}
 
 	fmt.Printf("\n--> Deploying Generation [%s] across GW1 and GW2...\n", genID)
-	bastionIP := os.Getenv("BASTION_IP")
-	if bastionIP == "" {
-		bastionIP = "203.0.113.119"
+	routesPath, cleanupRoutes, err := createGeneratedRoutesVars(teams)
+	if err != nil {
+		return false, err.Error()
 	}
-
-	cmd := exec.Command("ansible-playbook",
-		"-i", "../ansible/inventory/hosts.yml",
-		"../ansible/site.yml",
-		"--vault-password-file", "../ansible/.vault_pass",
-		"--tags", "haproxy",
-		"-e", fmt.Sprintf("routing_domain=%s", routingDomain),
-		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", bastionIP),
-	)
-
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	err = cmd.Run()
+	defer cleanupRoutes()
+	output, err := gatewayPlaybookRunner(routesPath)
 	if err == nil {
 		fmt.Printf("✓ Generation [%s] successfully validated and reloaded across GW1 and GW2 with zero downtime.\n", genID)
 		db, _ := getDBConnection()
@@ -333,11 +331,31 @@ func syncHAProxyDualGateways(dryRun bool) (bool, string) {
 	fmt.Println("✗ Ansible deployment failed! Triggering automatic rollback...")
 	db, _ = getDBConnection()
 	if db != nil {
-		recordEvent(db, "", "sync_failed", errBuf.String(), 0)
+		recordEvent(db, "", "sync_failed", output, 0)
 		db.Close()
 	}
 	rollbackConfig()
-	return false, fmt.Sprintf("Ansible error: %s", errBuf.String())
+	return false, fmt.Sprintf("Ansible error: %s", output)
+}
+
+func runGatewayPlaybook(routesVarsPath string) (string, error) {
+	bastionIP := os.Getenv("BASTION_IP")
+	if bastionIP == "" {
+		bastionIP = "203.0.113.119"
+	}
+	cmd := exec.Command("ansible-playbook",
+		"-i", "../ansible/inventory/hosts.yml",
+		"../ansible/site.yml",
+		"--vault-password-file", "../ansible/.vault_pass",
+		"--tags", "haproxy",
+		"-e", "@"+routesVarsPath,
+		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", bastionIP),
+	)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return output.String(), err
 }
 
 func addTeamFlow(teamName, ipAddress string, port int, skipHealthCheck bool) (bool, string) {
