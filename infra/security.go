@@ -7,14 +7,15 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 )
 
-// SecurityOutputs holds references to all 3 security groups.
+// SecurityOutputs holds references to the gateway, sandbox, management, and control-plane groups.
 type SecurityOutputs struct {
-	GatewaySecGroup *networking.SecGroup
-	SandboxSecGroup *networking.SecGroup
-	MgmtSecGroup    *networking.SecGroup
+	GatewaySecGroup      *networking.SecGroup
+	SandboxSecGroup      *networking.SecGroup
+	MgmtSecGroup         *networking.SecGroup
+	ControlPlaneSecGroup *networking.SecGroup
 }
 
-// CreateSecurityGroups provisions sg-gateway, sg-sandbox, and sg-management with strict rule sets.
+// CreateSecurityGroups provisions the gateway, sandbox, management, and control-plane groups.
 func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, error) {
 	// 1. sg-gateway: 80/443 open; 22 closed by default; VRRP protocol between GW1<->GW2 edge ports
 	sgGateway, err := networking.NewSecGroup(ctx, "sg-gateway", &networking.SecGroupArgs{
@@ -85,10 +86,11 @@ func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, e
 		}
 	}
 
-	// 2. sg-sandbox: 8080 reachable only from gateway path; no direct internet; no east-west between sandboxes
+	// 2. sg-sandbox: gateway-only ingress and explicit DNS/web/gateway egress.
 	sgSandbox, err := networking.NewSecGroup(ctx, "sg-sandbox", &networking.SecGroupArgs{
-		Name:        pulumi.String("sg-sandbox"),
-		Description: pulumi.String("Security group for isolated sandbox VMs"),
+		Name:               pulumi.String("sg-sandbox"),
+		Description:        pulumi.String("Security group for isolated sandbox VMs"),
+		DeleteDefaultRules: pulumi.Bool(true),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sg-sandbox: %w", err)
@@ -124,6 +126,46 @@ func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, e
 		return nil, fmt.Errorf("failed to create sg-sandbox HTTP 80 rule: %w", err)
 	}
 
+	// Explicit sandbox egress allowlist. The gateway-group rule excludes management
+	// ports because sg-gateway is attached only to gateway edge/sandbox ports.
+	sandboxEgressRules := []struct {
+		name        string
+		protocol    string
+		port        int
+		remoteCIDR  string
+		description string
+	}{
+		{name: "dns-udp", protocol: "udp", port: 53, remoteCIDR: "0.0.0.0/0", description: "Sandbox DNS queries"},
+		{name: "dns-tcp", protocol: "tcp", port: 53, remoteCIDR: "0.0.0.0/0", description: "Sandbox DNS TCP queries"},
+		{name: "http", protocol: "tcp", port: 80, remoteCIDR: "0.0.0.0/0", description: "Sandbox HTTP package mirrors"},
+		{name: "https", protocol: "tcp", port: 443, remoteCIDR: "0.0.0.0/0", description: "Sandbox HTTPS package mirrors"},
+	}
+	for _, rule := range sandboxEgressRules {
+		_, err = networking.NewSecGroupRule(ctx, "sg-sandbox-egress-"+rule.name, &networking.SecGroupRuleArgs{
+			SecurityGroupId: sgSandbox.ID(),
+			Direction:       pulumi.String("egress"),
+			Ethertype:       pulumi.String("IPv4"),
+			Protocol:        pulumi.String(rule.protocol),
+			PortRangeMin:    pulumi.Int(rule.port),
+			PortRangeMax:    pulumi.Int(rule.port),
+			RemoteIpPrefix:  pulumi.String(rule.remoteCIDR),
+			Description:     pulumi.String(rule.description),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create sg-sandbox %s egress rule: %w", rule.name, err)
+		}
+	}
+	_, err = networking.NewSecGroupRule(ctx, "sg-sandbox-egress-gateways", &networking.SecGroupRuleArgs{
+		SecurityGroupId: sgSandbox.ID(),
+		Direction:       pulumi.String("egress"),
+		Ethertype:       pulumi.String("IPv4"),
+		RemoteGroupId:   sgGateway.ID(),
+		Description:     pulumi.String("Sandbox traffic to gateway ports only; no management subnet access"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sg-sandbox gateway egress rule: %w", err)
+	}
+
 	// 3. sg-management: control-plane <-> gateway mgmt-net only; SSH closed by default
 	sgMgmt, err := networking.NewSecGroup(ctx, "sg-management", &networking.SecGroupArgs{
 		Name:        pulumi.String("sg-management"),
@@ -141,8 +183,8 @@ func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, e
 		Protocol:        pulumi.String("tcp"),
 		PortRangeMin:    pulumi.Int(5555),
 		PortRangeMax:    pulumi.Int(5555),
-		RemoteIpPrefix:  pulumi.String(cfg.MgmtCIDR),
-		Description:     pulumi.String("Allow HAProxy Data Plane API from management network"),
+		RemoteIpPrefix:  pulumi.String(cfg.ControlPlaneCIDR),
+		Description:     pulumi.String("Allow HAProxy Data Plane API from control-plane host only"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sg-management DPA rule: %w", err)
@@ -177,9 +219,33 @@ func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, e
 		}
 	}
 
+	// Dedicated control-plane SG. The control-plane host is not created in this
+	// Pulumi stack, so its exported ID must be attached to that host's port.
+	sgControlPlane, err := networking.NewSecGroup(ctx, "sg-control-plane", &networking.SecGroupArgs{
+		Name:        pulumi.String("sg-control-plane"),
+		Description: pulumi.String("Control-plane host ingress from gateway management network"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sg-control-plane: %w", err)
+	}
+	_, err = networking.NewSecGroupRule(ctx, "sg-control-plane-rule-api8081-from-gateways", &networking.SecGroupRuleArgs{
+		SecurityGroupId: sgControlPlane.ID(),
+		Direction:       pulumi.String("ingress"),
+		Ethertype:       pulumi.String("IPv4"),
+		Protocol:        pulumi.String("tcp"),
+		PortRangeMin:    pulumi.Int(8081),
+		PortRangeMax:    pulumi.Int(8081),
+		RemoteIpPrefix:  pulumi.String(cfg.MgmtCIDR),
+		Description:     pulumi.String("Allow gateway management hosts to reach control-plane API"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create sg-control-plane API rule: %w", err)
+	}
+
 	return &SecurityOutputs{
-		GatewaySecGroup: sgGateway,
-		SandboxSecGroup: sgSandbox,
-		MgmtSecGroup:    sgMgmt,
+		GatewaySecGroup:      sgGateway,
+		SandboxSecGroup:      sgSandbox,
+		MgmtSecGroup:         sgMgmt,
+		ControlPlaneSecGroup: sgControlPlane,
 	}, nil
 }

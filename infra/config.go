@@ -21,6 +21,7 @@ type Config struct {
 	EdgeCIDR          string
 	SandboxCIDR       string
 	MgmtCIDR          string
+	ControlPlaneCIDR  string
 	AdminSSHCIDR      string
 }
 
@@ -40,6 +41,7 @@ func LoadConfig(ctx *pulumi.Context) (*Config, error) {
 		EdgeCIDR:          c.Get("edgeCidr"),
 		SandboxCIDR:       c.Get("sandboxCidr"),
 		MgmtCIDR:          c.Get("mgmtCidr"),
+		ControlPlaneCIDR:  c.Get("controlPlaneCidr"),
 		AdminSSHCIDR:      c.Get("adminSshCidr"),
 	}
 
@@ -74,9 +76,15 @@ func LoadConfig(ctx *pulumi.Context) (*Config, error) {
 	if cfg.MgmtCIDR == "" {
 		missing = append(missing, "mgmtCidr")
 	}
+	if cfg.ControlPlaneCIDR == "" {
+		missing = append(missing, "controlPlaneCidr")
+	}
 
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required configuration keys: %s", strings.Join(missing, ", "))
+	}
+	if _, _, err := net.ParseCIDR(cfg.ControlPlaneCIDR); err != nil {
+		return nil, fmt.Errorf("invalid controlPlaneCidr format %q: %w", cfg.ControlPlaneCIDR, err)
 	}
 
 	// Security validation: reject open-world SSH CIDRs

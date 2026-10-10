@@ -50,6 +50,7 @@ func main() {
 		ctx.Export("gatewaySecGroupId", secOut.GatewaySecGroup.ID())
 		ctx.Export("sandboxSecGroupId", secOut.SandboxSecGroup.ID())
 		ctx.Export("mgmtSecGroupId", secOut.MgmtSecGroup.ID())
+		ctx.Export("controlPlaneSecGroupId", secOut.ControlPlaneSecGroup.ID())
 
 		// Phase 4: VIP Port, Server Group & Gateway Ports
 		vipOut, err := CreateVIPPort(ctx, nets.EdgeNetwork, nets.EdgeSubnet)
