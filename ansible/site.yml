@@ -7,7 +7,11 @@
   gather_facts: true
   become: true
   roles:
-    - common
-    - interface_resolve
-    - keepalived
-    - haproxy
+    - role: common
+      tags: [common]
+    - role: interface_resolve
+      tags: [interface_resolve]
+    - role: keepalived
+      tags: [keepalived]
+    - role: haproxy
+      tags: [haproxy]

@@ -2,7 +2,7 @@
 # ==============================================================================
 # FelCloud Measured VRRP Failover Test Suite
 # Tests:
-# 1. HAProxy-only failure on GW1 (Validates Keepalived tracking script weight 60: 150-60=90 < 100)
+# 1. HAProxy-only failure on GW1 (Validates Keepalived tracking script weight -60: 150 + (-60) = 90 < 100)
 # 2. Full Keepalived process failure on GW1
 # 3. High-resolution sub-second failover measurement & packet loss calculation
 # ==============================================================================
@@ -111,12 +111,12 @@ echo "======================================================================"
 echo "                      FAILOVER TEST RESULTS                           "
 echo "======================================================================"
 printf "Failure Trigger Mode:        %s\n" "$FAILURE_MODE"
-printf "Keepalived Script Weight:    60 (GW1: 150 -> 90 < GW2: 100)\n"
+printf "Keepalived Script Weight:    -60 (GW1: 150 + (-60) = 90 < GW2: 100)\n"
 printf "Outage Detected:             %s\n" "$([[ $OUTAGE_START -gt 0 ]] && echo 'YES' || echo 'SUB-POLLING (<100ms)')"
 printf "Measured Failover Downtime:  %d ms\n" "$MEASURED_DOWNTIME_MS"
 printf "Total Time to Normalcy:      %d ms\n" "$TOTAL_TEST_DURATION_MS"
 printf "Edge VIP Packet Loss:        %s%%\n" "$PING_LOSS"
-printf "GW2 Takeover Status:         CONFIRMED (HTTP 200 OK)\n"
+printf "GW2 Takeover Status:         %s (HTTP %s)\n" "$(( (CODE >= 200 && CODE < 300) ? 1 : 0 ))" "$CODE"
 echo "======================================================================"
 
 echo "--> Step 4: Restoring GW1 service..."

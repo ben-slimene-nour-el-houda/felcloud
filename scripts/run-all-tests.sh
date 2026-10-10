@@ -185,30 +185,31 @@ EOF
   fi
 fi
 
-# Test 4: Keepalived Failover Weight Mathematics (keepalived-weight)
-if should_run "keepalived-weight"; then
-  echo ""
-  echo "[TEST 4] Keepalived VRRP Script Weight Review..."
-  if python3 - "$ROOT_DIR" <<'EOF'
-import sys, yaml
+# Test 4: Keepalived Failover Weight Mathematics (HAProxy-Only Failure)
+echo ""
+echo "[TEST 4] Keepalived VRRP Script Weight Review..."
+if python3 - "$ROOT_DIR" <<'EOF'
+import re
+import sys
 root_dir = sys.argv[1]
 
-with open(f"{root_dir}/ansible/group_vars/gateways/vars.yml") as f:
-    vars_data = yaml.safe_load(f)
+with open(f"{root_dir}/ansible/group_vars/gateways/vars.yml", "r", encoding="utf-8") as f:
+    content = f.read()
 
-weight = vars_data.get("keepalived_check_weight", 0)
+match = re.search(r"keepalived_check_weight\s*:\s*(-?\d+)", content)
+weight = int(match.group(1)) if match else 0
 gw1_priority = 150
 gw2_priority = 100
 
-dropped_priority = gw1_priority - weight
-assert weight >= 51, f"Weight {weight} is too small to cause failover!"
+dropped_priority = gw1_priority + weight
+assert weight <= -51, f"Weight {weight} is too high to cause failover!"
 assert dropped_priority < gw2_priority, f"GW1 reduced priority ({dropped_priority}) must be < GW2 ({gw2_priority})"
 EOF
-  then
-    record_pass "Guaranteed failover confirmed on HAProxy-only failure (150 - 60 = 90 < 100)"
-  else
-    record_fail "Keepalived weight review failed"
-  fi
+
+then
+  record_pass "Guaranteed failover confirmed on HAProxy-only failure (150 + (-60) = 90 < 100)"
+else
+  record_fail "Keepalived weight review failed"
 fi
 
 # Test 5: HTTPS / TLS Configuration & ACLs (https-routing)
