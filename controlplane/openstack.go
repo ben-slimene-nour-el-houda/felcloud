@@ -28,10 +28,18 @@ type Provisioner interface {
 	DeleteSandbox(ctx context.Context, serverID, portID string) error
 	GetServer(ctx context.Context, serverID string) (status string, err error)
 	ListSandboxPorts(ctx context.Context) ([]SandboxPort, error)
+	FindSandboxResources(ctx context.Context, team string) (*SandboxResources, error)
+	ListSandboxServers(ctx context.Context) ([]SandboxServer, error)
 }
 
 var ErrOpenStackNotFound = errors.New("OpenStack resource not found")
 var ErrFixedIPInUse = errors.New("Neutron fixed IP is already in use")
+
+type SandboxServer struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
 
 type SandboxPort struct {
 	ID       string   `json:"id"`
@@ -191,6 +199,40 @@ func (m *MockProvisioner) ListSandboxPorts(context.Context) ([]SandboxPort, erro
 	return ports, nil
 }
 
+func (m *MockProvisioner) FindSandboxResources(_ context.Context, team string) (*SandboxResources, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	name := "sandbox-" + team
+	resources := &SandboxResources{}
+	for _, port := range m.Ports {
+		if port.Name == name {
+			resources.PortID = port.ID
+			resources.FixedIP = firstFixedIP(port.FixedIPs)
+			resources.ServerID = port.DeviceID
+			return resources, nil
+		}
+	}
+	if serverID := "mock-server-" + team; m.Servers[serverID] {
+		resources.ServerID = serverID
+		return resources, nil
+	}
+	return nil, ErrOpenStackNotFound
+}
+
+func (m *MockProvisioner) ListSandboxServers(context.Context) ([]SandboxServer, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var found []SandboxServer
+	for id, exists := range m.Servers {
+		if !exists || !strings.HasPrefix(id, "mock-server-") {
+			continue
+		}
+		team := strings.TrimPrefix(id, "mock-server-")
+		found = append(found, SandboxServer{ID: id, Name: "sandbox-" + team, Status: "ACTIVE"})
+	}
+	return found, nil
+}
+
 type OpenStackProvisioner struct {
 	mu              sync.Mutex
 	compute         *gophercloud.ServiceClient
@@ -203,6 +245,35 @@ var provisioner Provisioner
 var provisionConfig ProvisionConfig
 var provisionTimeout = 180 * time.Second
 var provisionSemaphore chan struct{}
+var mockFailStep string
+var mockFailTeamPrefix string
+var mockProvisionDelay time.Duration
+
+func configureMockFailures(lookupEnv func(string) string) error {
+	step := strings.TrimSpace(lookupEnv("MOCK_FAIL_STEP"))
+	switch step {
+	case "", "create", "server_error", "health", "sync", "timeout":
+	default:
+		return fmt.Errorf("MOCK_FAIL_STEP must be create, server_error, health, sync, timeout, or empty")
+	}
+	delay := time.Duration(0)
+	if raw := strings.TrimSpace(lookupEnv("MOCK_PROVISION_DELAY_MS")); raw != "" {
+		ms, err := strconv.Atoi(raw)
+		if err != nil || ms < 0 || ms > 60000 {
+			return fmt.Errorf("MOCK_PROVISION_DELAY_MS must be an integer from 0 to 60000")
+		}
+		delay = time.Duration(ms) * time.Millisecond
+	}
+	mockFailStep = step
+	mockFailTeamPrefix = strings.TrimSpace(lookupEnv("MOCK_FAIL_TEAM_PREFIX"))
+	mockProvisionDelay = delay
+	return nil
+}
+
+func mockFailureMatches(team, step string) bool {
+	return os.Getenv("PROVISIONER") == "mock" && mockFailStep == step &&
+		(mockFailTeamPrefix == "" || strings.HasPrefix(team, mockFailTeamPrefix))
+}
 
 func loadProvisionConfig() (ProvisionConfig, error) {
 	get := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
@@ -241,6 +312,9 @@ func configureProvisioner(ctx context.Context) error {
 		return err
 	}
 	if os.Getenv("PROVISIONER") == "mock" {
+		if err := configureMockFailures(os.Getenv); err != nil {
+			return err
+		}
 		healthProbeMode = "skip"
 		provisioner = &MockProvisioner{}
 		gatewaySyncFunc = func(bool) (bool, string) { return true, "mock gateway sync" }
@@ -523,6 +597,54 @@ func (p *OpenStackProvisioner) ListSandboxPorts(ctx context.Context) ([]SandboxP
 				entry.FixedIPs = append(entry.FixedIPs, fixed.IPAddress)
 			}
 			found = append(found, entry)
+		}
+		return true, nil
+	})
+	return found, err
+}
+
+func (p *OpenStackProvisioner) FindSandboxResources(ctx context.Context, team string) (*SandboxResources, error) {
+	name := "sandbox-" + team
+	resources := &SandboxResources{}
+	ports, err := p.ListSandboxPorts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, port := range ports {
+		if port.Name == name {
+			resources.PortID = port.ID
+			resources.FixedIP = firstFixedIP(port.FixedIPs)
+			resources.ServerID = port.DeviceID
+			break
+		}
+	}
+	serversFound, err := p.ListSandboxServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, server := range serversFound {
+		if server.Name == name {
+			resources.ServerID = server.ID
+			break
+		}
+	}
+	if resources.ServerID == "" && resources.PortID == "" {
+		return nil, ErrOpenStackNotFound
+	}
+	return resources, nil
+}
+
+func (p *OpenStackProvisioner) ListSandboxServers(ctx context.Context) ([]SandboxServer, error) {
+	var found []SandboxServer
+	err := servers.List(p.compute, servers.ListOpts{}).EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
+		list, err := servers.ExtractServers(page)
+		if err != nil {
+			return false, err
+		}
+		for _, server := range list {
+			if strings.HasPrefix(server.Name, "sandbox-") {
+				found = append(found, SandboxServer{ID: server.ID, Name: server.Name, Status: server.Status})
+			}
 		}
 		return true, nil
 	})

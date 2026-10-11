@@ -57,6 +57,29 @@ func TestReconcileFindsFourDriftCategories(t *testing.T) {
 	}
 }
 
+func TestReconcileReportsNovaOrphanWithoutDeletingIt(t *testing.T) {
+	setupTestDB(t)
+	mock := &MockProvisioner{Servers: map[string]bool{"mock-server-orphan": true}}
+	provisioner = mock
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := reconcileNeutron(context.Background(), db, mock)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.OrphanNovaServers) != 1 || report.OrphanNovaServers[0].ID != "mock-server-orphan" {
+		t.Fatalf("Nova orphans=%+v, want the untracked server", report.OrphanNovaServers)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if !mock.Servers["mock-server-orphan"] || len(mock.Deleted) != 0 {
+		t.Fatalf("reconcile changed orphan resource state: servers=%v deleted=%v", mock.Servers, mock.Deleted)
+	}
+}
+
 func TestReconcileApplyOnlyExplicitSandboxFixes(t *testing.T) {
 	setupTestDB(t)
 	mock := &MockProvisioner{Servers: map[string]bool{}}

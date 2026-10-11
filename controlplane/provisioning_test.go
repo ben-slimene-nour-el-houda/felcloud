@@ -25,7 +25,7 @@ func provisionTestSetup(t *testing.T, mock *MockProvisioner) {
 	routingDomain = "cstam.felcloud.tn"
 	defaultQuarantineSeconds = 2
 	provisionSync = provisionSyncState{}
-	provisionNameLocks = sync.Map{}
+	provisionNameLocks = newProvisionNameLockMap()
 	provisionHealthProbe = func(context.Context, string) (bool, string) { return true, "ok" }
 	healthProbeTimeout = 90 * time.Second
 	healthProbeRetryInterval = 500 * time.Millisecond
@@ -779,5 +779,144 @@ func TestProvisionContextCancellationDoesNotLeakResources(t *testing.T) {
 	handleProvision(rec, req)
 	if rec.Code != http.StatusGatewayTimeout && rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestPersistProvisioningAndResourcesRejectStateRaces(t *testing.T) {
+	provisionTestSetup(t, &MockProvisioner{})
+	lease, err := allocateProvisionLease("state-race", "state-race.cstam.felcloud.tn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistProvisioning("state-race", lease); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET status='FAILED' WHERE sandbox_id='state-race'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	if err := persistResources("state-race", &SandboxResources{ServerID: "server", PortID: "port", FixedIP: lease.IPAddress}); err == nil {
+		t.Fatal("persistResources accepted a row that left PROVISIONING")
+	}
+	if err := persistActive("state-race", &SandboxResources{ServerID: "server", PortID: "port", FixedIP: lease.IPAddress}, 1); err == nil {
+		t.Fatal("persistActive accepted a row that left PROVISIONING")
+	}
+}
+
+func TestProvisionFailureReportsMeasuredPartialTimings(t *testing.T) {
+	provisionTestSetup(t, &MockProvisioner{})
+	gatewaySyncFunc = func(bool) (bool, string) { return false, "injected sync failure" }
+	rec := callProvision("timed-failure")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Timings map[string]int64 `json:"timings_ms"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"allocate", "port", "server_active", "health", "sync", "total"} {
+		if _, ok := body.Timings[key]; !ok {
+			t.Errorf("missing %s timing in %v", key, body.Timings)
+		}
+	}
+	if body.Timings["port"] != 11 || body.Timings["server_active"] < 22 || body.Timings["total"] < body.Timings["server_active"] {
+		t.Fatalf("partial timings are not measured: %+v", body.Timings)
+	}
+}
+
+func TestConfigureMockFailureInjection(t *testing.T) {
+	oldStep, oldPrefix, oldDelay := mockFailStep, mockFailTeamPrefix, mockProvisionDelay
+	t.Cleanup(func() { mockFailStep, mockFailTeamPrefix, mockProvisionDelay = oldStep, oldPrefix, oldDelay })
+	t.Setenv("PROVISIONER", "mock")
+	t.Setenv("MOCK_FAIL_STEP", "health")
+	t.Setenv("MOCK_FAIL_TEAM_PREFIX", "demo-")
+	t.Setenv("MOCK_PROVISION_DELAY_MS", "12")
+	if err := configureMockFailures(os.Getenv); err != nil {
+		t.Fatal(err)
+	}
+	if !mockFailureMatches("demo-team", "health") || mockFailureMatches("other-team", "health") {
+		t.Fatal("mock team-prefix failure filter is incorrect")
+	}
+	if mockProvisionDelay != 12*time.Millisecond {
+		t.Fatalf("mock delay=%s, want 12ms", mockProvisionDelay)
+	}
+	t.Setenv("MOCK_FAIL_STEP", "unexpected")
+	if err := configureMockFailures(os.Getenv); err == nil {
+		t.Fatal("invalid MOCK_FAIL_STEP was accepted")
+	}
+}
+
+func TestProvisionNameLocksAreReleasedAfterUse(t *testing.T) {
+	provisionNameLocks = newProvisionNameLockMap()
+	for i := 0; i < 1000; i++ {
+		unlock := lockProvisionName(fmt.Sprintf("lock-%d", i))
+		unlock()
+	}
+	if got := provisionNameLocks.Len(); got != 0 {
+		t.Fatalf("provision name lock map retained %d entries after use", got)
+	}
+}
+
+func TestReaperRecoversStaleProvisioningResources(t *testing.T) {
+	mock := &MockProvisioner{}
+	provisionTestSetup(t, mock)
+	lease, err := allocateProvisionLease("stale-provision", "stale-provision.cstam.felcloud.tn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistProvisioning("stale-provision", lease); err != nil {
+		t.Fatal(err)
+	}
+	resources, err := mock.CreateSandbox(context.Background(), CreateReq{Team: "stale-provision", FixedIP: lease.IPAddress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET updated_at='2000-01-01 00:00:00' WHERE sandbox_id='stale-provision'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	result := reaperTick(db, nowUnix())
+	db.Close()
+	if result.FailedCount != 1 {
+		t.Fatalf("reaper result=%+v, want one recovered provisioning sandbox", result)
+	}
+	state, _ := leaseStatus(t, "stale-provision")
+	if state != "FAILED" {
+		t.Fatalf("recovered sandbox state=%s, want FAILED", state)
+	}
+	mock.mu.Lock()
+	serverPresent, portPresent := mock.Servers[resources.ServerID], false
+	for _, port := range mock.Ports {
+		portPresent = portPresent || port.ID == resources.PortID
+	}
+	mock.mu.Unlock()
+	if serverPresent || portPresent {
+		t.Fatalf("crash recovery left resources: server=%v port=%v", serverPresent, portPresent)
+	}
+	db, err = getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var leaseStatus, eventCount string
+	if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE entity_name='stale-provision'`).Scan(&leaseStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='stale-provision' AND type='PROVISION_RECOVERED'`).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStatus != "QUARANTINED" || eventCount != "1" {
+		t.Fatalf("lease=%s recovery events=%s", leaseStatus, eventCount)
 	}
 }

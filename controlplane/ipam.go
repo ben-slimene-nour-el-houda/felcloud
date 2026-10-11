@@ -518,7 +518,8 @@ func findAvailableIPTxExcluding(q DBQueryer, subnetName string, cidr string, gat
 		var freeIP string
 		for rowsFree.Next() {
 			if err := rowsFree.Scan(&freeIP); err == nil && freeIP != "" {
-				if parsedFree := net.ParseIP(freeIP); parsedFree != nil && ipnet.Contains(parsedFree) && !excluded[freeIP] {
+				if parsedFree := net.ParseIP(freeIP); parsedFree != nil && ipnet.Contains(parsedFree) && !excluded[freeIP] &&
+					validateSandboxIP(cidr, gatewayIP, freeIP) == nil {
 					rowsFree.Close()
 					return freeIP, nil
 				}
@@ -553,7 +554,7 @@ func findAvailableIPTxExcluding(q DBQueryer, subnetName string, cidr string, gat
 
 	for n := startIP + 2; n <= endIP-2; n++ {
 		candIP := uint32ToIP(n).String()
-		if candIP == gatewayIP {
+		if candIP == gatewayIP || validateSandboxIP(cidr, gatewayIP, candIP) != nil {
 			continue
 		}
 		if activeOrQuarantined[candIP] || excluded[candIP] {
