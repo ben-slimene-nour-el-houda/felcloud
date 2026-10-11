@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -234,9 +233,14 @@ func findReconcileItem(items []ReconcileItem, id string) (ReconcileItem, bool) {
 }
 
 func applyReconcileIPUpdate(db *sql.DB, item ReconcileItem) error {
-	parsed := net.ParseIP(item.NeutronIP)
-	if parsed == nil || parsed.To4() == nil || parsed.String() != item.NeutronIP {
-		return errors.New("Neutron fixed IP is not a literal IPv4 address")
+	var cidr, gatewayIP string
+	if err := db.QueryRow(`SELECT subnets.cidr,subnets.gateway_ip
+		FROM sandboxes JOIN subnets ON subnets.name=sandboxes.subnet_name
+		WHERE sandboxes.sandbox_id=?`, item.SandboxID).Scan(&cidr, &gatewayIP); err != nil {
+		return fmt.Errorf("read sandbox subnet for reconciliation: %w", err)
+	}
+	if err := validateSandboxIP(cidr, gatewayIP, item.NeutronIP); err != nil {
+		return err
 	}
 	tx, err := db.Begin()
 	if err != nil {

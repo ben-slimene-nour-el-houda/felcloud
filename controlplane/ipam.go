@@ -467,6 +467,32 @@ func ipToUint32(ip net.IP) uint32 {
 	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
 }
 
+func validateSandboxIP(cidr, gatewayIP, ip string) error {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() == nil || parsed.String() != ip {
+		return fmt.Errorf("sandbox IP %q must be a canonical IPv4 address", ip)
+	}
+	networkIP, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid sandbox CIDR %q: %w", cidr, err)
+	}
+	if !ipnet.Contains(parsed) {
+		return fmt.Errorf("sandbox IP %s is outside sandbox CIDR %s", ip, cidr)
+	}
+	if ip == gatewayIP {
+		return fmt.Errorf("sandbox IP %s is reserved as the subnet gateway", ip)
+	}
+	ones, bits := ipnet.Mask.Size()
+	hostCount := uint32(1) << uint(bits-ones)
+	start := ipToUint32(networkIP.Mask(ipnet.Mask))
+	end := start + hostCount - 1
+	value := ipToUint32(parsed)
+	if value < start+2 || value > end-2 {
+		return fmt.Errorf("sandbox IP %s is outside the allocator host range for %s", ip, cidr)
+	}
+	return nil
+}
+
 func uint32ToIP(n uint32) net.IP {
 	return net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 }
@@ -679,12 +705,8 @@ func allocateLeaseTTLStateExcluding(sandboxID, hostname, subnetName, preferredIP
 		}
 		targetIP = ipFound
 	} else {
-		parsedIP := net.ParseIP(targetIP)
-		if parsedIP == nil {
-			return nil, fmt.Errorf("Invalid IP address '%s'.", targetIP)
-		}
-		if targetIP == gatewayIP || strings.HasSuffix(targetIP, ".0") || strings.HasSuffix(targetIP, ".255") {
-			return nil, fmt.Errorf("Requested IP %s is outside the valid host range for subnet '%s' (%s) or is a reserved address.", targetIP, subnetName, cidr)
+		if err := validateSandboxIP(cidr, gatewayIP, targetIP); err != nil {
+			return nil, err
 		}
 	}
 
@@ -869,35 +891,50 @@ func releaseLease(sandboxID, ipAddress string, quarantineSec int) (*ReleaseResul
 	}
 	defer db.Close()
 
-	var targetIP string
-	var existingPrivateIP sql.NullString
-	var existingStatus string
-	lookupErr := db.QueryRow("SELECT status, private_ip FROM sandboxes WHERE sandbox_id = ?", sandboxID).Scan(&existingStatus, &existingPrivateIP)
-	if lookupErr == nil && existingPrivateIP.Valid {
-		targetIP = existingPrivateIP.String
-	}
-	if ipAddress != "" {
-		targetIP = ipAddress
-	}
-
-	if targetIP == "" && lookupErr == sql.ErrNoRows {
-		return &ReleaseResult{Status: "NOT_FOUND", Message: fmt.Sprintf("Sandbox '%s' not found", sandboxID)}, nil
-	}
-
 	now := time.Now().UTC()
 	quarantineUntilStr := now.Add(time.Duration(quarantineSec) * time.Second).Format("2006-01-02 15:04:05")
 	quarantinedAtStr := now.Format("2006-01-02 15:04:05")
 
-	// Wrap status guard + quarantine + event recording in a single transaction.
-	// The guarded status UPDATE runs first: if the sandbox is not in a
-	// releasable state we return before touching ip_allocations, so no
-	// QUARANTINED write and no "released" event are ever produced.
 	tx, txErr := db.Begin()
 	if txErr != nil {
 		return nil, fmt.Errorf("releaseLease: begin tx: %w", txErr)
 	}
 	defer tx.Rollback()
 
+	if sandboxID == "" && ipAddress != "" {
+		if err := tx.QueryRow(`SELECT entity_name FROM ip_allocations WHERE ip_address=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED'`, ipAddress).Scan(&sandboxID); err != nil {
+			return nil, fmt.Errorf("lease address %s is not an allocated sandbox lease: %w", ipAddress, err)
+		}
+	}
+	var existingStatus, managedBy string
+	var privateIP sql.NullString
+	err = tx.QueryRow(`SELECT status,COALESCE(private_ip,''),COALESCE(managed_by,'external') FROM sandboxes WHERE sandbox_id=?`,
+		sandboxID).Scan(&existingStatus, &privateIP, &managedBy)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("%w: sandbox %q", ErrSandboxNotFound, sandboxID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if managedBy == "control-plane" {
+		return nil, fmt.Errorf("sandbox %q is managed by the control plane; use DELETE /api/sandboxes/%s", sandboxID, sandboxID)
+	}
+	targetIP := privateIP.String
+	if ipAddress != "" && ipAddress != targetIP {
+		return nil, fmt.Errorf("IP %s does not belong to sandbox %q", ipAddress, sandboxID)
+	}
+	if targetIP != "" {
+		var leaseOwner, entityType, leaseStatus string
+		if err := tx.QueryRow(`SELECT entity_name,entity_type,status FROM ip_allocations WHERE ip_address=?`, targetIP).Scan(&leaseOwner, &entityType, &leaseStatus); err != nil {
+			return nil, fmt.Errorf("read sandbox lease for %s: %w", targetIP, err)
+		}
+		if leaseOwner != sandboxID || entityType != "TEAM_SANDBOX" || leaseStatus != "ALLOCATED" {
+			return nil, fmt.Errorf("IP %s is not an allocated lease owned by sandbox %q", targetIP, sandboxID)
+		}
+	}
+	if existingStatus != "ACTIVE" && existingStatus != "EXPIRING" {
+		return nil, fmt.Errorf("%w: sandbox '%s' (status '%s') must be ACTIVE or EXPIRING to be released", ErrWrongState, sandboxID, existingStatus)
+	}
 	updRes, err := tx.Exec("UPDATE sandboxes SET status = 'RELEASED', private_ip = NULL, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ? AND status IN ('ACTIVE', 'EXPIRING')", sandboxID)
 	if err != nil {
 		return nil, fmt.Errorf("releaseLease: update sandbox '%s': %w", sandboxID, err)
@@ -907,18 +944,25 @@ func releaseLease(sandboxID, ipAddress string, quarantineSec int) (*ReleaseResul
 		return nil, fmt.Errorf("releaseLease: affected rows for sandbox '%s': %w", sandboxID, err)
 	}
 	if updRows == 0 {
-		if lookupErr == sql.ErrNoRows {
-			return nil, fmt.Errorf("%w: sandbox '%s'", ErrSandboxNotFound, sandboxID)
-		}
 		return nil, fmt.Errorf("%w: sandbox '%s' (status '%s') must be ACTIVE or EXPIRING to be released", ErrWrongState, sandboxID, existingStatus)
 	}
 
 	if targetIP != "" {
-		tx.Exec(`
+		leaseRes, err := tx.Exec(`
 			UPDATE ip_allocations
 			SET status = 'QUARANTINED', quarantined_at = ?, quarantine_until = ?
-			WHERE ip_address = ?;
-		`, quarantinedAtStr, quarantineUntilStr, targetIP)
+			WHERE ip_address = ? AND entity_name=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED';
+		`, quarantinedAtStr, quarantineUntilStr, targetIP, sandboxID)
+		if err != nil {
+			return nil, err
+		}
+		leaseRows, err := leaseRes.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if leaseRows != 1 {
+			return nil, fmt.Errorf("sandbox %q lease changed during release", sandboxID)
+		}
 	}
 
 	recordEvent(tx, sandboxID, "released", fmt.Sprintf("ip=%s,cooldown=%d", targetIP, quarantineSec), 0)

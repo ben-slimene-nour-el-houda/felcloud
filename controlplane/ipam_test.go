@@ -37,6 +37,74 @@ func setupTestDB(t *testing.T) string {
 	return dbFile
 }
 
+func TestValidateSandboxIPEnforcesSubnetAndAllocatorHostRange(t *testing.T) {
+	for _, ip := range []string{
+		"192.0.2.88", "10.20.30.254", "10.20.30.255", "10.20.30.0",
+		"10.20.30.1", "10.20.30.86",
+	} {
+		t.Run(ip, func(t *testing.T) {
+			if err := validateSandboxIP("10.20.30.0/24", "10.20.30.86", ip); err == nil {
+				t.Fatalf("accepted reserved or out-of-range address %s", ip)
+			}
+		})
+	}
+	if err := validateSandboxIP("10.20.30.0/24", "10.20.30.86", "10.20.30.90"); err != nil {
+		t.Fatalf("rejected valid sandbox address: %v", err)
+	}
+}
+
+func TestPreferredAllocationCannotClaimExistingTeamIP(t *testing.T) {
+	setupTestDB(t)
+	if _, err := allocateLease("new-team", "", "sandbox", "10.20.30.70"); err == nil {
+		t.Fatal("accepted team1's already allocated address")
+	}
+}
+
+func TestReleaseRefusesManagedSandboxAndMismatchedLeaseOwner(t *testing.T) {
+	setupTestDB(t)
+	first, err := allocateLease("release-first", "", "sandbox", "10.20.30.90")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := allocateLease("release-second", "", "sandbox", "10.20.30.91")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET managed_by='control-plane',server_id='live-server',port_id='live-port' WHERE sandbox_id='release-first'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	rec := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"sandbox_id":"release-first","ip_address":%q}`, first.IPAddress)
+	handleRelease(rec, httptest.NewRequest(http.MethodPost, "/ipam/leases/release", strings.NewReader(body)))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "use DELETE /api/sandboxes/release-first") {
+		t.Fatalf("managed release status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := releaseLease("release-first", second.IPAddress, 30); err == nil {
+		t.Fatal("released another sandbox's IP by supplying a mismatched address")
+	}
+	db, err = getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ip := range []string{first.IPAddress, second.IPAddress} {
+		var state string
+		if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE ip_address=?`, ip).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != "ALLOCATED" {
+			t.Errorf("IP %s state=%s, want ALLOCATED", ip, state)
+		}
+	}
+}
+
 func TestConfigGenerationBackupMigrationIsAdditiveAndIdempotent(t *testing.T) {
 	setupTestDB(t)
 	db, err := getDBConnection()
@@ -2404,7 +2472,7 @@ func TestReaperReleaseIPsLeakedSecondIP(t *testing.T) {
 	defer db.Close()
 
 	// Allocate sandbox
-	res, err := allocateLeaseTTL("sb-leak-ip", "", "sandbox", "10.0.0.10", 50)
+	res, err := allocateLeaseTTL("sb-leak-ip", "", "sandbox", "10.20.30.10", 50)
 	if err != nil {
 		t.Fatalf("allocation failed: %v", err)
 	}
@@ -2413,7 +2481,7 @@ func TestReaperReleaseIPsLeakedSecondIP(t *testing.T) {
 	}
 
 	// Insert leaked second IP row pointing to same entity_name
-	_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES ('10.0.0.11', 'sandbox', 'sb-leak-ip', 'TEAM_SANDBOX', 'ALLOCATED')")
+	_, err = db.Exec("INSERT INTO ip_allocations (ip_address, subnet_name, entity_name, entity_type, status) VALUES ('10.20.30.11', 'sandbox', 'sb-leak-ip', 'TEAM_SANDBOX', 'ALLOCATED')")
 	if err != nil {
 		t.Fatalf("insert leaked IP: %v", err)
 	}
@@ -2427,9 +2495,9 @@ func TestReaperReleaseIPsLeakedSecondIP(t *testing.T) {
 	// Both IPs must be QUARANTINED
 	var status1, status2 string
 	_ = db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = ?", res.IPAddress).Scan(&status1)
-	_ = db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = '10.0.0.11'").Scan(&status2)
+	_ = db.QueryRow("SELECT status FROM ip_allocations WHERE ip_address = '10.20.30.11'").Scan(&status2)
 	if status1 != "QUARANTINED" || status2 != "QUARANTINED" {
-		t.Fatalf("expected both IPs QUARANTINED, got %s=%s, 10.0.0.11=%s", res.IPAddress, status1, status2)
+		t.Fatalf("expected both IPs QUARANTINED, got %s=%s, 10.20.30.11=%s", res.IPAddress, status1, status2)
 	}
 }
 

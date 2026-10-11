@@ -129,6 +129,29 @@ func TestReconcileApplyCannotClaimProtectedIP(t *testing.T) {
 	}
 }
 
+func TestReconcileApplyRejectsOutOfPoolNeutronAddress(t *testing.T) {
+	setupTestDB(t)
+	if _, err := allocateLeaseTTL("outside-pool", "outside-pool.cstam.felcloud.tn", "sandbox", "10.20.30.90", 3600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	err = applyReconcileIPUpdate(db, ReconcileItem{SandboxID: "outside-pool", IP: "10.20.30.90", NeutronIP: "10.20.30.254"})
+	if err == nil {
+		t.Fatal("accepted an address outside the allocator host range")
+	}
+	var privateIP string
+	if err := db.QueryRow(`SELECT private_ip FROM sandboxes WHERE sandbox_id='outside-pool'`).Scan(&privateIP); err != nil {
+		t.Fatal(err)
+	}
+	if privateIP != "10.20.30.90" {
+		t.Fatalf("reconciliation changed private IP to %s after rejection", privateIP)
+	}
+}
+
 func TestReconcileApplyRejectsOwnershipAndResourceIdentityFields(t *testing.T) {
 	setupTestDB(t)
 	provisioner = &MockProvisioner{}
