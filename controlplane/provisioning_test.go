@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -240,12 +241,6 @@ func TestConfigureHealthProbeTimeout(t *testing.T) {
 func TestConfigureHealthProbeMode(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_MODE", "")
 	t.Setenv("PROVISIONER", "")
-	if err := configureHealthProbe(); err != nil {
-		t.Fatal(err)
-	}
-	if healthProbeMode != "direct" {
-		t.Fatalf("default mode=%q, want direct", healthProbeMode)
-	}
 	t.Setenv("HEALTH_PROBE_MODE", "unsupported")
 	if err := configureHealthProbe(); err == nil {
 		t.Fatal("expected invalid mode to fail")
@@ -262,6 +257,147 @@ func TestConfigureHealthProbeMode(t *testing.T) {
 	ok, result := runHealthProbe(context.Background(), "not-an-ip")
 	if !ok || result != "health probe skipped (mock provisioner)" {
 		t.Fatalf("mock skip probe=(%v,%q)", ok, result)
+	}
+}
+
+func setupGatewayProbeFixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	key := filepath.Join(dir, "test_key")
+	if err := os.WriteFile(key, []byte("test key material"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	inventory := filepath.Join(dir, "hosts.yml")
+	content := fmt.Sprintf(`all:
+  vars:
+    ansible_user: test-user
+    ansible_ssh_private_key_file: %s
+  children:
+    gateways:
+      hosts:
+        gw1:
+          ansible_host: 10.20.10.24
+        gw2:
+          ansible_host: 10.20.10.164
+`, key)
+	if err := os.WriteFile(inventory, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(knownHosts, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANSIBLE_INVENTORY", inventory)
+	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
+	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("FELCLOUD_KNOWN_HOSTS", knownHosts)
+	t.Setenv("BASTION_IP", "198.51.100.10")
+	t.Setenv("PROVISIONER", "openstack")
+	return dir, knownHosts
+}
+
+func TestHealthProbeDefaultsToBothGatewaysAndHonorsRequirement(t *testing.T) {
+	dir, knownHosts := setupGatewayProbeFixture(t)
+	argsLog := filepath.Join(dir, "ssh-args.log")
+	sshShim := filepath.Join(dir, "ssh")
+	shim := `#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_ARGS_LOG"
+case "$*" in
+  *10.20.10.164*)
+    if [ "$SSH_FAIL_GW2" = "1" ]; then printf 503; else printf 200; fi
+    ;;
+  *) printf 200 ;;
+esac
+`
+	if err := os.WriteFile(sshShim, []byte(shim), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SSH_ARGS_LOG", argsLog)
+	t.Setenv("SSH_FAIL_GW2", "1")
+	t.Setenv("HEALTH_PROBE_MODE", "")
+	t.Setenv("HEALTH_PROBE_REQUIRE", "")
+	if err := configureHealthProbe(); err != nil {
+		t.Fatal(err)
+	}
+	if healthProbeMode != "gateway-ssh" {
+		t.Fatalf("default mode=%q, want gateway-ssh", healthProbeMode)
+	}
+	result, err := runHealthProbeAttempt(context.Background(), healthProbeMode, "10.20.30.40")
+	if err != nil || probeHTTPStatusOK(result) || result != "503" {
+		t.Fatalf("all-gateway probe=(%q,%v), want failure on gw2", result, err)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ssh called %d times, want once per gateway: %s", len(lines), args)
+	}
+	for _, line := range lines {
+		for _, required := range []string{"-J test-user@198.51.100.10", "BatchMode=yes", "ConnectTimeout=3", "StrictHostKeyChecking=accept-new", "UserKnownHostsFile=" + knownHosts} {
+			if !strings.Contains(line, required) {
+				t.Errorf("ssh args %q missing %q", line, required)
+			}
+		}
+		if strings.Contains(line, "StrictHostKeyChecking=no") {
+			t.Errorf("unsafe SSH host-key option in args: %s", line)
+		}
+	}
+
+	if err := os.WriteFile(argsLog, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEALTH_PROBE_REQUIRE", "any")
+	if err := configureHealthProbe(); err != nil {
+		t.Fatal(err)
+	}
+	result, err = runHealthProbeAttempt(context.Background(), healthProbeMode, "10.20.30.40")
+	if err != nil || !probeHTTPStatusOK(result) || result != "200" {
+		t.Fatalf("any-gateway probe=(%q,%v), want success via gw1", result, err)
+	}
+	args, err = os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(args), "\n"); got != 2 {
+		t.Fatalf("any policy probed %d gateways, want both", got)
+	}
+}
+
+func TestHealthProbeStartupRequiresResolvableSSHSettings(t *testing.T) {
+	t.Setenv("PROVISIONER", "openstack")
+	t.Setenv("HEALTH_PROBE_MODE", "gateway-ssh")
+	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
+	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("ANSIBLE_INVENTORY", filepath.Join(t.TempDir(), "missing.yml"))
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "Ansible inventory") {
+		t.Fatalf("missing inventory error=%v, want actionable inventory error", err)
+	}
+	dir, _ := setupGatewayProbeFixture(t)
+	t.Setenv("ANSIBLE_INVENTORY", filepath.Join(dir, "hosts.yml"))
+	t.Setenv("HEALTH_PROBE_SSH_KEY", filepath.Join(dir, "missing_key"))
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "SSH key") {
+		t.Fatalf("missing key error=%v, want actionable SSH key error", err)
+	}
+	t.Setenv("HEALTH_PROBE_SSH_KEY", filepath.Join(dir, "test_key"))
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "invalid host")
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "JUMP") {
+		t.Fatalf("invalid jump error=%v, want actionable jump-host error", err)
+	}
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("BASTION_IP", "")
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "jump host is unresolved") {
+		t.Fatalf("missing jump error=%v, want actionable jump-host error", err)
+	}
+	t.Setenv("BASTION_IP", "198.51.100.10")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "test-user@198.51.100.10")
+	t.Setenv("HEALTH_PROBE_MODE", "direct")
+	if err := configureHealthProbe(); err != nil || healthProbeMode != "direct" {
+		t.Fatalf("explicit direct mode=(%q,%v), want direct", healthProbeMode, err)
 	}
 }
 
@@ -291,19 +427,19 @@ func TestMockOnlyProvisioningHooks(t *testing.T) {
 }
 
 func TestLoadHealthProbeSSHConfigFromInventory(t *testing.T) {
-	t.Setenv("ANSIBLE_INVENTORY", filepath.Join("..", "ansible", "inventory", "hosts.yml"))
-	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
-	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
-	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	_, knownHosts := setupGatewayProbeFixture(t)
 	t.Setenv("BASTION_IP", "198.51.100.10")
 	cfg, err := loadHealthProbeSSHConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Host != "10.20.10.24" || cfg.User != "ansible" || cfg.Jump != "ansible@198.51.100.10" {
+	if len(cfg.Gateways) != 2 ||
+		cfg.Gateways[0] != (healthProbeGateway{Name: "gw1", Host: "10.20.10.24"}) ||
+		cfg.Gateways[1] != (healthProbeGateway{Name: "gw2", Host: "10.20.10.164"}) ||
+		cfg.User != "test-user" || cfg.Jump != "test-user@198.51.100.10" {
 		t.Fatalf("inventory SSH settings = %+v", cfg)
 	}
-	if !strings.HasSuffix(filepath.ToSlash(cfg.Key), "ansible/.ssh/id_rsa_felcloud") {
+	if filepath.Base(cfg.Key) != "test_key" || cfg.KnownHosts != knownHosts || cfg.Require != "all" {
 		t.Fatalf("inventory SSH key path=%q", cfg.Key)
 	}
 }

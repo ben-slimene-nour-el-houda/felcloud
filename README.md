@@ -60,7 +60,7 @@ The project addresses three key challenges for multi-tenant sandbox platforms on
 
 - **HAProxy Data Plane API (DPA):** Deployed and configured on port 5555 with systemd management ([section 6](#6-data-plane-api)).
 - **Transactional IPAM with Address Quarantine:** SQLite-backed address allocator with automatic quarantine cooldown and address reclamation ([section 8](#8-ipam-and-team-lifecycle)).
-- **Pre-Flight Backend Health Checks:** Validates HTTP/TCP health before opening routes in HAProxy to prevent 502/503 errors.
+- **Pre-Flight Backend Health Checks:** By default the control plane probes sandbox HTTP through both gateways over SSH before opening HAProxy routes. The optional `direct` mode requires control-plane L3 reachability to the sandbox network.
 - **Gateway Configuration Validation:** The control plane validates generated HAProxy configuration before deployment. The rollback API currently returns a placeholder response and does not restore the live gateway configuration.
 - **Automated Test Suite:** Benchmarks measured VRRP failover times, verifies IP recycling, and tests end-to-end routing ([section 12](#12-verification-and-testing)).
 
@@ -308,9 +308,10 @@ When a sandbox is released:
 ### Pre-Flight Health Check
 
 Before opening a route in HAProxy:
-- Control plane probes `http://<sandbox_ip>:<port>/`.
-- Only when health check passes (HTTP 200/2xx) is the route deployed to HAProxy.
+- Control plane probes `http://<sandbox_ip>:<port>/` from both gateways over SSH by default (`HEALTH_PROBE_MODE=gateway-ssh`, `HEALTH_PROBE_REQUIRE=all`).
+- Only when the configured health policy passes (HTTP 2xx/3xx) is the route deployed to HAProxy.
 - If the probe fails, the route is not opened, preventing gateway 502/503 errors.
+- `HEALTH_PROBE_MODE=direct` is available when the control-plane host has L3 reachability to sandbox TCP 80; it is not suitable for the isolated default topology.
 
 ### REST API Endpoints (Port 8081)
 
