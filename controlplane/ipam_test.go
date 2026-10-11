@@ -24,6 +24,9 @@ func setupTestDB(t *testing.T) string {
 	dbFile := filepath.Join(tmpDir, "test_ipam.db")
 	dbPath = dbFile
 	defaultQuarantineSeconds = 60
+	defaultTTLSeconds = 14400
+	maxTTLSeconds = 86400
+	minExtendSeconds = 60
 	provisioner = &MockProvisioner{}
 	provisionSync = provisionSyncState{}
 	gatewaySyncFunc = func(bool) (bool, string) { return true, "test sync" }

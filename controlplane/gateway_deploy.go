@@ -7,12 +7,16 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -23,12 +27,29 @@ type gatewayDeployment struct {
 	DurationMS int64
 	GW1Backup  string
 	GW2Backup  string
+	DetectMS   int64
+	RestoreMS  int64
 }
 
 var gatewayDeploymentRunner = runTransactionalGatewayDeploy
 var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
 var gatewayStoreFactory = newGatewayStore
+
+func sshCommonArgs(connectTimeout int) string {
+	if connectTimeout <= 0 {
+		connectTimeout = 3
+	}
+	knownHosts := strings.TrimSpace(os.Getenv("ANSIBLE_KNOWN_HOSTS"))
+	if knownHosts == "" {
+		knownHosts = filepath.Join("..", "ansible", "known_hosts")
+	}
+	if _, err := os.Stat(knownHosts); err == nil {
+		return fmt.Sprintf("-o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s -o ConnectTimeout=%d -o BatchMode=yes", knownHosts, connectTimeout)
+	}
+	log.Printf("ANSIBLE_KNOWN_HOSTS=%q missing; falling back to accept-new for SSH trust", knownHosts)
+	return fmt.Sprintf("-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=%d -o BatchMode=yes", connectTimeout)
+}
 
 // Compatibility shims retained for legacy tests and earlier gateway-config flows.
 var varsYmlPath = ""
@@ -51,6 +72,29 @@ func createGeneratedRoutesVars(cfg string, generation string) (string, error) {
 	return file.Name(), nil
 }
 
+func parseApplyGuardMetrics(output string) (detectMS int64, restoreMS int64) {
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
+			continue
+		}
+		var payload struct {
+			Host      string `json:"host"`
+			DetectMS  int64  `json:"detect_ms"`
+			RestoreMS int64  `json:"restore_ms"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+			if payload.DetectMS > 0 {
+				detectMS = payload.DetectMS
+			}
+			if payload.RestoreMS >= 0 {
+				restoreMS = payload.RestoreMS
+			}
+		}
+	}
+	return detectMS, restoreMS
+}
+
 func generationID(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, time.Now().UTC().Format("20060102T150405.000000000"))
 }
@@ -67,6 +111,18 @@ func gatewayStateValue(db *sql.DB, key string) (string, error) {
 		return "", err
 	}
 	return value, nil
+}
+
+func gatewayDeployTimeoutSeconds() int {
+	v := strings.TrimSpace(os.Getenv("GATEWAY_DEPLOY_TIMEOUT_SECONDS"))
+	if v == "" {
+		return 120
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 120
+	}
+	return n
 }
 
 func setGatewayState(db *sql.DB, key string, value string) error {
@@ -155,15 +211,25 @@ func runTransactionalGatewayDeploy(genID, snapshot, active, standby string) (gat
 	playbook := envOr("HAPROXY_TRANSACTION_PLAYBOOK", "../ansible/haproxy-transaction.yml")
 	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
 	bastion := envOr("BASTION_IP", "203.0.113.119")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(gatewayDeployTimeoutSeconds())*time.Second)
+	defer cancel()
 	args := []string{"-i", inventory, playbook, "--vault-password-file", vault, "-e", "@" + varsPath,
-		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes'", bastion)}
-	cmd := exec.Command("ansible-playbook", args...)
+		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s %s'", bastion, sshCommonArgs(5))}
+	cmd := exec.CommandContext(ctx, "ansible-playbook", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			if cmd.Process != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+			return gatewayDeployment{Generation: genID, DurationMS: time.Since(started).Milliseconds()}, fmt.Errorf("gateway deploy timed out after %ds: %w: %s", gatewayDeployTimeoutSeconds(), ctx.Err(), strings.TrimSpace(output.String()))
+		}
 		return gatewayDeployment{Generation: genID, DurationMS: time.Since(started).Milliseconds()}, fmt.Errorf("remote stage/validate/apply failed: %w: %s", err, strings.TrimSpace(output.String()))
 	}
-	return gatewayDeployment{Generation: genID, DurationMS: time.Since(started).Milliseconds(), GW1Backup: "/etc/haproxy/backups/haproxy.cfg." + genID, GW2Backup: "/etc/haproxy/backups/haproxy.cfg." + genID}, nil
+	detectMS, restoreMS := parseApplyGuardMetrics(output.String())
+	return gatewayDeployment{Generation: genID, DurationMS: time.Since(started).Milliseconds(), GW1Backup: "/etc/haproxy/backups/haproxy.cfg." + genID, GW2Backup: "/etc/haproxy/backups/haproxy.cfg." + genID, DetectMS: detectMS, RestoreMS: restoreMS}, nil
 }
 
 type gatewayHealthSnapshot struct {
