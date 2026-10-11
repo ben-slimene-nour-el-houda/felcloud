@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 )
@@ -20,8 +19,9 @@ func sendJSON(w http.ResponseWriter, code int, data interface{}) {
 func setupAPIRoutes() http.Handler {
 	store, err := newGatewayStore()
 	if err != nil {
-		log.Printf("WARNING: legacy api setup fell back to in-memory store: %v", err)
-		store = &gatewayStore{db: nil}
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, fmt.Sprintf("database unavailable: %v", err), http.StatusServiceUnavailable)
+		})
 	}
 	return gatewayHandler(store)
 }

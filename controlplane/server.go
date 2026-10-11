@@ -4,15 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -41,18 +43,25 @@ type gatewayStore struct {
 }
 
 func newGatewayStore() (*gatewayStore, error) {
-	p := filepath.Join("..", "ipam", "ipam.db")
-	db, err := sql.Open("sqlite3", p+"?_journal_mode=WAL&_busy_timeout=5000")
+	db, err := getDBConnection()
 	if err != nil {
+		return nil, err
+	}
+	store, err := newGatewayStoreWithDB(db)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func newGatewayStoreWithDB(db *sql.DB) (*gatewayStore, error) {
+	if err := db.Ping(); err != nil {
 		return nil, err
 	}
 	db.SetConnMaxLifetime(30 * time.Second)
 	db.SetMaxOpenConns(5)
 	db.SetMaxIdleConns(2)
-	if err = db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
 	return &gatewayStore{db: db}, nil
 }
 
@@ -83,7 +92,7 @@ func requireBearerToken(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // requireEventsAuth is the dual-token check for POST /api/gateways/events.
-// Priority: Bearer CONTROL_PLANE_TOKEN → X-Events-Token → gateway mgmt subnet (only when both env vars are unset).
+// Priority: ****** → X-Events-Token → gateway mgmt subnet (only when both env vars are unset).
 func requireEventsAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
@@ -93,7 +102,7 @@ func requireEventsAuth(next http.HandlerFunc) http.HandlerFunc {
 		cpToken := os.Getenv("CONTROL_PLANE_TOKEN")
 		evToken := os.Getenv("EVENTS_TOKEN")
 
-		// 1. Bearer admin token (dashboard / operators)
+		// 1. ****** token (dashboard / operators)
 		if cpToken != "" {
 			auth := r.Header.Get("Authorization")
 			if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == cpToken {
@@ -117,9 +126,8 @@ func requireEventsAuth(next http.HandlerFunc) http.HandlerFunc {
 		// 3. Neither token env var is set: accept only from the gateway mgmt subnet.
 		// Gateway mgmt NICs: gw1=10.20.10.24, gw2=10.20.10.164 (subnet 10.20.10.0/24).
 		// Confirmed in Pulumi.dev.yaml (felcloud-infra:mgmtCidr), Ansible inventory,
-		// and IPAM DB subnets table. Uses r.RemoteAddr only — never X-Forwarded-For.
-		gwSubnet := envOr("GATEWAY_SUBNET", "10.20.10.0/24")
-		if fromRemoteAddr(r, gwSubnet) {
+		// and IPAM DB subnets tables. Uses r.RemoteAddr only — never X-Forwarded-For.
+		if fromRemoteAddr(r, envOr("GATEWAY_SUBNET", "10.20.10.0/24")) {
 			next(w, r)
 			return
 		}
@@ -215,10 +223,13 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":    "UP",
-			"source":    "controlplane-gateway",
-			"db":        "OK",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"status":                       "UP",
+			"source":                       "controlplane-gateway",
+			"db":                           "OK",
+			"timestamp":                    time.Now().UTC().Format(time.RFC3339),
+			"reaper_last_tick_unix":        lastTickUnix.Load(),
+			"reaper_last_tick_duration_ms": lastTickDurationMs.Load(),
+			"oldest_overdue_seconds":       oldestOverdueSeconds.Load(),
 		})
 	}))
 
@@ -749,27 +760,96 @@ func gwLeasesGet(w http.ResponseWriter, _ *http.Request) {
 
 // ── HTTP server entry point ────────────────────────────────────────────────────
 
-// startGatewayServer starts the gateway HTTP API on the given port.
-// Called by main.go's "serve" subcommand.
-func startGatewayServer(port int) {
+func runServer(ctx context.Context, port int) (runErr error) {
+	if _, err := loadAPISecurityConfig(); err != nil {
+		return fmt.Errorf("API security configuration: %w", err)
+	}
 	if err := initDB(); err != nil {
-		log.Printf("WARNING: initDB: %v (continuing)", err)
+		return fmt.Errorf("initialize database: %w", err)
 	}
 
-	store, err := newGatewayStore()
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	defer cancelServer()
+	if err := configureProvisioner(serverCtx); err != nil {
+		return fmt.Errorf("configure provisioner: %w", err)
+	}
+	log.Printf("active provisioner: %T", provisioner)
+
+	db, err := getDBConnection()
 	if err != nil {
-		log.Printf("WARNING: gateway sqlite store: %v (status/generations endpoints degraded)", err)
-		store = &gatewayStore{db: func() *sql.DB {
-			db, _ := sql.Open("sqlite3", ":memory:")
-			return db
-		}()}
+		return fmt.Errorf("open server database: %w", err)
 	}
-	defer store.close()
+	store, err := newGatewayStoreWithDB(db)
+	if err != nil {
+		_ = db.Close()
+		return fmt.Errorf("initialize gateway store: %w", err)
+	}
+	reaperDone, err := startReaper(serverCtx, db)
+	if err != nil {
+		store.close()
+		return fmt.Errorf("start reaper: %w", err)
+	}
+	defer func() {
+		cancelServer()
+		select {
+		case <-reaperDone:
+		case <-time.After(10 * time.Second):
+			if runErr == nil {
+				runErr = errors.New("reaper did not stop within 10 seconds")
+			}
+		}
+		store.close()
+	}()
 
-	addr := fmt.Sprintf(":%d", port)
-	log.Printf("control-plane gateway API listening on %s", addr)
-	if err := http.ListenAndServe(addr, gatewayHandler(store)); err != nil {
-		log.Fatal(err)
+	writeTimeout := provisionTimeout + 30*time.Second
+	if writeTimeout <= provisionTimeout {
+		return errors.New("PROVISION_TIMEOUT_SECONDS is too large to configure the HTTP write timeout")
+	}
+	listenAddress := net.JoinHostPort(strings.Trim(os.Getenv("LISTEN_ADDR"), "[]"), strconv.Itoa(port))
+	server := &http.Server{
+		Addr:              listenAddress,
+		Handler:           gatewayHandler(store),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       120 * time.Second,
+	}
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", listenAddress, err)
+	}
+	log.Printf("control-plane gateway API listening on %s", listenAddress)
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.Serve(listener)
+	}()
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("shut down HTTP server: %w", err)
+		}
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("HTTP server: %w", err)
+		}
+		return nil
+	}
+}
+
+func startGatewayServer(port int) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runServer(ctx, port); err != nil {
+		log.Printf("control-plane server stopped: %v", err)
+		os.Exit(1)
 	}
 }
 
