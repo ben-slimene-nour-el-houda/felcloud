@@ -191,7 +191,7 @@ func TestAuthMatrixAndCORS(t *testing.T) {
 		{name: "status no auth", method: http.MethodGet, path: "/api/gateways/status", want: http.StatusUnauthorized},
 		{name: "status admin", method: http.MethodGet, path: "/api/gateways/status", auth: adminHeader, want: http.StatusOK},
 		{name: "status events token", method: http.MethodGet, path: "/api/gateways/status", events: "events-token-01234567890", want: http.StatusUnauthorized},
-		{name: "sync no auth", method: http.MethodPost, path: "/api/gateways/sync", body: `{}` , want: http.StatusUnauthorized},
+		{name: "sync no auth", method: http.MethodPost, path: "/api/gateways/sync", body: `{}`, want: http.StatusUnauthorized},
 		{name: "sync admin", method: http.MethodPost, path: "/api/gateways/sync", body: `{}`, auth: adminHeader, want: http.StatusBadGateway},
 		{name: "events no auth", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, want: http.StatusUnauthorized},
 		{name: "events wrong token", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, events: "bad-token", want: http.StatusUnauthorized},

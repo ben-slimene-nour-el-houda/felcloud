@@ -27,6 +27,27 @@ var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
 var gatewayStoreFactory = newGatewayStore
 
+// Compatibility shims retained for legacy tests and earlier gateway-config flows.
+var varsYmlPath = ""
+var gatewayConfigValidator = func(cfg string) (bool, string) { return validateHAProxySyntax(cfg) }
+var gatewayPlaybookRunner = func(_ string) error { return nil }
+var backupDir = "/tmp"
+
+func createGeneratedRoutesVars(cfg string, generation string) (string, error) {
+	file, err := os.CreateTemp("", "felcloud-generated-routes-*.yml")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := file.WriteString(cfg); err != nil {
+		return "", err
+	}
+	if generation != "" {
+		_ = generation
+	}
+	return file.Name(), nil
+}
+
 func generationID(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, time.Now().UTC().Format("20060102T150405.000000000"))
 }

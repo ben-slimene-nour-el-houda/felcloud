@@ -12,4 +12,4 @@ keepalived_check_weight: -60
 
 routing_domain: cstam.felcloud.tn
 
-teams:
+teams: []

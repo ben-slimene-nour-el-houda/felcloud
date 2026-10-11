@@ -185,6 +185,10 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			source = "haproxy"
 		}
 		since := q.Get("since")
+		if since != "" && !gatewayLogSinceRE.MatchString(since) {
+			errJSON(w, http.StatusBadRequest, "invalid since value", "allowed chars: 0-9 A-Z a-z . : + - and space")
+			return
+		}
 
 		if gateway == "" {
 			errJSON(w, http.StatusBadRequest, "gateway param required", "valid values: gw1, gw2")

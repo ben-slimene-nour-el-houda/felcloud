@@ -30,8 +30,6 @@ var (
 var (
 	dbMutex                  sync.Mutex
 	dbPath                   string
-	varsYmlPath              string
-	backupDir                string
 	defaultQuarantineSeconds int
 	routingDomain            string       = "cstam.felcloud.tn"
 	defaultTTLSeconds        int64        = 14400
@@ -190,15 +188,6 @@ func initEnv() {
 		fmt.Fprintf(os.Stderr, "FATAL: cannot resolve IPAM database path: %v\n", err)
 		os.Exit(1)
 	}
-
-	// Determine Ansible vars.yml path
-	if envVars := os.Getenv("VARS_YML_PATH"); envVars != "" {
-		varsYmlPath = envVars
-	} else {
-		varsYmlPath = filepath.Join(filepath.Dir(dbPath), "..", "ansible", "group_vars", "gateways", "vars.yml")
-	}
-
-	backupDir = filepath.Join(filepath.Dir(dbPath), "..", "ansible", "backups")
 
 	defaultQuarantineSeconds, err = parseIPQuarantineSeconds(os.Getenv("IP_QUARANTINE_SECONDS"))
 	if err != nil {
