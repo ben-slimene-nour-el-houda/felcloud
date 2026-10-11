@@ -19,6 +19,7 @@ func secureTestAPI(t *testing.T) http.Handler {
 	t.Setenv("ADMIN_TOKEN", testAdminToken)
 	t.Setenv("RATE_LIMIT_PER_MIN", "30")
 	t.Setenv("CORS_ORIGIN", "")
+	provisioner = nil
 	return setupAPIRoutes()
 }
 
