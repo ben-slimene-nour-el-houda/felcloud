@@ -57,6 +57,29 @@ func TestReconcileFindsFourDriftCategories(t *testing.T) {
 	}
 }
 
+func TestReconcileReportsNovaOrphanWithoutDeletingIt(t *testing.T) {
+	setupTestDB(t)
+	mock := &MockProvisioner{Servers: map[string]bool{"mock-server-orphan": true}}
+	provisioner = mock
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := reconcileNeutron(context.Background(), db, mock)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.OrphanNovaServers) != 1 || report.OrphanNovaServers[0].ID != "mock-server-orphan" {
+		t.Fatalf("Nova orphans=%+v, want the untracked server", report.OrphanNovaServers)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if !mock.Servers["mock-server-orphan"] || len(mock.Deleted) != 0 {
+		t.Fatalf("reconcile changed orphan resource state: servers=%v deleted=%v", mock.Servers, mock.Deleted)
+	}
+}
+
 func TestReconcileApplyOnlyExplicitSandboxFixes(t *testing.T) {
 	setupTestDB(t)
 	mock := &MockProvisioner{Servers: map[string]bool{}}
@@ -126,6 +149,29 @@ func TestReconcileApplyCannotClaimProtectedIP(t *testing.T) {
 	var status string
 	if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE entity_name='vip'`).Scan(&status); err != nil || status != "RESERVED" {
 		t.Fatalf("protected lease status=%q err=%v", status, err)
+	}
+}
+
+func TestReconcileApplyRejectsOutOfPoolNeutronAddress(t *testing.T) {
+	setupTestDB(t)
+	if _, err := allocateLeaseTTL("outside-pool", "outside-pool.cstam.felcloud.tn", "sandbox", "10.20.30.90", 3600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	err = applyReconcileIPUpdate(db, ReconcileItem{SandboxID: "outside-pool", IP: "10.20.30.90", NeutronIP: "10.20.30.254"})
+	if err == nil {
+		t.Fatal("accepted an address outside the allocator host range")
+	}
+	var privateIP string
+	if err := db.QueryRow(`SELECT private_ip FROM sandboxes WHERE sandbox_id='outside-pool'`).Scan(&privateIP); err != nil {
+		t.Fatal(err)
+	}
+	if privateIP != "10.20.30.90" {
+		t.Fatalf("reconciliation changed private IP to %s after rejection", privateIP)
 	}
 }
 

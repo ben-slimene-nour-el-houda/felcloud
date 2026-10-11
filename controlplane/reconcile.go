@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,6 +24,7 @@ type ReconcileReport struct {
 	OrphanNeutronPorts  []ReconcileItem `json:"neutron_port_without_db_lease"`
 	IPMismatches        []ReconcileItem `json:"ip_mismatch"`
 	MissingServers      []ReconcileItem `json:"provisioned_server_missing"`
+	OrphanNovaServers   []SandboxServer `json:"nova_server_without_db_lease"`
 }
 
 type ReconcileAction struct {
@@ -56,6 +56,7 @@ func reconcileNeutron(ctx context.Context, db *sql.DB, p Provisioner) (Reconcile
 		OrphanNeutronPorts:  []ReconcileItem{},
 		IPMismatches:        []ReconcileItem{},
 		MissingServers:      []ReconcileItem{},
+		OrphanNovaServers:   []SandboxServer{},
 	}
 	if p == nil {
 		return report, errors.New("provisioner is not configured")
@@ -110,7 +111,6 @@ func reconcileNeutron(ctx context.Context, db *sql.DB, p Provisioner) (Reconcile
 	if err != nil {
 		return report, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var id, serverID string
 		if err := rows.Scan(&id, &serverID); err != nil {
@@ -124,7 +124,36 @@ func reconcileNeutron(ctx context.Context, db *sql.DB, p Provisioner) (Reconcile
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return report, err
+	}
+	rows.Close()
+	servers, err := p.ListSandboxServers(ctx)
+	if err != nil {
+		return report, fmt.Errorf("list Nova sandbox servers: %w", err)
+	}
+	knownServerIDs := make(map[string]bool)
+	rows, err = db.Query(`SELECT COALESCE(server_id,'') FROM sandboxes WHERE COALESCE(server_id,'')<>''`)
+	if err != nil {
+		return report, err
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return report, err
+		}
+		knownServerIDs[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return report, err
+	}
+	rows.Close()
+	for _, server := range servers {
+		if !knownServerIDs[server.ID] {
+			report.OrphanNovaServers = append(report.OrphanNovaServers, server)
+		}
 	}
 	return report, nil
 }
@@ -234,9 +263,14 @@ func findReconcileItem(items []ReconcileItem, id string) (ReconcileItem, bool) {
 }
 
 func applyReconcileIPUpdate(db *sql.DB, item ReconcileItem) error {
-	parsed := net.ParseIP(item.NeutronIP)
-	if parsed == nil || parsed.To4() == nil || parsed.String() != item.NeutronIP {
-		return errors.New("Neutron fixed IP is not a literal IPv4 address")
+	var cidr, gatewayIP string
+	if err := db.QueryRow(`SELECT subnets.cidr,subnets.gateway_ip
+		FROM sandboxes JOIN subnets ON subnets.name=sandboxes.subnet_name
+		WHERE sandboxes.sandbox_id=?`, item.SandboxID).Scan(&cidr, &gatewayIP); err != nil {
+		return fmt.Errorf("read sandbox subnet for reconciliation: %w", err)
+	}
+	if err := validateSandboxIP(cidr, gatewayIP, item.NeutronIP); err != nil {
+		return err
 	}
 	tx, err := db.Begin()
 	if err != nil {

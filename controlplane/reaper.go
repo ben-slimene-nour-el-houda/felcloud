@@ -146,6 +146,7 @@ func reaperTickInner(db *sql.DB, now int64) tickResult {
 
 	// a. Reclaim expired quarantines
 	reclaimExpiredQuarantinesTx(db)
+	recoverStaleProvisioning(db, now, &res)
 
 	// Update oldestOverdueSeconds gauge
 	var minExp sql.NullInt64
@@ -260,6 +261,87 @@ func reaperTickInner(db *sql.DB, now int64) tickResult {
 	lastTickDurationMs.Store(time.Since(tickStart).Milliseconds())
 
 	return res
+}
+
+func recoverStaleProvisioning(db *sql.DB, now int64, result *tickResult) {
+	if provisioner == nil {
+		return
+	}
+	timeoutSeconds := int64((provisionTimeout + 60*time.Second).Seconds())
+	cutoff := now - timeoutSeconds
+	rows, err := db.Query(`SELECT sandbox_id,COALESCE(private_ip,'')
+		FROM sandboxes WHERE status='PROVISIONING' AND CAST(strftime('%s',updated_at) AS INTEGER)<=? LIMIT ?`,
+		cutoff, reaperBatchSize)
+	if err != nil {
+		log.Printf("reaper: list stale provisioning sandboxes: %v", err)
+		return
+	}
+	type staleProvision struct{ team, ip string }
+	var stale []staleProvision
+	for rows.Next() {
+		var item staleProvision
+		if err := rows.Scan(&item.team, &item.ip); err != nil {
+			rows.Close()
+			log.Printf("reaper: read stale provisioning sandbox: %v", err)
+			return
+		}
+		stale = append(stale, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		log.Printf("reaper: iterate stale provisioning sandboxes: %v", err)
+		return
+	}
+	rows.Close()
+	for _, item := range stale {
+		ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+		resources, findErr := provisioner.FindSandboxResources(ctx, item.team)
+		cancel()
+		if findErr != nil && !errors.Is(findErr, ErrOpenStackNotFound) {
+			log.Printf("reaper: find resources for stale provisioning sandbox %q: %v", item.team, findErr)
+			continue
+		}
+		if resources != nil {
+			ctx, cancel = context.WithTimeout(context.Background(), teardownTimeout)
+			deleteErr := provisioner.DeleteSandbox(ctx, resources.ServerID, resources.PortID)
+			cancel()
+			if deleteErr != nil {
+				log.Printf("reaper: delete resources for stale provisioning sandbox %q: %v", item.team, deleteErr)
+				continue
+			}
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			log.Printf("reaper: begin recovery for stale provisioning sandbox %q: %v", item.team, err)
+			continue
+		}
+		update, err := tx.Exec(`UPDATE sandboxes SET status='FAILED',updated_at=CURRENT_TIMESTAMP
+			WHERE sandbox_id=? AND status='PROVISIONING'`, item.team)
+		if err == nil {
+			var changed int64
+			changed, err = update.RowsAffected()
+			if err == nil && changed == 0 {
+				err = errProvisionClaimed
+			}
+		}
+		if err == nil && item.ip != "" {
+			until := time.Unix(now, 0).UTC().Add(time.Duration(defaultQuarantineSeconds) * time.Second).Format("2006-01-02 15:04:05")
+			at := time.Unix(now, 0).UTC().Format("2006-01-02 15:04:05")
+			_, err = tx.Exec(`UPDATE ip_allocations SET status='QUARANTINED',quarantined_at=?,quarantine_until=?
+				WHERE entity_name=? AND ip_address=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED'`, at, until, item.team, item.ip)
+		}
+		if err == nil {
+			recordEvent(tx, item.team, "PROVISION_RECOVERED", "stale PROVISIONING resources cleaned up", 0)
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			log.Printf("reaper: recover stale provisioning sandbox %q: %v", item.team, err)
+			continue
+		}
+		result.FailedCount++
+	}
 }
 
 func startReaper(ctx context.Context, dbs ...*sql.DB) (<-chan struct{}, error) {

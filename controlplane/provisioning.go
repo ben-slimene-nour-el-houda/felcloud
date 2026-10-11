@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,7 +16,49 @@ import (
 )
 
 var dnsLabelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-var provisionNameLocks sync.Map
+
+type provisionNameLockEntry struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type provisionNameLockMap struct {
+	mu      sync.Mutex
+	entries map[string]*provisionNameLockEntry
+}
+
+func newProvisionNameLockMap() provisionNameLockMap {
+	return provisionNameLockMap{entries: make(map[string]*provisionNameLockEntry)}
+}
+
+func (m *provisionNameLockMap) lock(team string) func() {
+	m.mu.Lock()
+	entry := m.entries[team]
+	if entry == nil {
+		entry = &provisionNameLockEntry{}
+		m.entries[team] = entry
+	}
+	entry.refs++
+	m.mu.Unlock()
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		m.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(m.entries, team)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *provisionNameLockMap) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.entries)
+}
+
+var provisionNameLocks = newProvisionNameLockMap()
 var gatewaySyncFunc = func(dryRun bool) (bool, string) { return syncHAProxyDualGateways(dryRun) }
 var healthProbeTimeout = 90 * time.Second
 var healthProbeRetryInterval = 500 * time.Millisecond
@@ -109,6 +153,19 @@ func provisionError(w http.ResponseWriter, status int, id, step string, err erro
 	writeProvisionError(w, status, id, step, err, "", "")
 }
 
+func provisionErrorWithTimings(w http.ResponseWriter, status int, id, step string, err error, timings map[string]int64, mode, result string) {
+	msg := "provisioning failed"
+	if err != nil {
+		msg = err.Error()
+	}
+	body := map[string]interface{}{"error": msg, "step": step, "sandbox_id": id, "timings_ms": timings}
+	if mode != "" {
+		body["health_probe_mode"] = mode
+		body["last_probe_result"] = result
+	}
+	sendJSON(w, status, body)
+}
+
 func provisionErrorWithProbe(w http.ResponseWriter, status int, id, step string, err error, mode, result string) {
 	writeProvisionError(w, status, id, step, err, mode, result)
 }
@@ -174,15 +231,93 @@ func persistProvisioning(team string, lease *LeaseResult) error {
 	return tx.Commit()
 }
 
+func reserveConflictingProvisionIP(team, ip string, attempt int, allocateReplacement bool) (*LeaseResult, error) {
+	db, err := getDBConnection()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`UPDATE ip_allocations
+		SET entity_name=?,entity_type='EXTERNAL',status='RESERVED',quarantined_at=NULL,quarantine_until=NULL
+		WHERE ip_address=? AND entity_name=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED'`,
+		"neutron-conflict-"+ip, ip, team)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, fmt.Errorf("sandbox %q no longer owns allocated IP %s", team, ip)
+	}
+
+	var replacement *LeaseResult
+	if allocateReplacement {
+		var cidr, gatewayIP string
+		if err := tx.QueryRow(`SELECT cidr,gateway_ip FROM subnets WHERE name='sandbox'`).Scan(&cidr, &gatewayIP); err != nil {
+			return nil, fmt.Errorf("read sandbox subnet for conflict retry: %w", err)
+		}
+		newIP, err := findAvailableIPTx(tx, "sandbox", cidr, gatewayIP)
+		if err != nil {
+			return nil, fmt.Errorf("allocate replacement IP after Neutron conflict: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO ip_allocations(ip_address,subnet_name,entity_name,entity_type,status)
+			VALUES(?,'sandbox',?,'TEAM_SANDBOX','ALLOCATED')
+			ON CONFLICT(ip_address) DO UPDATE SET subnet_name='sandbox',entity_name=excluded.entity_name,
+			entity_type='TEAM_SANDBOX',status='ALLOCATED',quarantined_at=NULL,quarantine_until=NULL,
+			assigned_at=CURRENT_TIMESTAMP`, newIP, team); err != nil {
+			return nil, err
+		}
+		res, err := tx.Exec(`UPDATE sandboxes SET private_ip=?,fixed_ip=?,updated_at=CURRENT_TIMESTAMP
+			WHERE sandbox_id=? AND status='PROVISIONING' AND private_ip=?`, newIP, newIP, team, ip)
+		if err != nil {
+			return nil, err
+		}
+		changed, err = res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if changed != 1 {
+			return nil, errProvisionClaimed
+		}
+		replacement = &LeaseResult{SandboxID: team, Hostname: team + "." + routingDomain, IPAddress: newIP, PrivateIP: newIP, Status: "ALLOCATED", SubnetName: "sandbox"}
+	}
+	detail := fmt.Sprintf("ip=%s attempt=%d", ip, attempt)
+	if replacement != nil {
+		detail += " replacement_ip=" + replacement.IPAddress
+	} else {
+		detail += " outcome=exhausted"
+	}
+	recordEvent(tx, team, "IP_CONFLICT_RETRY", detail, 0)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return replacement, nil
+}
+
 func persistResources(team string, r *SandboxResources) error {
 	db, err := getDBConnection()
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	_, err = db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=?,private_ip=?,
+	res, err := db.Exec(`UPDATE sandboxes SET server_id=?,port_id=?,fixed_ip=?,private_ip=?,
 		managed_by=CASE WHEN ?<>'' THEN 'control-plane' ELSE managed_by END,
 		updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=? AND status='PROVISIONING'`, r.ServerID, r.PortID, r.FixedIP, r.FixedIP, r.ServerID, team)
+	if err == nil {
+		var changed int64
+		changed, err = res.RowsAffected()
+		if err == nil && changed == 0 {
+			err = errProvisionClaimed
+		}
+	}
 	if err == nil {
 		recordEvent(db, team, "PORT_CREATED", r.PortID, r.PortDurationMS)
 		if r.ServerID != "" {
@@ -303,16 +438,19 @@ func runProvisionSyncLoop(done chan struct{}) {
 	}
 }
 
+func lockProvisionName(team string) func() {
+	return provisionNameLocks.lock(team)
+}
+
 func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 	team := req.Team
-	lockAny, _ := provisionNameLocks.LoadOrStore(team, &sync.Mutex{})
-	teamLock := lockAny.(*sync.Mutex)
-	teamLock.Lock()
-	defer teamLock.Unlock()
+	unlock := lockProvisionName(team)
+	defer unlock()
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(r.Context(), provisionTimeout)
 	defer cancel()
 	lastProbeResult := ""
+	timings := zeroTimings()
 	if state, old, err := existingProvision(team); err != nil {
 		provisionError(w, http.StatusBadGateway, team, "database", err)
 		return
@@ -325,14 +463,29 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 	}
 	host := team + "." + routingDomain
 	allocStart := time.Now()
-	lease, err := allocateProvisionLease(team, host)
+	ports, err := provisioner.ListSandboxPorts(ctx)
+	if err != nil {
+		provisionError(w, http.StatusBadGateway, team, "list_neutron_ports", err)
+		return
+	}
+	excludedIPs := make(map[string]bool)
+	for _, port := range ports {
+		for _, ip := range port.FixedIPs {
+			if validIPv4Address(ip) {
+				excludedIPs[ip] = true
+			}
+		}
+	}
+	lease, err := allocateProvisionLeaseExcluding(team, host, excludedIPs)
 	allocMs := time.Since(allocStart).Milliseconds()
+	timings["allocate"] = allocMs
 	if err != nil {
 		provisionError(w, 409, team, "allocate", err)
 		return
 	}
 	resources := &SandboxResources{FixedIP: lease.IPAddress}
 	fail := func(code int, step string, cause error) {
+		timings["total"] = time.Since(start).Milliseconds()
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		cleanupErr := provisioner.DeleteSandbox(cleanupCtx, resources.ServerID, resources.PortID)
 		cleanupCancel()
@@ -350,10 +503,10 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 			cause = errors.Join(cause, fmt.Errorf("route cleanup sync: %s", syncMessage))
 		}
 		if step == "health" || step == "health_timeout" {
-			provisionErrorWithProbe(w, code, team, step, cause, healthProbeMode, lastProbeResult)
+			provisionErrorWithTimings(w, code, team, step, cause, timings, healthProbeMode, lastProbeResult)
 			return
 		}
-		provisionError(w, code, team, step, cause)
+		provisionErrorWithTimings(w, code, team, step, cause, timings, "", "")
 	}
 	if err = persistProvisioning(team, lease); err != nil {
 		if errors.Is(err, errProvisionClaimed) {
@@ -363,13 +516,55 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 		fail(http.StatusBadGateway, "state", err)
 		return
 	}
+	if mockProvisionDelay > 0 && os.Getenv("PROVISIONER") == "mock" {
+		timer := time.NewTimer(mockProvisionDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			fail(http.StatusGatewayTimeout, "provision_timeout", ctx.Err())
+			return
+		case <-timer.C:
+		}
+	}
+	if mockFailureMatches(team, "timeout") {
+		<-ctx.Done()
+		fail(http.StatusGatewayTimeout, "provision_timeout", ctx.Err())
+		return
+	}
 	req.SandboxID = team
-	req.FixedIP = lease.IPAddress
-	created, err := provisioner.CreateSandbox(ctx, req)
 	portMs := int64(0)
+	const maxFixedIPConflictAttempts = 3
+	conflicts := 0
+	var created *SandboxResources
+	for {
+		req.FixedIP = lease.IPAddress
+		if mockFailureMatches(team, "create") {
+			err = errors.New("injected mock create failure")
+		} else {
+			created, err = provisioner.CreateSandbox(ctx, req)
+		}
+		if !errors.Is(err, ErrFixedIPInUse) {
+			break
+		}
+		conflicts++
+		retry := conflicts < maxFixedIPConflictAttempts
+		log.Printf("Neutron fixed IP conflict for sandbox %s at %s; attempt %d/%d", team, lease.IPAddress, conflicts, maxFixedIPConflictAttempts)
+		nextLease, reserveErr := reserveConflictingProvisionIP(team, lease.IPAddress, conflicts, retry)
+		if reserveErr != nil {
+			fail(http.StatusBadGateway, "ip_conflict", errors.Join(err, reserveErr))
+			return
+		}
+		if !retry {
+			fail(http.StatusBadGateway, "ip_conflict", fmt.Errorf("Neutron rejected %d fixed IPs; retries exhausted: %w", conflicts, ErrFixedIPInUse))
+			return
+		}
+		lease = nextLease
+		resources = &SandboxResources{FixedIP: lease.IPAddress}
+	}
 	if created != nil {
 		resources = created
 		portMs = created.PortDurationMS
+		timings["port"] = portMs
 		if persistErr := persistResources(team, resources); persistErr != nil {
 			fail(http.StatusBadGateway, "database", persistErr)
 			return
@@ -393,6 +588,9 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 				fail(http.StatusGatewayTimeout, "server_timeout", ctx.Err())
 				return
 			}
+			if mockFailureMatches(team, "server_error") {
+				status = "ERROR"
+			}
 			fail(http.StatusBadGateway, "server_status", getErr)
 			return
 		}
@@ -413,10 +611,15 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 	}
 serverActive:
 	activeMs := time.Since(activeStart).Milliseconds() + resources.ServerCreateDurationMS
+	timings["server_active"] = activeMs
 	healthStart := time.Now()
 	healthy, msg := provisionHealthProbe(ctx, resources.FixedIP)
+	if mockFailureMatches(team, "health") {
+		healthy, msg = false, "injected mock health failure"
+	}
 	lastProbeResult = msg
 	healthMs := time.Since(healthStart).Milliseconds()
+	timings["health"] = healthMs
 	if !healthy {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fail(http.StatusGatewayTimeout, "health_timeout", ctx.Err())
@@ -432,7 +635,11 @@ serverActive:
 	}
 	syncStart := time.Now()
 	synced, syncMsg := runCoalescedProvisionSync(ctx)
+	if mockFailureMatches(team, "sync") {
+		synced, syncMsg = false, "injected mock gateway sync failure"
+	}
 	syncMs := time.Since(syncStart).Milliseconds()
+	timings["sync"] = syncMs
 	syncDetail := "success"
 	if !synced {
 		syncDetail = syncMsg

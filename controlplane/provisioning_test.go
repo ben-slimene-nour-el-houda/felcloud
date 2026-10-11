@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ func provisionTestSetup(t *testing.T, mock *MockProvisioner) {
 	routingDomain = "cstam.felcloud.tn"
 	defaultQuarantineSeconds = 2
 	provisionSync = provisionSyncState{}
-	provisionNameLocks = sync.Map{}
+	provisionNameLocks = newProvisionNameLockMap()
 	provisionHealthProbe = func(context.Context, string) (bool, string) { return true, "ok" }
 	healthProbeTimeout = 90 * time.Second
 	healthProbeRetryInterval = 500 * time.Millisecond
@@ -216,6 +217,137 @@ func TestProvisionIdempotencyAndNameValidation(t *testing.T) {
 	}
 }
 
+func TestProvisionRetriesNeutronFixedIPConflicts(t *testing.T) {
+	mock := &MockProvisioner{ConflictIPs: map[string]bool{"10.20.30.2": true}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("collision-once")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s, want 201 after retry", rec.Code, rec.Body.String())
+	}
+	var response provisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.FixedIP == "10.20.30.2" {
+		t.Fatalf("provision reused conflicting IP %s", response.FixedIP)
+	}
+	if mock.Created != 2 {
+		t.Fatalf("CreateSandbox calls=%d, want collision then success", mock.Created)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var owner, entityType, status string
+	if err := db.QueryRow(`SELECT entity_name,entity_type,status FROM ip_allocations WHERE ip_address='10.20.30.2'`).Scan(&owner, &entityType, &status); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "neutron-conflict-10.20.30.2" || entityType != "EXTERNAL" || status != "RESERVED" {
+		t.Fatalf("collision reservation owner=%q type=%q status=%q", owner, entityType, status)
+	}
+	var retries int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='collision-once' AND type='IP_CONFLICT_RETRY'`).Scan(&retries); err != nil || retries != 1 {
+		t.Fatalf("retry events=%d err=%v, want exactly one", retries, err)
+	}
+}
+
+func TestProvisionConflictRetriesExhaustWithoutLeakedResources(t *testing.T) {
+	mock := &MockProvisioner{ConflictIPs: map[string]bool{
+		"10.20.30.2": true, "10.20.30.3": true, "10.20.30.4": true,
+	}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("collision-exhausted")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s, want 502", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["step"] != "ip_conflict" {
+		t.Fatalf("failure step=%v body=%s", body["step"], rec.Body.String())
+	}
+	state, _ := leaseStatus(t, "collision-exhausted")
+	if state != "FAILED" || mock.Created != 3 {
+		t.Fatalf("state=%s create calls=%d; want FAILED after 3 conflicts", state, mock.Created)
+	}
+	mock.mu.Lock()
+	serverCount, portCount := len(mock.Servers), len(mock.Ports)
+	mock.mu.Unlock()
+	if serverCount != 0 || portCount != 0 {
+		t.Fatalf("leaked resources: servers=%d ports=%d", serverCount, portCount)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var allocated int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ip_allocations WHERE entity_name='collision-exhausted' AND status='ALLOCATED'`).Scan(&allocated); err != nil {
+		t.Fatal(err)
+	}
+	if allocated != 0 {
+		t.Fatalf("left %d allocated IP leases after exhausting conflicts", allocated)
+	}
+}
+
+func TestProvisionSkipsIPsAlreadyPresentInNeutron(t *testing.T) {
+	mock := &MockProvisioner{Ports: []SandboxPort{{ID: "untracked-port", FixedIPs: []string{"10.20.30.2"}}}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("existing-neutron-ip")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response provisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.FixedIP == "10.20.30.2" {
+		t.Fatalf("allocator selected IP already present in Neutron: %s", response.FixedIP)
+	}
+}
+
+func TestConcurrentProvisioningWithNeutronConflictsUsesUniqueIPs(t *testing.T) {
+	conflicts := make(map[string]bool)
+	for i := 2; i <= 4; i++ {
+		conflicts[fmt.Sprintf("10.20.30.%d", i)] = true
+	}
+	mock := &MockProvisioner{ConflictIPs: conflicts}
+	provisionTestSetup(t, mock)
+	provisionTimeout = 5 * time.Second
+	const count = 8
+	var wg sync.WaitGroup
+	errs := make(chan string, count)
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := callProvision(fmt.Sprintf("collision-parallel-%02d", i))
+			if rec.Code != http.StatusCreated {
+				errs <- rec.Body.String()
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for message := range errs {
+		t.Errorf("parallel provision failed: %s", message)
+	}
+	ips := make(map[string]string)
+	for i := 0; i < count; i++ {
+		team := fmt.Sprintf("collision-parallel-%02d", i)
+		state, ip := leaseStatus(t, team)
+		if state != "ACTIVE" {
+			t.Errorf("%s status=%s", team, state)
+		}
+		if previous, exists := ips[ip]; exists {
+			t.Errorf("%s and %s share IP %s", previous, team, ip)
+		}
+		ips[ip] = team
+	}
+}
+
 func TestConfigureHealthProbeTimeout(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_TIMEOUT_SECONDS", "")
 	if err := configureHealthProbeTimeout(); err != nil {
@@ -240,12 +372,6 @@ func TestConfigureHealthProbeTimeout(t *testing.T) {
 func TestConfigureHealthProbeMode(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_MODE", "")
 	t.Setenv("PROVISIONER", "")
-	if err := configureHealthProbe(); err != nil {
-		t.Fatal(err)
-	}
-	if healthProbeMode != "direct" {
-		t.Fatalf("default mode=%q, want direct", healthProbeMode)
-	}
 	t.Setenv("HEALTH_PROBE_MODE", "unsupported")
 	if err := configureHealthProbe(); err == nil {
 		t.Fatal("expected invalid mode to fail")
@@ -262,6 +388,147 @@ func TestConfigureHealthProbeMode(t *testing.T) {
 	ok, result := runHealthProbe(context.Background(), "not-an-ip")
 	if !ok || result != "health probe skipped (mock provisioner)" {
 		t.Fatalf("mock skip probe=(%v,%q)", ok, result)
+	}
+}
+
+func setupGatewayProbeFixture(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	key := filepath.Join(dir, "test_key")
+	if err := os.WriteFile(key, []byte("test key material"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	inventory := filepath.Join(dir, "hosts.yml")
+	content := fmt.Sprintf(`all:
+  vars:
+    ansible_user: test-user
+    ansible_ssh_private_key_file: %s
+  children:
+    gateways:
+      hosts:
+        gw1:
+          ansible_host: 10.20.10.24
+        gw2:
+          ansible_host: 10.20.10.164
+`, key)
+	if err := os.WriteFile(inventory, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(knownHosts, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANSIBLE_INVENTORY", inventory)
+	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
+	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("FELCLOUD_KNOWN_HOSTS", knownHosts)
+	t.Setenv("BASTION_IP", "198.51.100.10")
+	t.Setenv("PROVISIONER", "openstack")
+	return dir, knownHosts
+}
+
+func TestHealthProbeDefaultsToBothGatewaysAndHonorsRequirement(t *testing.T) {
+	dir, knownHosts := setupGatewayProbeFixture(t)
+	argsLog := filepath.Join(dir, "ssh-args.log")
+	sshShim := filepath.Join(dir, "ssh")
+	shim := `#!/bin/sh
+printf '%s\n' "$*" >> "$SSH_ARGS_LOG"
+case "$*" in
+  *10.20.10.164*)
+    if [ "$SSH_FAIL_GW2" = "1" ]; then printf 503; else printf 200; fi
+    ;;
+  *) printf 200 ;;
+esac
+`
+	if err := os.WriteFile(sshShim, []byte(shim), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SSH_ARGS_LOG", argsLog)
+	t.Setenv("SSH_FAIL_GW2", "1")
+	t.Setenv("HEALTH_PROBE_MODE", "")
+	t.Setenv("HEALTH_PROBE_REQUIRE", "")
+	if err := configureHealthProbe(); err != nil {
+		t.Fatal(err)
+	}
+	if healthProbeMode != "gateway-ssh" {
+		t.Fatalf("default mode=%q, want gateway-ssh", healthProbeMode)
+	}
+	result, err := runHealthProbeAttempt(context.Background(), healthProbeMode, "10.20.30.40")
+	if err != nil || probeHTTPStatusOK(result) || result != "503" {
+		t.Fatalf("all-gateway probe=(%q,%v), want failure on gw2", result, err)
+	}
+	args, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ssh called %d times, want once per gateway: %s", len(lines), args)
+	}
+	for _, line := range lines {
+		for _, required := range []string{"-J test-user@198.51.100.10", "BatchMode=yes", "ConnectTimeout=3", "StrictHostKeyChecking=accept-new", "UserKnownHostsFile=" + knownHosts} {
+			if !strings.Contains(line, required) {
+				t.Errorf("ssh args %q missing %q", line, required)
+			}
+		}
+		if strings.Contains(line, "StrictHostKeyChecking=no") {
+			t.Errorf("unsafe SSH host-key option in args: %s", line)
+		}
+	}
+
+	if err := os.WriteFile(argsLog, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEALTH_PROBE_REQUIRE", "any")
+	if err := configureHealthProbe(); err != nil {
+		t.Fatal(err)
+	}
+	result, err = runHealthProbeAttempt(context.Background(), healthProbeMode, "10.20.30.40")
+	if err != nil || !probeHTTPStatusOK(result) || result != "200" {
+		t.Fatalf("any-gateway probe=(%q,%v), want success via gw1", result, err)
+	}
+	args, err = os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(args), "\n"); got != 2 {
+		t.Fatalf("any policy probed %d gateways, want both", got)
+	}
+}
+
+func TestHealthProbeStartupRequiresResolvableSSHSettings(t *testing.T) {
+	t.Setenv("PROVISIONER", "openstack")
+	t.Setenv("HEALTH_PROBE_MODE", "gateway-ssh")
+	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
+	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("ANSIBLE_INVENTORY", filepath.Join(t.TempDir(), "missing.yml"))
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "Ansible inventory") {
+		t.Fatalf("missing inventory error=%v, want actionable inventory error", err)
+	}
+	dir, _ := setupGatewayProbeFixture(t)
+	t.Setenv("ANSIBLE_INVENTORY", filepath.Join(dir, "hosts.yml"))
+	t.Setenv("HEALTH_PROBE_SSH_KEY", filepath.Join(dir, "missing_key"))
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "SSH key") {
+		t.Fatalf("missing key error=%v, want actionable SSH key error", err)
+	}
+	t.Setenv("HEALTH_PROBE_SSH_KEY", filepath.Join(dir, "test_key"))
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "invalid host")
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "JUMP") {
+		t.Fatalf("invalid jump error=%v, want actionable jump-host error", err)
+	}
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
+	t.Setenv("BASTION_IP", "")
+	if err := configureHealthProbe(); err == nil || !strings.Contains(err.Error(), "jump host is unresolved") {
+		t.Fatalf("missing jump error=%v, want actionable jump-host error", err)
+	}
+	t.Setenv("BASTION_IP", "198.51.100.10")
+	t.Setenv("HEALTH_PROBE_SSH_JUMP", "test-user@198.51.100.10")
+	t.Setenv("HEALTH_PROBE_MODE", "direct")
+	if err := configureHealthProbe(); err != nil || healthProbeMode != "direct" {
+		t.Fatalf("explicit direct mode=(%q,%v), want direct", healthProbeMode, err)
 	}
 }
 
@@ -291,19 +558,19 @@ func TestMockOnlyProvisioningHooks(t *testing.T) {
 }
 
 func TestLoadHealthProbeSSHConfigFromInventory(t *testing.T) {
-	t.Setenv("ANSIBLE_INVENTORY", filepath.Join("..", "ansible", "inventory", "hosts.yml"))
-	t.Setenv("HEALTH_PROBE_SSH_HOST", "")
-	t.Setenv("HEALTH_PROBE_SSH_JUMP", "")
-	t.Setenv("HEALTH_PROBE_SSH_KEY", "")
+	_, knownHosts := setupGatewayProbeFixture(t)
 	t.Setenv("BASTION_IP", "198.51.100.10")
 	cfg, err := loadHealthProbeSSHConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Host != "10.20.10.24" || cfg.User != "ansible" || cfg.Jump != "ansible@198.51.100.10" {
+	if len(cfg.Gateways) != 2 ||
+		cfg.Gateways[0] != (healthProbeGateway{Name: "gw1", Host: "10.20.10.24"}) ||
+		cfg.Gateways[1] != (healthProbeGateway{Name: "gw2", Host: "10.20.10.164"}) ||
+		cfg.User != "test-user" || cfg.Jump != "test-user@198.51.100.10" {
 		t.Fatalf("inventory SSH settings = %+v", cfg)
 	}
-	if !strings.HasSuffix(filepath.ToSlash(cfg.Key), "ansible/.ssh/id_rsa_felcloud") {
+	if filepath.Base(cfg.Key) != "test_key" || cfg.KnownHosts != knownHosts || cfg.Require != "all" {
 		t.Fatalf("inventory SSH key path=%q", cfg.Key)
 	}
 }
@@ -512,5 +779,144 @@ func TestProvisionContextCancellationDoesNotLeakResources(t *testing.T) {
 	handleProvision(rec, req)
 	if rec.Code != http.StatusGatewayTimeout && rec.Code != http.StatusBadGateway {
 		t.Fatalf("status=%d", rec.Code)
+	}
+}
+
+func TestPersistProvisioningAndResourcesRejectStateRaces(t *testing.T) {
+	provisionTestSetup(t, &MockProvisioner{})
+	lease, err := allocateProvisionLease("state-race", "state-race.cstam.felcloud.tn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistProvisioning("state-race", lease); err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET status='FAILED' WHERE sandbox_id='state-race'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	if err := persistResources("state-race", &SandboxResources{ServerID: "server", PortID: "port", FixedIP: lease.IPAddress}); err == nil {
+		t.Fatal("persistResources accepted a row that left PROVISIONING")
+	}
+	if err := persistActive("state-race", &SandboxResources{ServerID: "server", PortID: "port", FixedIP: lease.IPAddress}, 1); err == nil {
+		t.Fatal("persistActive accepted a row that left PROVISIONING")
+	}
+}
+
+func TestProvisionFailureReportsMeasuredPartialTimings(t *testing.T) {
+	provisionTestSetup(t, &MockProvisioner{})
+	gatewaySyncFunc = func(bool) (bool, string) { return false, "injected sync failure" }
+	rec := callProvision("timed-failure")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Timings map[string]int64 `json:"timings_ms"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"allocate", "port", "server_active", "health", "sync", "total"} {
+		if _, ok := body.Timings[key]; !ok {
+			t.Errorf("missing %s timing in %v", key, body.Timings)
+		}
+	}
+	if body.Timings["port"] != 11 || body.Timings["server_active"] < 22 || body.Timings["total"] < body.Timings["server_active"] {
+		t.Fatalf("partial timings are not measured: %+v", body.Timings)
+	}
+}
+
+func TestConfigureMockFailureInjection(t *testing.T) {
+	oldStep, oldPrefix, oldDelay := mockFailStep, mockFailTeamPrefix, mockProvisionDelay
+	t.Cleanup(func() { mockFailStep, mockFailTeamPrefix, mockProvisionDelay = oldStep, oldPrefix, oldDelay })
+	t.Setenv("PROVISIONER", "mock")
+	t.Setenv("MOCK_FAIL_STEP", "health")
+	t.Setenv("MOCK_FAIL_TEAM_PREFIX", "demo-")
+	t.Setenv("MOCK_PROVISION_DELAY_MS", "12")
+	if err := configureMockFailures(os.Getenv); err != nil {
+		t.Fatal(err)
+	}
+	if !mockFailureMatches("demo-team", "health") || mockFailureMatches("other-team", "health") {
+		t.Fatal("mock team-prefix failure filter is incorrect")
+	}
+	if mockProvisionDelay != 12*time.Millisecond {
+		t.Fatalf("mock delay=%s, want 12ms", mockProvisionDelay)
+	}
+	t.Setenv("MOCK_FAIL_STEP", "unexpected")
+	if err := configureMockFailures(os.Getenv); err == nil {
+		t.Fatal("invalid MOCK_FAIL_STEP was accepted")
+	}
+}
+
+func TestProvisionNameLocksAreReleasedAfterUse(t *testing.T) {
+	provisionNameLocks = newProvisionNameLockMap()
+	for i := 0; i < 1000; i++ {
+		unlock := lockProvisionName(fmt.Sprintf("lock-%d", i))
+		unlock()
+	}
+	if got := provisionNameLocks.Len(); got != 0 {
+		t.Fatalf("provision name lock map retained %d entries after use", got)
+	}
+}
+
+func TestReaperRecoversStaleProvisioningResources(t *testing.T) {
+	mock := &MockProvisioner{}
+	provisionTestSetup(t, mock)
+	lease, err := allocateProvisionLease("stale-provision", "stale-provision.cstam.felcloud.tn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistProvisioning("stale-provision", lease); err != nil {
+		t.Fatal(err)
+	}
+	resources, err := mock.CreateSandbox(context.Background(), CreateReq{Team: "stale-provision", FixedIP: lease.IPAddress})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sandboxes SET updated_at='2000-01-01 00:00:00' WHERE sandbox_id='stale-provision'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	result := reaperTick(db, nowUnix())
+	db.Close()
+	if result.FailedCount != 1 {
+		t.Fatalf("reaper result=%+v, want one recovered provisioning sandbox", result)
+	}
+	state, _ := leaseStatus(t, "stale-provision")
+	if state != "FAILED" {
+		t.Fatalf("recovered sandbox state=%s, want FAILED", state)
+	}
+	mock.mu.Lock()
+	serverPresent, portPresent := mock.Servers[resources.ServerID], false
+	for _, port := range mock.Ports {
+		portPresent = portPresent || port.ID == resources.PortID
+	}
+	mock.mu.Unlock()
+	if serverPresent || portPresent {
+		t.Fatalf("crash recovery left resources: server=%v port=%v", serverPresent, portPresent)
+	}
+	db, err = getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var leaseStatus, eventCount string
+	if err := db.QueryRow(`SELECT status FROM ip_allocations WHERE entity_name='stale-provision'`).Scan(&leaseStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='stale-provision' AND type='PROVISION_RECOVERED'`).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if leaseStatus != "QUARANTINED" || eventCount != "1" {
+		t.Fatalf("lease=%s recovery events=%s", leaseStatus, eventCount)
 	}
 }

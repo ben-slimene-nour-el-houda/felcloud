@@ -88,6 +88,44 @@ func TestGatewayConfigForHostAddsGatewayIdentityToPublicFrontends(t *testing.T) 
 	}
 }
 
+func TestGeneratedRoutesExcludeNonReadySandboxes(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, sandbox := range []struct {
+		id, ip, status string
+	}{
+		{"route-active", "10.20.30.90", "ACTIVE"},
+		{"route-provisioning", "10.20.30.91", "PROVISIONING"},
+		{"route-failed", "10.20.30.92", "FAILED"},
+		{"route-tearing-down", "10.20.30.93", "TEARING_DOWN"},
+		{"route-released", "10.20.30.94", "RELEASED"},
+	} {
+		if _, err := db.Exec(`INSERT INTO sandboxes(sandbox_id,hostname,subnet_name,private_ip,status)
+			VALUES(?,?,'sandbox',?,?)`, sandbox.id, sandbox.id+".cstam.felcloud.tn", sandbox.ip, sandbox.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	teams, err := updateAnsibleTeams()
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := generateHAProxyConfig(teams)
+	if len(teams) != 1 || teams[0].Name != "route-active" {
+		t.Fatalf("generated route entries=%+v, want only the ACTIVE sandbox", teams)
+	}
+	for _, forbidden := range []string{"route-provisioning", "route-failed", "route-tearing-down", "route-released"} {
+		if strings.Contains(config, forbidden) {
+			t.Errorf("HAProxy config contains non-ready sandbox %q:\n%s", forbidden, config)
+		}
+	}
+}
+
 func TestParseBackendStatesKeepsGatewayIdentity(t *testing.T) {
 	output := "gw1 | CHANGED | rc=0 >>\n# pxname, svname, status\nteam-a_backend, team-a_srv, UP 2/3\n\ngw2 | CHANGED | rc=0 >>\n# pxname, svname, status\nteam-a_backend, team-a_srv, DOWN 0/3\n"
 	got := parseBackendStates(output)

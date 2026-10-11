@@ -127,8 +127,20 @@ func teardownSandbox(ctx context.Context, id string) (*teardownResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.Exec(`UPDATE sandboxes SET status='TEARING_DOWN',teardown_step='mark_tearing_down',
-			teardown_started_at=COALESCE(teardown_started_at,?),updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=?`, nowUnix(), id)
+		err = transitionSandbox(tx, id, "TEARING_DOWN")
+		if err == nil {
+			var update sql.Result
+			update, err = tx.Exec(`UPDATE sandboxes SET teardown_step='mark_tearing_down',
+				teardown_started_at=COALESCE(teardown_started_at,?),updated_at=CURRENT_TIMESTAMP
+				WHERE sandbox_id=? AND status='TEARING_DOWN'`, nowUnix(), id)
+			if err == nil {
+				var changed int64
+				changed, err = update.RowsAffected()
+				if err == nil && changed == 0 {
+					err = errProvisionClaimed
+				}
+			}
+		}
 		if err == nil && !s.started.Valid {
 			recordEvent(tx, id, "TEARDOWN_STARTED", "state=TEARING_DOWN", time.Since(start).Milliseconds())
 		}

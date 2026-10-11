@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -18,10 +20,17 @@ import (
 )
 
 type healthProbeSSHConfig struct {
+	Gateways   []healthProbeGateway
+	User       string
+	Key        string
+	Jump       string
+	KnownHosts string
+	Require    string
+}
+
+type healthProbeGateway struct {
+	Name string
 	Host string
-	User string
-	Key  string
-	Jump string
 }
 
 type healthProbeInventory struct {
@@ -53,7 +62,7 @@ func configureHealthProbe() error {
 	}
 	mode := strings.TrimSpace(os.Getenv("HEALTH_PROBE_MODE"))
 	if mode == "" {
-		mode = "direct"
+		mode = "gateway-ssh"
 	}
 	if mode == "skip" {
 		if os.Getenv("PROVISIONER") != "mock" {
@@ -69,6 +78,7 @@ func configureHealthProbe() error {
 	healthProbeMode = mode
 	if mode == "direct" {
 		healthProbeSSH = healthProbeSSHConfig{}
+		log.Printf("WARNING: HEALTH_PROBE_MODE=direct requires L3 reachability to sandbox TCP 80")
 		return nil
 	}
 	settings, err := loadHealthProbeSSHConfig()
@@ -108,14 +118,24 @@ func loadHealthProbeSSHConfig() (healthProbeSSHConfig, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	address := group.Hosts[names[0]].Address
-	if address == "" {
-		address = names[0]
+	gateways := make([]healthProbeGateway, 0, len(names))
+	for _, name := range names {
+		address := strings.TrimSpace(group.Hosts[name].Address)
+		if address == "" {
+			address = name
+		}
+		if !safeSSHHostRE.MatchString(address) {
+			return healthProbeSSHConfig{}, fmt.Errorf("invalid gateway host %q in Ansible inventory", address)
+		}
+		gateways = append(gateways, healthProbeGateway{Name: name, Host: address})
+	}
+	if len(gateways) < 2 {
+		return healthProbeSSHConfig{}, fmt.Errorf("Ansible inventory must define both gateway hosts for health probing")
 	}
 	settings := healthProbeSSHConfig{
-		Host: address,
-		User: inventory.All.Vars.User,
-		Key:  inventory.All.Vars.Key,
+		Gateways: gateways,
+		User:     inventory.All.Vars.User,
+		Key:      inventory.All.Vars.Key,
 	}
 	if settings.User == "" {
 		settings.User = "ansible"
@@ -125,12 +145,9 @@ func loadHealthProbeSSHConfig() (healthProbeSSHConfig, error) {
 	} else {
 		bastion := strings.TrimSpace(os.Getenv("BASTION_IP"))
 		if bastion == "" {
-			bastion = "203.0.113.119"
+			return healthProbeSSHConfig{}, errors.New("gateway health probe jump host is unresolved: set HEALTH_PROBE_SSH_JUMP or BASTION_IP")
 		}
 		settings.Jump = settings.User + "@" + bastion
-	}
-	if host := strings.TrimSpace(os.Getenv("HEALTH_PROBE_SSH_HOST")); host != "" {
-		settings.Host = host
 	}
 	keyOverride := strings.TrimSpace(os.Getenv("HEALTH_PROBE_SSH_KEY"))
 	if keyOverride != "" {
@@ -151,11 +168,31 @@ func loadHealthProbeSSHConfig() (healthProbeSSHConfig, error) {
 	if err != nil {
 		return healthProbeSSHConfig{}, fmt.Errorf("resolve SSH key path: %w", err)
 	}
-	if !safeSSHHostRE.MatchString(settings.Host) || !safeSSHUserRE.MatchString(settings.User) {
-		return healthProbeSSHConfig{}, fmt.Errorf("invalid gateway SSH host or user")
+	keyInfo, err := os.Stat(settings.Key)
+	if err != nil || !keyInfo.Mode().IsRegular() {
+		return healthProbeSSHConfig{}, fmt.Errorf("gateway health probe SSH key %q cannot be resolved; set HEALTH_PROBE_SSH_KEY or fix ansible_ssh_private_key_file in the inventory", settings.Key)
+	}
+	if !safeSSHUserRE.MatchString(settings.User) {
+		return healthProbeSSHConfig{}, fmt.Errorf("invalid gateway SSH user in Ansible inventory")
 	}
 	if !safeJumpTarget(settings.Jump) {
-		return healthProbeSSHConfig{}, fmt.Errorf("invalid HEALTH_PROBE_SSH_JUMP")
+		return healthProbeSSHConfig{}, fmt.Errorf("invalid gateway health probe jump host; set HEALTH_PROBE_SSH_JUMP or BASTION_IP")
+	}
+	require := strings.TrimSpace(os.Getenv("HEALTH_PROBE_REQUIRE"))
+	if require == "" {
+		require = "all"
+	}
+	if require != "all" && require != "any" {
+		return healthProbeSSHConfig{}, fmt.Errorf("HEALTH_PROBE_REQUIRE must be all or any")
+	}
+	settings.Require = require
+	knownHosts := strings.TrimSpace(os.Getenv("FELCLOUD_KNOWN_HOSTS"))
+	if knownHosts == "" {
+		knownHosts = "../ansible/.ssh/known_hosts"
+	}
+	settings.KnownHosts, err = filepath.Abs(knownHosts)
+	if err != nil {
+		return healthProbeSSHConfig{}, fmt.Errorf("resolve FELCLOUD_KNOWN_HOSTS: %w", err)
 	}
 	return settings, nil
 }
@@ -198,23 +235,49 @@ func directHealthProbeAttempt(ctx context.Context, ip string) (string, error) {
 }
 
 func sshHealthProbeAttempt(ctx context.Context, ip string, cfg healthProbeSSHConfig) (string, error) {
-	if cfg.Host == "" || cfg.User == "" || cfg.Key == "" || !safeJumpTarget(cfg.Jump) {
+	if len(cfg.Gateways) < 2 || cfg.User == "" || cfg.Key == "" || cfg.KnownHosts == "" || !safeJumpTarget(cfg.Jump) {
 		return "", fmt.Errorf("gateway SSH probe is not configured")
 	}
 	remoteCommand := "curl -m 3 -s -o /dev/null -w '%{http_code}' http://" + ip + ":80/"
-	args := []string{"-i", cfg.Key, "-J", cfg.Jump, "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", "--", cfg.User + "@" + cfg.Host, remoteCommand}
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
+	healthy := 0
+	lastFailed := ""
+	var failures []string
+	for _, gateway := range cfg.Gateways {
+		args := []string{
+			"-i", cfg.Key, "-J", cfg.Jump,
+			"-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
+			"-o", "StrictHostKeyChecking=accept-new",
+			"-o", "UserKnownHostsFile=" + cfg.KnownHosts,
+			"--", cfg.User + "@" + gateway.Host, remoteCommand,
 		}
-		return "", fmt.Errorf("SSH error: %s", message)
+		cmd := exec.CommandContext(ctx, "ssh", args...)
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			message := strings.TrimSpace(stderr.String())
+			if message == "" {
+				message = err.Error()
+			}
+			failures = append(failures, gateway.Name+": "+message)
+			lastFailed = "000"
+			continue
+		}
+		result := strings.TrimSpace(stdout.String())
+		if probeHTTPStatusOK(result) {
+			healthy++
+		} else {
+			lastFailed = result
+			failures = append(failures, gateway.Name+": HTTP "+result)
+		}
 	}
-	return strings.TrimSpace(stdout.String()), nil
+	if cfg.Require == "any" && healthy > 0 || cfg.Require == "all" && healthy == len(cfg.Gateways) {
+		return "200", nil
+	}
+	if len(failures) > 0 && lastFailed == "000" {
+		return lastFailed, fmt.Errorf("gateway SSH health probe failed: %s", strings.Join(failures, "; "))
+	}
+	return lastFailed, nil
 }
 
 func probeHTTPStatusOK(result string) bool {

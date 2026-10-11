@@ -231,8 +231,6 @@ func initEnv() {
 	teardownConcurrency = tdConcurrency
 }
 
-var provisionLimiter chan struct{}
-
 func printUsage() {
 	fmt.Println("FelCloud Resilient Gateway Control Plane CLI (Go)")
 	fmt.Println("Usage:")
