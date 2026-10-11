@@ -259,6 +259,7 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 		return false, msg, duration
 	}
 	candidateCfg := generateHAProxyConfig(teams)
+	contentSHA := generationContentSHA(candidateCfg)
 
 	if dryRun {
 		isValid, validationMsg := gatewayConfigValidator(candidateCfg)
@@ -293,15 +294,16 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
 		return false, err.Error(), duration
 	}
-
-	_, err = db.Exec("INSERT INTO config_generations (generation_id, config_snapshot, status) VALUES (?, ?, 'VALIDATED')", genID, candidateCfg)
-	db.Close()
+	activeGen, _ := gatewayStateValue(db, "active_generation")
+	_, err = db.Exec("INSERT INTO config_generations (generation_id, config_snapshot, status, source_generation, content_sha, gw1_backup, gw2_backup) VALUES (?, ?, 'VALIDATED', ?, ?, '', '')", genID, candidateCfg, activeGen, contentSHA)
 	if err != nil {
+		db.Close()
 		msg := fmt.Sprintf("Failed to record config generation: %v", err)
 		duration := time.Since(started).Milliseconds()
 		recordGatewayOperationEvent("sync_failed", trigger, msg, duration)
 		return false, msg, duration
 	}
+	db.Close()
 
 	deployment, err := gatewayDeploymentRunner(genID, candidateCfg, active, standby)
 	if err == nil {
@@ -309,11 +311,11 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 	}
 	if err != nil {
 		msg := err.Error()
-		db, _ := getDBConnection()
+		db, _ = getDBConnection()
 		if db != nil {
-			db.Exec("UPDATE config_generations SET status='FAILED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
+			_, _ = db.Exec("UPDATE config_generations SET status='FAILED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
 			recordEvent(db, "", "sync_failed", fmt.Sprintf("trigger=%s reason=%s", trigger, msg), time.Since(started).Milliseconds())
-			db.Close()
+			_ = db.Close()
 		}
 		_, _, rollbackErr := rollbackConfigWithOptions("", "auto", msg)
 		if rollbackErr != nil {
@@ -329,9 +331,12 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 	}
 	_, err = db.Exec("UPDATE config_generations SET status='COMMITTED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
 	if err == nil {
+		if err = setGatewayState(db, "active_generation", genID); err != nil {
+			recordGatewayOperationEvent("sync_failed", trigger, err.Error(), time.Since(started).Milliseconds())
+		}
 		recordEvent(db, "", "sync", fmt.Sprintf("trigger=%s reason=deploy generation=%s", trigger, genID), time.Since(started).Milliseconds())
 	}
-	db.Close()
+	_ = db.Close()
 	if err != nil {
 		duration := time.Since(started).Milliseconds()
 		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)

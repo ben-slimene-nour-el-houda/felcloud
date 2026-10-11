@@ -109,12 +109,12 @@ func TestGatewayFailoverTimeoutRestartsAndReturnsReason(t *testing.T) {
 func TestGatewayFailoverConcurrentRequestGetsConflict(t *testing.T) {
 	store := failoverTestStore(t)
 	defer store.close()
-	if !failoverMu.TryLock() {
-		t.Fatal("test could not acquire failover mutex")
+	if err := tryGatewayOp("failover-test"); err != nil {
+		t.Fatalf("test could not acquire gateway lock: %v", err)
 	}
 	recorder := httptest.NewRecorder()
 	handleGatewayFailover(store, recorder, httptest.NewRequest(http.MethodPost, "/api/gateways/failover", strings.NewReader(`{"confirm":true}`)))
-	failoverMu.Unlock()
+	releaseGatewayOp("failover-test")
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}

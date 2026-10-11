@@ -219,11 +219,11 @@ func handleGatewayFailover(store *gatewayStore, w http.ResponseWriter, r *http.R
 		errJSON(w, http.StatusBadRequest, "confirm:true required")
 		return
 	}
-	if !failoverMu.TryLock() {
-		errJSON(w, http.StatusConflict, "a gateway failover is already running")
+	if err := tryGatewayOp("failover-manual"); err != nil {
+		errJSON(w, http.StatusConflict, err.Error())
 		return
 	}
-	defer failoverMu.Unlock()
+	defer releaseGatewayOp("failover-manual")
 	result, status := performGatewayFailover(store)
 	writeJSON(w, status, result)
 }
