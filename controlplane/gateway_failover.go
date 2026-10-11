@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,20 +25,38 @@ var (
 	failoverVIPProbe      = probeFailoverVIP
 )
 
+func normalizeFailoverMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "keepalived":
+		return "keepalived", nil
+	case "haproxy-only":
+		return "haproxy-only", nil
+	default:
+		return "", errors.New("invalid failover mode: must be keepalived or haproxy-only")
+	}
+}
+
+func allowedFailoverService(mode string) string {
+	if strings.TrimSpace(mode) == "haproxy-only" {
+		return "haproxy"
+	}
+	return "keepalived"
+}
+
 type failoverResponse struct {
-	Success                 bool   `json:"success"`
-	Before                 string `json:"before"`
-	After                  string `json:"after"`
-	DowntimeMS             int64  `json:"downtime_ms"`
-	FailoverMS             int64  `json:"failover_ms,omitempty"`
-	FailedRequests         int    `json:"failed_requests,omitempty"`
-	TotalRequests          int    `json:"total_requests,omitempty"`
-	ServingGatewayBefore   string `json:"serving_gateway_before,omitempty"`
-	ServingGatewayAfter    string `json:"serving_gateway_after,omitempty"`
-	VerifiedBy             string `json:"verified_by,omitempty"`
-	Mode                   string `json:"mode,omitempty"`
-	FailbackDowntimeMS     int64  `json:"failback_downtime_ms,omitempty"`
-	Reason                 string `json:"reason,omitempty"`
+	Success              bool   `json:"success"`
+	Before               string `json:"before"`
+	After                string `json:"after"`
+	DowntimeMS           int64  `json:"downtime_ms"`
+	FailoverMS           int64  `json:"failover_ms,omitempty"`
+	FailedRequests       int    `json:"failed_requests,omitempty"`
+	TotalRequests        int    `json:"total_requests,omitempty"`
+	ServingGatewayBefore string `json:"serving_gateway_before,omitempty"`
+	ServingGatewayAfter  string `json:"serving_gateway_after,omitempty"`
+	VerifiedBy           string `json:"verified_by,omitempty"`
+	Mode                 string `json:"mode,omitempty"`
+	FailbackDowntimeMS   int64  `json:"failback_downtime_ms,omitempty"`
+	Reason               string `json:"reason,omitempty"`
 }
 
 type failoverVIPResponse struct {
@@ -127,24 +146,6 @@ func runKeepalivedCommand(gateway, action string) error {
 	return runServiceCommand(gateway, "keepalived", action)
 }
 
-func normalizeFailoverMode(mode string) (string, error) {
-	switch strings.TrimSpace(mode) {
-	case "", "keepalived":
-		return "keepalived", nil
-	case "haproxy-only":
-		return "haproxy-only", nil
-	default:
-		return "", errors.New("invalid failover mode: must be keepalived or haproxy-only")
-	}
-}
-
-func allowedFailoverService(mode string) string {
-	if strings.TrimSpace(mode) == "haproxy-only" {
-		return "haproxy"
-	}
-	return "keepalived"
-}
-
 func failoverPollDelay() time.Duration {
 	if value := strings.TrimSpace(os.Getenv("FAILOVER_POLL_MS")); value != "" {
 		if ms, err := strconv.Atoi(value); err == nil && ms > 0 && ms <= 5000 {
@@ -161,13 +162,16 @@ type failoverSample struct {
 	OK      bool
 }
 
-func performGatewayFailover(store *gatewayStore, mode string) (result failoverResponse, statusCode int) {
+func performGatewayFailover(store *gatewayStore, mode ...string) (result failoverResponse, statusCode int) {
+	selectedMode := ""
+	if len(mode) > 0 {
+		selectedMode = mode[0]
+	}
 	result = failoverResponse{Before: "unknown", After: "unknown", Mode: "keepalived", VerifiedBy: "responding-gateway-header"}
 	statusCode = http.StatusBadGateway
-	eventResult := "failed"
 	stoppedGateway := ""
 	serviceName := "keepalived"
-	if normalized, err := normalizeFailoverMode(mode); err == nil {
+	if normalized, err := normalizeFailoverMode(selectedMode); err == nil {
 		serviceName = allowedFailoverService(normalized)
 		result.Mode = normalized
 	} else {
@@ -194,7 +198,6 @@ func performGatewayFailover(store *gatewayStore, mode string) (result failoverRe
 				if statusCode != http.StatusGatewayTimeout {
 					statusCode = http.StatusBadGateway
 				}
-				eventResult = "failed"
 			} else {
 				gwCache.Invalidate()
 			}
@@ -206,7 +209,12 @@ func performGatewayFailover(store *gatewayStore, mode string) (result failoverRe
 		}
 		if store != nil && store.db != nil {
 			payload, _ := json.Marshal(result)
-			recordEvent(store.db, "", "failover", string(payload), result.DowntimeMS)
+			detail := fmt.Sprintf("from=%s to=%s result=%s", result.Before, result.After, map[bool]string{true: "success", false: "failed"}[result.Success])
+			if result.Reason != "" {
+				detail += " reason=" + result.Reason
+			}
+			detail += " " + string(payload)
+			recordEvent(store.db, "", "failover", detail, result.DowntimeMS)
 		}
 	}()
 	threshold, err := failoverThreshold()
@@ -231,8 +239,11 @@ func performGatewayFailover(store *gatewayStore, mode string) (result failoverRe
 	}
 	stoppedGateway = result.Before
 	servicePoll := make(chan struct{})
+	var servicePollOnce sync.Once
+	stopServicePoll := func() {
+		servicePollOnce.Do(func() { close(servicePoll) })
+	}
 	go func() {
-		defer close(servicePoll)
 		poll := failoverPollDelay()
 		ticker := time.NewTicker(poll)
 		defer ticker.Stop()
@@ -297,8 +308,7 @@ func performGatewayFailover(store *gatewayStore, mode string) (result failoverRe
 				result.ServingGatewayAfter = result.After
 				result.VerifiedBy = "responding-gateway-header"
 				statusCode = http.StatusOK
-				eventResult = "success"
-				close(servicePoll)
+				stopServicePoll()
 				return result, statusCode
 			}
 			if outageStarted.IsZero() {
@@ -319,7 +329,7 @@ func performGatewayFailover(store *gatewayStore, mode string) (result failoverRe
 	}
 
 timeout:
-	close(servicePoll)
+	stopServicePoll()
 	if !outageStarted.IsZero() {
 		result.DowntimeMS = time.Since(outageStarted).Milliseconds()
 	} else {

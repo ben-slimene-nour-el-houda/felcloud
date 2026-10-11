@@ -6,10 +6,10 @@ global_defs {
 
 vrrp_script check_haproxy {
     script "/usr/local/bin/check_haproxy.sh"
-    interval {{ keepalived_check_interval | default(2) }}
+    interval {{ keepalived_check_interval | default(1) }}
     weight {{ keepalived_check_weight | default(-60) }}
-    fall 2
-    rise 2
+    fall {{ keepalived_check_fall | default(1) }}
+    rise {{ keepalived_check_rise | default(2) }}
 }
 
 vrrp_instance VI_1 {
@@ -17,7 +17,7 @@ vrrp_instance VI_1 {
     interface {{ interface_resolve_edge_interface | default(edge_interface) }}
     virtual_router_id {{ virtual_router_id }}
     priority {{ keepalived_priority }}
-    advert_int 1
+    advert_int {{ keepalived_advert_int | default(1) }}
 
     authentication {
         auth_type PASS

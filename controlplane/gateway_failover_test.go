@@ -22,12 +22,30 @@ func failoverTestStore(t *testing.T) *gatewayStore {
 	return &gatewayStore{db: db}
 }
 
-func setFailoverTestHooks(t *testing.T, status ProbeResult, command func(string, string) error, probe func(*url.URL, string) failoverVIPResponse) {
+func setFailoverTestHooks(t *testing.T, status ProbeResult, command any, probe any) {
 	t.Helper()
 	oldStatus, oldCommand, oldProbe, oldInterval := failoverStatusReader, failoverCommandRunner, failoverVIPProbe, failoverPollInterval
 	failoverStatusReader = func(*gatewayStore) ProbeResult { return status }
-	failoverCommandRunner = command
-	failoverVIPProbe = func(_ context.Context, target *url.URL, host string) failoverVIPResponse { return probe(target, host) }
+	switch runner := command.(type) {
+	case func(string, string, string) error:
+		failoverCommandRunner = runner
+	case func(string, string) error:
+		failoverCommandRunner = func(gateway, service, action string) error {
+			return runner(gateway, action)
+		}
+	default:
+		t.Fatalf("unsupported failover command hook type %T", command)
+	}
+	switch probeFn := probe.(type) {
+	case func(context.Context, *url.URL, string) failoverVIPResponse:
+		failoverVIPProbe = probeFn
+	case func(*url.URL, string) failoverVIPResponse:
+		failoverVIPProbe = func(_ context.Context, target *url.URL, host string) failoverVIPResponse {
+			return probeFn(target, host)
+		}
+	default:
+		t.Fatalf("unsupported failover probe hook type %T", probe)
+	}
 	failoverPollInterval = time.Millisecond
 	t.Cleanup(func() {
 		failoverStatusReader, failoverCommandRunner, failoverVIPProbe, failoverPollInterval = oldStatus, oldCommand, oldProbe, oldInterval
