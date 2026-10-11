@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"regexp"
@@ -174,6 +175,77 @@ func persistProvisioning(team string, lease *LeaseResult) error {
 	return tx.Commit()
 }
 
+func reserveConflictingProvisionIP(team, ip string, attempt int, allocateReplacement bool) (*LeaseResult, error) {
+	db, err := getDBConnection()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`UPDATE ip_allocations
+		SET entity_name=?,entity_type='EXTERNAL',status='RESERVED',quarantined_at=NULL,quarantine_until=NULL
+		WHERE ip_address=? AND entity_name=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED'`,
+		"neutron-conflict-"+ip, ip, team)
+	if err != nil {
+		return nil, err
+	}
+	changed, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if changed != 1 {
+		return nil, fmt.Errorf("sandbox %q no longer owns allocated IP %s", team, ip)
+	}
+
+	var replacement *LeaseResult
+	if allocateReplacement {
+		var cidr, gatewayIP string
+		if err := tx.QueryRow(`SELECT cidr,gateway_ip FROM subnets WHERE name='sandbox'`).Scan(&cidr, &gatewayIP); err != nil {
+			return nil, fmt.Errorf("read sandbox subnet for conflict retry: %w", err)
+		}
+		newIP, err := findAvailableIPTx(tx, "sandbox", cidr, gatewayIP)
+		if err != nil {
+			return nil, fmt.Errorf("allocate replacement IP after Neutron conflict: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO ip_allocations(ip_address,subnet_name,entity_name,entity_type,status)
+			VALUES(?,'sandbox',?,'TEAM_SANDBOX','ALLOCATED')
+			ON CONFLICT(ip_address) DO UPDATE SET subnet_name='sandbox',entity_name=excluded.entity_name,
+			entity_type='TEAM_SANDBOX',status='ALLOCATED',quarantined_at=NULL,quarantine_until=NULL,
+			assigned_at=CURRENT_TIMESTAMP`, newIP, team); err != nil {
+			return nil, err
+		}
+		res, err := tx.Exec(`UPDATE sandboxes SET private_ip=?,fixed_ip=?,updated_at=CURRENT_TIMESTAMP
+			WHERE sandbox_id=? AND status='PROVISIONING' AND private_ip=?`, newIP, newIP, team, ip)
+		if err != nil {
+			return nil, err
+		}
+		changed, err = res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if changed != 1 {
+			return nil, errProvisionClaimed
+		}
+		replacement = &LeaseResult{SandboxID: team, Hostname: team + "." + routingDomain, IPAddress: newIP, PrivateIP: newIP, Status: "ALLOCATED", SubnetName: "sandbox"}
+	}
+	detail := fmt.Sprintf("ip=%s attempt=%d", ip, attempt)
+	if replacement != nil {
+		detail += " replacement_ip=" + replacement.IPAddress
+	} else {
+		detail += " outcome=exhausted"
+	}
+	recordEvent(tx, team, "IP_CONFLICT_RETRY", detail, 0)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return replacement, nil
+}
+
 func persistResources(team string, r *SandboxResources) error {
 	db, err := getDBConnection()
 	if err != nil {
@@ -325,7 +397,20 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 	}
 	host := team + "." + routingDomain
 	allocStart := time.Now()
-	lease, err := allocateProvisionLease(team, host)
+	ports, err := provisioner.ListSandboxPorts(ctx)
+	if err != nil {
+		provisionError(w, http.StatusBadGateway, team, "list_neutron_ports", err)
+		return
+	}
+	excludedIPs := make(map[string]bool)
+	for _, port := range ports {
+		for _, ip := range port.FixedIPs {
+			if validIPv4Address(ip) {
+				excludedIPs[ip] = true
+			}
+		}
+	}
+	lease, err := allocateProvisionLeaseExcluding(team, host, excludedIPs)
 	allocMs := time.Since(allocStart).Milliseconds()
 	if err != nil {
 		provisionError(w, 409, team, "allocate", err)
@@ -364,9 +449,31 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 		return
 	}
 	req.SandboxID = team
-	req.FixedIP = lease.IPAddress
-	created, err := provisioner.CreateSandbox(ctx, req)
 	portMs := int64(0)
+	const maxFixedIPConflictAttempts = 3
+	conflicts := 0
+	var created *SandboxResources
+	for {
+		req.FixedIP = lease.IPAddress
+		created, err = provisioner.CreateSandbox(ctx, req)
+		if !errors.Is(err, ErrFixedIPInUse) {
+			break
+		}
+		conflicts++
+		retry := conflicts < maxFixedIPConflictAttempts
+		log.Printf("Neutron fixed IP conflict for sandbox %s at %s; attempt %d/%d", team, lease.IPAddress, conflicts, maxFixedIPConflictAttempts)
+		nextLease, reserveErr := reserveConflictingProvisionIP(team, lease.IPAddress, conflicts, retry)
+		if reserveErr != nil {
+			fail(http.StatusBadGateway, "ip_conflict", errors.Join(err, reserveErr))
+			return
+		}
+		if !retry {
+			fail(http.StatusBadGateway, "ip_conflict", fmt.Errorf("Neutron rejected %d fixed IPs; retries exhausted: %w", conflicts, ErrFixedIPInUse))
+			return
+		}
+		lease = nextLease
+		resources = &SandboxResources{FixedIP: lease.IPAddress}
+	}
 	if created != nil {
 		resources = created
 		portMs = created.PortDurationMS

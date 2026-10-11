@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,6 +31,7 @@ type Provisioner interface {
 }
 
 var ErrOpenStackNotFound = errors.New("OpenStack resource not found")
+var ErrFixedIPInUse = errors.New("Neutron fixed IP is already in use")
 
 type SandboxPort struct {
 	ID       string   `json:"id"`
@@ -65,17 +67,18 @@ type ProvisionConfig struct {
 }
 
 type MockProvisioner struct {
-	mu        sync.Mutex
-	CreateErr error
-	Created   int
-	Statuses  []string
-	StatusErr error
-	Deleted   []string
-	NextIP    func() string
-	Calls     map[string]int
-	Failures  map[string]map[int]error
-	Servers   map[string]bool
-	Ports     []SandboxPort
+	mu          sync.Mutex
+	CreateErr   error
+	ConflictIPs map[string]bool
+	Created     int
+	Statuses    []string
+	StatusErr   error
+	Deleted     []string
+	NextIP      func() string
+	Calls       map[string]int
+	Failures    map[string]map[int]error
+	Servers     map[string]bool
+	Ports       []SandboxPort
 }
 
 func (m *MockProvisioner) failLocked(step string) error {
@@ -102,15 +105,20 @@ func (m *MockProvisioner) CreateSandbox(_ context.Context, req CreateReq) (*Sand
 		m.mu.Unlock()
 		return nil, err
 	}
+	if m.ConflictIPs[req.FixedIP] {
+		m.mu.Unlock()
+		return nil, ErrFixedIPInUse
+	}
+	createErr := m.CreateErr
 	m.mu.Unlock()
-	if m.CreateErr != nil {
-		return nil, m.CreateErr
+	if createErr != nil {
+		return nil, createErr
 	}
 	ip := req.FixedIP
 	if ip == "" {
 		ip = "10.20.30.10"
 	}
-	if m.NextIP != nil {
+	if req.FixedIP == "" && m.NextIP != nil {
 		ip = m.NextIP()
 	}
 	serverID, portID := "mock-server-"+req.Team, "mock-port-"+req.Team
@@ -450,6 +458,9 @@ func (p *OpenStackProvisioner) CreateSandbox(ctx context.Context, req CreateReq)
 	pr := ports.Create(ctx, p.network, ports.CreateOpts{NetworkID: p.cfg.NetworkID, Name: "sandbox-" + req.Team, AdminStateUp: &up, FixedIPs: []map[string]string{{"subnet_id": p.cfg.SubnetID, "ip_address": req.FixedIP}}, SecurityGroups: &sec})
 	port, err := pr.Extract()
 	if err != nil {
+		if gophercloud.ResponseCodeIs(err, http.StatusConflict) || strings.Contains(strings.ToLower(err.Error()), "ipaddressinuse") {
+			return nil, fmt.Errorf("%w: %v", ErrFixedIPInUse, err)
+		}
 		return nil, fmt.Errorf("create neutron port: %w", err)
 	}
 	portDuration := time.Since(portStart).Milliseconds()

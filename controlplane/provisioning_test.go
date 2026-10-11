@@ -217,6 +217,137 @@ func TestProvisionIdempotencyAndNameValidation(t *testing.T) {
 	}
 }
 
+func TestProvisionRetriesNeutronFixedIPConflicts(t *testing.T) {
+	mock := &MockProvisioner{ConflictIPs: map[string]bool{"10.20.30.2": true}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("collision-once")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s, want 201 after retry", rec.Code, rec.Body.String())
+	}
+	var response provisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.FixedIP == "10.20.30.2" {
+		t.Fatalf("provision reused conflicting IP %s", response.FixedIP)
+	}
+	if mock.Created != 2 {
+		t.Fatalf("CreateSandbox calls=%d, want collision then success", mock.Created)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var owner, entityType, status string
+	if err := db.QueryRow(`SELECT entity_name,entity_type,status FROM ip_allocations WHERE ip_address='10.20.30.2'`).Scan(&owner, &entityType, &status); err != nil {
+		t.Fatal(err)
+	}
+	if owner != "neutron-conflict-10.20.30.2" || entityType != "EXTERNAL" || status != "RESERVED" {
+		t.Fatalf("collision reservation owner=%q type=%q status=%q", owner, entityType, status)
+	}
+	var retries int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE sandbox_id='collision-once' AND type='IP_CONFLICT_RETRY'`).Scan(&retries); err != nil || retries != 1 {
+		t.Fatalf("retry events=%d err=%v, want exactly one", retries, err)
+	}
+}
+
+func TestProvisionConflictRetriesExhaustWithoutLeakedResources(t *testing.T) {
+	mock := &MockProvisioner{ConflictIPs: map[string]bool{
+		"10.20.30.2": true, "10.20.30.3": true, "10.20.30.4": true,
+	}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("collision-exhausted")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s, want 502", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["step"] != "ip_conflict" {
+		t.Fatalf("failure step=%v body=%s", body["step"], rec.Body.String())
+	}
+	state, _ := leaseStatus(t, "collision-exhausted")
+	if state != "FAILED" || mock.Created != 3 {
+		t.Fatalf("state=%s create calls=%d; want FAILED after 3 conflicts", state, mock.Created)
+	}
+	mock.mu.Lock()
+	serverCount, portCount := len(mock.Servers), len(mock.Ports)
+	mock.mu.Unlock()
+	if serverCount != 0 || portCount != 0 {
+		t.Fatalf("leaked resources: servers=%d ports=%d", serverCount, portCount)
+	}
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var allocated int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM ip_allocations WHERE entity_name='collision-exhausted' AND status='ALLOCATED'`).Scan(&allocated); err != nil {
+		t.Fatal(err)
+	}
+	if allocated != 0 {
+		t.Fatalf("left %d allocated IP leases after exhausting conflicts", allocated)
+	}
+}
+
+func TestProvisionSkipsIPsAlreadyPresentInNeutron(t *testing.T) {
+	mock := &MockProvisioner{Ports: []SandboxPort{{ID: "untracked-port", FixedIPs: []string{"10.20.30.2"}}}}
+	provisionTestSetup(t, mock)
+	rec := callProvision("existing-neutron-ip")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response provisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.FixedIP == "10.20.30.2" {
+		t.Fatalf("allocator selected IP already present in Neutron: %s", response.FixedIP)
+	}
+}
+
+func TestConcurrentProvisioningWithNeutronConflictsUsesUniqueIPs(t *testing.T) {
+	conflicts := make(map[string]bool)
+	for i := 2; i <= 4; i++ {
+		conflicts[fmt.Sprintf("10.20.30.%d", i)] = true
+	}
+	mock := &MockProvisioner{ConflictIPs: conflicts}
+	provisionTestSetup(t, mock)
+	provisionTimeout = 5 * time.Second
+	const count = 8
+	var wg sync.WaitGroup
+	errs := make(chan string, count)
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := callProvision(fmt.Sprintf("collision-parallel-%02d", i))
+			if rec.Code != http.StatusCreated {
+				errs <- rec.Body.String()
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for message := range errs {
+		t.Errorf("parallel provision failed: %s", message)
+	}
+	ips := make(map[string]string)
+	for i := 0; i < count; i++ {
+		team := fmt.Sprintf("collision-parallel-%02d", i)
+		state, ip := leaseStatus(t, team)
+		if state != "ACTIVE" {
+			t.Errorf("%s status=%s", team, state)
+		}
+		if previous, exists := ips[ip]; exists {
+			t.Errorf("%s and %s share IP %s", previous, team, ip)
+		}
+		ips[ip] = team
+	}
+}
+
 func TestConfigureHealthProbeTimeout(t *testing.T) {
 	t.Setenv("HEALTH_PROBE_TIMEOUT_SECONDS", "")
 	if err := configureHealthProbeTimeout(); err != nil {

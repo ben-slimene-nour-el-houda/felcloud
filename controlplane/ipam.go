@@ -472,6 +472,10 @@ func uint32ToIP(n uint32) net.IP {
 }
 
 func findAvailableIPTx(q DBQueryer, subnetName string, cidr string, gatewayIP string) (string, error) {
+	return findAvailableIPTxExcluding(q, subnetName, cidr, gatewayIP, nil)
+}
+
+func findAvailableIPTxExcluding(q DBQueryer, subnetName string, cidr string, gatewayIP string, excluded map[string]bool) (string, error) {
 	// Parse subnet CIDR dynamically using net.ParseCIDR
 	ipParsed, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -488,7 +492,7 @@ func findAvailableIPTx(q DBQueryer, subnetName string, cidr string, gatewayIP st
 		var freeIP string
 		for rowsFree.Next() {
 			if err := rowsFree.Scan(&freeIP); err == nil && freeIP != "" {
-				if parsedFree := net.ParseIP(freeIP); parsedFree != nil && ipnet.Contains(parsedFree) {
+				if parsedFree := net.ParseIP(freeIP); parsedFree != nil && ipnet.Contains(parsedFree) && !excluded[freeIP] {
 					rowsFree.Close()
 					return freeIP, nil
 				}
@@ -526,7 +530,7 @@ func findAvailableIPTx(q DBQueryer, subnetName string, cidr string, gatewayIP st
 		if candIP == gatewayIP {
 			continue
 		}
-		if activeOrQuarantined[candIP] {
+		if activeOrQuarantined[candIP] || excluded[candIP] {
 			continue
 		}
 		return candIP, nil
@@ -572,10 +576,18 @@ func allocateLeaseTTL(sandboxID, hostname, subnetName, preferredIP string, ttlSe
 }
 
 func allocateProvisionLease(sandboxID, hostname string) (*LeaseResult, error) {
-	return allocateLeaseTTLState(sandboxID, hostname, "sandbox", "", 0, "PROVISIONING")
+	return allocateProvisionLeaseExcluding(sandboxID, hostname, nil)
+}
+
+func allocateProvisionLeaseExcluding(sandboxID, hostname string, excluded map[string]bool) (*LeaseResult, error) {
+	return allocateLeaseTTLStateExcluding(sandboxID, hostname, "sandbox", "", 0, "PROVISIONING", excluded)
 }
 
 func allocateLeaseTTLState(sandboxID, hostname, subnetName, preferredIP string, ttlSeconds int64, sandboxState string) (*LeaseResult, error) {
+	return allocateLeaseTTLStateExcluding(sandboxID, hostname, subnetName, preferredIP, ttlSeconds, sandboxState, nil)
+}
+
+func allocateLeaseTTLStateExcluding(sandboxID, hostname, subnetName, preferredIP string, ttlSeconds int64, sandboxState string, excluded map[string]bool) (*LeaseResult, error) {
 	if sandboxState != "ACTIVE" && sandboxState != "PROVISIONING" {
 		return nil, fmt.Errorf("unsupported initial sandbox state %q", sandboxState)
 	}
@@ -661,7 +673,7 @@ func allocateLeaseTTLState(sandboxID, hostname, subnetName, preferredIP string, 
 
 	targetIP := preferredIP
 	if targetIP == "" {
-		ipFound, err := findAvailableIPTx(tx, subnetName, cidr, gatewayIP)
+		ipFound, err := findAvailableIPTxExcluding(tx, subnetName, cidr, gatewayIP, excluded)
 		if err != nil {
 			return nil, err
 		}
