@@ -19,7 +19,7 @@ import (
 const defaultFailoverThreshold = 3000 * time.Millisecond
 
 var (
-	failoverPollInterval  = 75 * time.Millisecond
+	failoverPollInterval  = 50 * time.Millisecond
 	failoverStatusReader  = liveFailoverStatus
 	failoverCommandRunner = runServiceCommand
 	failoverVIPProbe      = probeFailoverVIP
@@ -184,6 +184,8 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 	var lastOKBeforeStop time.Time
 	var failoverAt time.Time
 	var failedRequests, totalRequests int
+	var downtimeMS int64
+	var sawFailureSinceStop bool
 	var sampleCh = make(chan failoverSample, 32)
 	probeTarget, probeHost, targetErr := failoverProbeTarget()
 	if targetErr != nil {
@@ -231,12 +233,7 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 	}
 	result.ServingGatewayBefore = result.Before
 	result.ServingGatewayAfter = result.After
-	probeCtx, probeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	probe := failoverVIPProbe(probeCtx, probeTarget, probeHost)
-	probeCancel()
-	if probe.Err == nil && probe.Status >= 200 && probe.Status < 400 && probe.Gateway != "" && allowedGateways[probe.Gateway] {
-		lastOKBeforeStop = time.Now()
-	}
+
 	stoppedGateway = result.Before
 	servicePoll := make(chan struct{})
 	var servicePollOnce sync.Once
@@ -245,9 +242,12 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 	}
 	go func() {
 		poll := failoverPollDelay()
-		ticker := time.NewTicker(poll)
-		defer ticker.Stop()
 		for {
+			select {
+			case <-servicePoll:
+				return
+			default:
+			}
 			probeCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			probe := failoverVIPProbe(probeCtx, probeTarget, probeHost)
 			cancel()
@@ -257,17 +257,13 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 			default:
 			}
 			select {
-			case <-servicePoll:
-				return
-			default:
-			}
-			select {
 			case <-time.After(poll):
 			case <-servicePoll:
 				return
 			}
 		}
 	}()
+
 	stopIssuedAt = time.Now()
 	if err := failoverCommandRunner(stoppedGateway, serviceName, "stop"); err != nil {
 		result.Reason = "could not stop " + serviceName + ": " + err.Error()
@@ -280,29 +276,35 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 			totalRequests++
 			if !sample.OK {
 				failedRequests++
+				if sample.TS.After(stopIssuedAt) || sample.TS.Equal(stopIssuedAt) {
+					sawFailureSinceStop = true
+				}
 				if outageStarted.IsZero() {
 					outageStarted = sample.TS
 				}
 				continue
 			}
-			if lastOKBeforeStop.IsZero() {
+			if !lastOKBeforeStop.IsZero() && sample.TS.After(stopIssuedAt) && sawFailureSinceStop {
+				gap := sample.TS.Sub(lastOKBeforeStop).Milliseconds()
+				if gap > downtimeMS {
+					downtimeMS = gap
+				}
+			}
+			if lastOKBeforeStop.IsZero() || sample.TS.Before(stopIssuedAt) {
 				lastOKBeforeStop = sample.TS
 			}
-			if sample.Gateway != result.Before {
+			if sample.Gateway != result.Before && sample.Status >= 200 && sample.Status < 400 {
 				if failoverAt.IsZero() {
 					failoverAt = sample.TS
 				}
 				result.After = sample.Gateway
 				result.Success = true
 				result.Reason = ""
-				result.DowntimeMS = 0
-				if !lastOKBeforeStop.IsZero() && sample.TS.After(lastOKBeforeStop) {
-					result.DowntimeMS = sample.TS.Sub(lastOKBeforeStop).Milliseconds()
-				}
 				result.FailoverMS = failoverAt.Sub(stopIssuedAt).Milliseconds()
 				if result.FailoverMS < 0 {
 					result.FailoverMS = 0
 				}
+				result.DowntimeMS = downtimeMS
 				result.FailedRequests = failedRequests
 				result.TotalRequests = totalRequests
 				result.ServingGatewayAfter = result.After
@@ -314,12 +316,6 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 			if outageStarted.IsZero() {
 				outageStarted = sample.TS
 			}
-			if !failoverAt.IsZero() {
-				result.FailoverMS = failoverAt.Sub(startedAt).Milliseconds()
-				if result.FailoverMS < 0 {
-					result.FailoverMS = 0
-				}
-			}
 		default:
 			if time.Now().After(deadline) {
 				goto timeout
@@ -330,10 +326,9 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 
 timeout:
 	stopServicePoll()
-	if !outageStarted.IsZero() {
+	result.DowntimeMS = downtimeMS
+	if result.DowntimeMS == 0 && !outageStarted.IsZero() {
 		result.DowntimeMS = time.Since(outageStarted).Milliseconds()
-	} else {
-		result.DowntimeMS = time.Since(startedAt).Milliseconds()
 	}
 	result.FailedRequests = failedRequests
 	result.TotalRequests = totalRequests

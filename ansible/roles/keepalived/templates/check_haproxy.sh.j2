@@ -117,9 +117,8 @@ if not servers:
 all_down = all(status == "DOWN" for _, _, status in servers)
 raise SystemExit(1 if all_down else 0)
 PY
-    then
-        exit $?
-    fi
+    result=$?
+    exit "$result"
 fi
 
 exit 0

@@ -44,6 +44,37 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(REPORT.percentile(list(range(1, 11)), 0.50), 5)
         self.assertEqual(REPORT.percentile(list(range(1, 21)), 0.95), 19)
 
+    def test_failover_schema_accepts_fake_api_payload(self):
+        failover = {
+            "runs": [{
+                "mode": "haproxy-only",
+                "failover_ms": 125,
+                "failed_requests": 2,
+                "total_requests": 100,
+                "serving_gateway_before": "gw1",
+                "serving_gateway_after": "gw2",
+                "verified_by": "responding-gateway-header",
+            }],
+            "date": "2026-10-10T12:00:00Z",
+            "commit": "abc1234",
+        }
+        stress = {
+            "mode": "live", "date_utc": "2026-10-10T00:00:00Z", "git_commit": "abc",
+            "config": {"teams": 1, "concurrency": 1}, "teams": [], "aggregates": {},
+        }
+        recycle = {
+            "mode": "live", "date_utc": "2026-10-10T00:00:00Z", "git_commit": "abc",
+            "config": {"quarantine_cooldown_seconds": 60}, "cycles": [],
+        }
+        stress_path = Path(self.temp.name) / "stress.json"
+        recycle_path = Path(self.temp.name) / "recycle.json"
+        failover_path = Path(self.temp.name) / "failover.json"
+        stress_path.write_text(json.dumps(stress), encoding="utf-8")
+        recycle_path.write_text(json.dumps(recycle), encoding="utf-8")
+        failover_path.write_text(json.dumps(failover), encoding="utf-8")
+        REPORT.validate_failover(failover)
+        self.assertTrue(REPORT.check_inputs(stress_path, recycle_path, failover_path, True))
+
     def test_small_sample_warns_and_uses_max_instead_of_p95(self):
         result = REPORT.stats([1, 2, 3, 4, 5, 6, 7, 8, 9])
         self.assertEqual(result["p95"], None)

@@ -1,214 +1,165 @@
 #!/usr/bin/env bash
-# Measures an actual VIP failover by stopping Keepalived on its live holder.
+# Runs a measured failover against the control plane API and records the result.
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GATEWAY_API_BASE_URL="${GATEWAY_API_BASE_URL:-${CONTROL_PLANE_BASE_URL:-}}"
-CONTROL_PLANE_TOKEN="${CONTROL_PLANE_TOKEN:-}"
-EVENTS_TOKEN="${EVENTS_TOKEN:-}"
-VIP_IP="${VIP_IP:-${VIP_ADDRESS:-10.20.20.246}}"
-TARGET_URL="${FAILOVER_PROBE_URL:-${TARGET_URL:-http://${VIP_IP}/}}"
-TEST_HOST_HEADER="${FAILOVER_PROBE_HOST:-${TEST_HOST_HEADER:-team1.${ROUTING_DOMAIN:-cstam.felcloud.tn}}}"
-ANSIBLE_INVENTORY="${ANSIBLE_INVENTORY:-$ROOT_DIR/ansible/inventory/hosts.yml}"
+API_URL="${API_URL:-${GATEWAY_API_BASE_URL:-${CONTROL_PLANE_BASE_URL:-http://localhost:8081}}}"
+ADMIN_TOKEN="${ADMIN_TOKEN:-${CONTROL_PLANE_TOKEN:-}}"
+FAILURE_MODE="${FAILURE_MODE:-haproxy-only}"
+RUNS="${RUNS:-3}"
+PAUSE_SECONDS="${PAUSE_SECONDS:-20}"
 FAILOVER_THRESHOLD_MS="${FAILOVER_THRESHOLD_MS:-3000}"
-POLL_INTERVAL_MS="${POLL_INTERVAL_MS:-75}"
-REMOTE_USER="${REMOTE_USER:-ansible}"
+RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/docs/benchmarks/failover-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-FAILOVER_FROM="unknown"
-FAILOVER_TO="unknown"
-FAILOVER_RESULT="failed"
-FAILOVER_REASON=""
-DOWNTIME_MS=0
-STOPPED_GATEWAY=""
-PROBE_HEADERS=""
-if [[ ! "$POLL_INTERVAL_MS" =~ ^[0-9]{1,4}$ ]] || (( 10#$POLL_INTERVAL_MS < 1 || 10#$POLL_INTERVAL_MS > 5000 )); then
-  echo "POLL_INTERVAL_MS must be an integer from 1 to 5000." >&2
-  exit 2
-fi
-POLL_INTERVAL_MS=$((10#$POLL_INTERVAL_MS))
-if [[ ! "$REMOTE_USER" =~ ^[a-z_][a-zA-Z0-9_.-]*$ ]]; then
-  echo "REMOTE_USER contains invalid characters." >&2
-  exit 2
-fi
-if [[ ! "$TEST_HOST_HEADER" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:[0-9]{1,5})?$ ]]; then
-  echo "TEST_HOST_HEADER must be a lowercase DNS name with an optional port." >&2
+if ! [[ "$FAILURE_MODE" =~ ^(keepalived|haproxy-only)$ ]]; then
+  echo "FAILURE_MODE must be keepalived or haproxy-only" >&2
   exit 2
 fi
 
-now_ms() {
-  python3 -c 'import time; print(int(time.time() * 1000))'
-}
+if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || (( RUNS > 20 )); then
+  echo "RUNS must be an integer from 1 to 20" >&2
+  exit 2
+fi
 
-api_curl() {
-  local url="$1"
-  if [[ -n "$CONTROL_PLANE_TOKEN" ]]; then
-    curl -fsS --connect-timeout 2 --max-time 8 -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN}" "$url"
-  else
-    curl -fsS --connect-timeout 2 --max-time 8 "$url"
-  fi
-}
+if ! [[ "$PAUSE_SECONDS" =~ ^[0-9]+$ ]] || (( PAUSE_SECONDS > 300 )); then
+  echo "PAUSE_SECONDS must be an integer from 0 to 300" >&2
+  exit 2
+fi
 
-get_vip_holder() {
-  local body
-  body="$(api_curl "${GATEWAY_API_BASE_URL%/}/api/gateways/status?refresh=true")" || return 1
-  python3 -c 'import json,sys; print(json.load(sys.stdin).get("vip_holder", "unknown"))' <<<"$body"
-}
+if ! [[ "$FAILOVER_THRESHOLD_MS" =~ ^[1-9][0-9]*$ ]] || (( FAILOVER_THRESHOLD_MS > 60000 )); then
+  echo "FAILOVER_THRESHOLD_MS must be an integer from 1 to 60000" >&2
+  exit 2
+fi
 
-run_remote_keepalived() {
-  local gateway="$1" action="$2"
-  if command -v ansible >/dev/null 2>&1 && [[ -f "$ANSIBLE_INVENTORY" ]]; then
-    ansible -i "$ANSIBLE_INVENTORY" "$gateway" -m command \
-      -a "systemctl ${action} keepalived" -b \
-      --vault-password-file "$ROOT_DIR/ansible/.vault_pass"
-  else
-    ssh -o StrictHostKeyChecking=no "${REMOTE_USER}@${gateway}" \
-      "sudo systemctl ${action} keepalived"
-  fi
-}
+if [[ -z "$API_URL" ]]; then
+  echo "API_URL must be set (or GATEWAY_API_BASE_URL / CONTROL_PLANE_BASE_URL)" >&2
+  exit 2
+fi
 
-probe_vip() {
-  local status gateway
-  : >"$PROBE_HEADERS"
-  status="$(curl -sS --connect-timeout 1 --max-time 1 -D "$PROBE_HEADERS" -o /dev/null \
-    -w '%{http_code}' -H "Host: ${TEST_HOST_HEADER}" "$TARGET_URL" 2>/dev/null || true)"
-  gateway="$(awk 'tolower($1) == "x-gateway-id:" {gsub("\r", "", $2); value=$2} END {print value}' "$PROBE_HEADERS")"
-  printf '%s\t%s\n' "${status:-000}" "${gateway:-unknown}"
-}
+api_headers=()
+if [[ -n "$ADMIN_TOKEN" ]]; then
+  api_headers+=("-H" "Authorization: Bearer ${ADMIN_TOKEN}")
+fi
 
-post_failover_event() {
-  [[ -n "$GATEWAY_API_BASE_URL" ]] || return 0
+post_failover() {
   local payload
-  payload="$(python3 - "$FAILOVER_FROM" "$FAILOVER_TO" "$DOWNTIME_MS" "$FAILOVER_RESULT" "$FAILOVER_REASON" <<'PY'
+  payload="$(python3 - "$FAILURE_MODE" <<'PY'
 import json, sys
-source, target, duration, result, reason = sys.argv[1:]
-detail = f"from={source} to={target} result={result}"
-if reason:
-    detail += f" reason={reason}"
-print(json.dumps({"type": "failover", "duration_ms": int(duration), "detail": detail}))
+print(json.dumps({"confirm": True, "mode": sys.argv[1]}))
 PY
 )"
-  if [[ -n "$CONTROL_PLANE_TOKEN" ]]; then
-    curl -fsS --connect-timeout 2 --max-time 5 -X POST \
-      -H "Authorization: Bearer ${CONTROL_PLANE_TOKEN}" -H 'Content-Type: application/json' \
-      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
-      echo "WARN: could not post failover timing event" >&2
-  elif [[ -n "$EVENTS_TOKEN" ]]; then
-    curl -fsS --connect-timeout 2 --max-time 5 -X POST \
-      -H "X-Events-Token: ${EVENTS_TOKEN}" -H 'Content-Type: application/json' \
-      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
-      echo "WARN: could not post failover timing event" >&2
-  else
-    curl -fsS --connect-timeout 2 --max-time 5 -X POST -H 'Content-Type: application/json' \
-      --data "$payload" "${GATEWAY_API_BASE_URL%/}/api/gateways/events" >/dev/null || \
-      echo "WARN: could not post failover timing event" >&2
-  fi
+
+  curl -fsS --connect-timeout 2 --max-time 15 \
+    -H 'Content-Type: application/json' \
+    "${api_headers[@]}" \
+    --data "$payload" \
+    "${API_URL%/}/api/gateways/failover"
 }
 
-finish() {
-  local exit_code=$?
-  trap - EXIT
-  set +e
-  if [[ -n "$STOPPED_GATEWAY" ]]; then
-    echo "Restoring keepalived on ${STOPPED_GATEWAY}..."
-    if ! run_remote_keepalived "$STOPPED_GATEWAY" start; then
-      echo "FAIL: could not restart keepalived on ${STOPPED_GATEWAY}" >&2
-      FAILOVER_RESULT="failed"
-      FAILOVER_REASON="${FAILOVER_REASON:+${FAILOVER_REASON}; }keepalived restart failed"
-      exit_code=1
-    fi
-  fi
-  post_failover_event
-  [[ -z "$PROBE_HEADERS" ]] || rm -f "$PROBE_HEADERS"
-  exit "$exit_code"
+fetch_run_metrics() {
+  local response="$1"
+  python3 - "$response" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+required = [
+    "mode", "success", "before", "after", "downtime_ms", "failover_ms",
+    "failed_requests", "total_requests", "serving_gateway_before",
+    "serving_gateway_after", "verified_by",
+]
+missing = [key for key in required if key not in payload]
+if missing:
+    raise SystemExit(f"response missing required failover keys: {', '.join(missing)}")
+if payload["serving_gateway_before"] == payload["serving_gateway_after"]:
+    raise SystemExit("response did not verify an actual gateway transition")
+print(json.dumps({
+    "mode": payload["mode"],
+    "failover_ms": int(payload.get("failover_ms", 0) or 0),
+    "failed_requests": int(payload.get("failed_requests", 0) or 0),
+    "total_requests": int(payload.get("total_requests", 0) or 0),
+    "serving_gateway_before": payload["serving_gateway_before"],
+    "serving_gateway_after": payload["serving_gateway_after"],
+    "verified_by": payload.get("verified_by", "responding-gateway-header"),
+    "success": bool(payload.get("success", False)),
+    "reason": payload.get("reason", "")
+}, separators=(",", ":")))
+PY
 }
-trap finish EXIT
 
-if [[ -z "$GATEWAY_API_BASE_URL" ]]; then
-  FAILOVER_REASON="GATEWAY_API_BASE_URL is required to read live gateway status"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-if ! [[ "$FAILOVER_THRESHOLD_MS" =~ ^[1-9][0-9]*$ ]] || (( FAILOVER_THRESHOLD_MS > 60000 )); then
-  FAILOVER_REASON="FAILOVER_THRESHOLD_MS must be 1..60000"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-if ! [[ "$POLL_INTERVAL_MS" =~ ^[1-9][0-9]*$ ]]; then
-  FAILOVER_REASON="POLL_INTERVAL_MS must be a positive integer"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-PROBE_HEADERS="$(mktemp)"
+mkdir -p "$RESULT_DIR"
 
-echo "Reading live VIP holder from ${GATEWAY_API_BASE_URL%/}/api/gateways/status..."
-if ! FAILOVER_FROM="$(get_vip_holder)"; then
-  FAILOVER_REASON="could not read live gateway status"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-FAILOVER_TO="$FAILOVER_FROM"
-if [[ "$FAILOVER_FROM" != gw1 && "$FAILOVER_FROM" != gw2 ]]; then
-  FAILOVER_REASON="status API reported unknown VIP holder: ${FAILOVER_FROM}"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-
-baseline="$(probe_vip)"
-baseline_status="${baseline%%$'\t'*}"
-baseline_gateway="${baseline#*$'\t'}"
-if (( baseline_status < 200 || baseline_status >= 400 )) || [[ "$baseline_gateway" != "$FAILOVER_FROM" ]]; then
-  FAILOVER_REASON="baseline VIP probe was unhealthy or disagreed with status API (HTTP ${baseline_status}, header ${baseline_gateway})"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-
-STOPPED_GATEWAY="$FAILOVER_FROM"
-START_MS="$(now_ms)"
-echo "Stopping keepalived on live VIP holder ${STOPPED_GATEWAY}..."
-if ! run_remote_keepalived "$STOPPED_GATEWAY" stop; then
-  FAILOVER_REASON="failed to stop keepalived on ${STOPPED_GATEWAY}"
-  echo "FAIL: ${FAILOVER_REASON}" >&2
-  exit 1
-fi
-
-OUTAGE_START_MS=0
-RECOVERED_MS=0
-DEADLINE_MS=$(( START_MS + FAILOVER_THRESHOLD_MS ))
-while (( $(now_ms) < DEADLINE_MS )); do
-  sample="$(probe_vip)"
-  status="${sample%%$'\t'*}"
-  responding_gateway="${sample#*$'\t'}"
-  observed_ms="$(now_ms)"
-  if ! [[ "$status" =~ ^[0-9]{3}$ ]] || (( status < 200 || status >= 500 )); then
-    if (( OUTAGE_START_MS == 0 )); then OUTAGE_START_MS="$observed_ms"; fi
-  elif [[ "$responding_gateway" == "$FAILOVER_FROM" ]]; then
-    : # The original holder still answers; continue waiting for the new holder.
-  elif [[ "$responding_gateway" == gw1 || "$responding_gateway" == gw2 ]]; then
-    FAILOVER_TO="$responding_gateway"
-    RECOVERED_MS="$observed_ms"
-    break
-  else
-    if (( OUTAGE_START_MS == 0 )); then OUTAGE_START_MS="$observed_ms"; fi
+runs_json='[]'
+first_run=true
+for ((i=1;i<=RUNS;i++)); do
+  echo "[failover] run ${i}/${RUNS} with mode=${FAILURE_MODE}"
+  response="$(post_failover)"
+  metrics="$(fetch_run_metrics "$response")"
+  if ! python3 - "$metrics" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+if not payload.get("success"):
+    raise SystemExit(payload.get("reason") or "failover request was not successful")
+PY
+  then
+    echo "$metrics" >&2
+    exit 1
   fi
-  sleep "0.$(printf '%03d' "$POLL_INTERVAL_MS")"
+
+  json_value="$(python3 - "$metrics" <<'PY'
+import json, sys
+print(json.dumps(json.loads(sys.argv[1])))
+PY
+)"
+  if [[ "$first_run" == true ]]; then
+    runs_json="[$json_value]"
+    first_run=false
+  else
+    runs_json="$(python3 - "$runs_json" "$json_value" <<'PY'
+import json, sys
+runs = json.loads(sys.argv[1])
+runs.append(json.loads(sys.argv[2]))
+print(json.dumps(runs))
+PY
+)"
+  fi
+
+  if (( i < RUNS )); then
+    sleep "$PAUSE_SECONDS"
+  fi
 done
 
-if (( RECOVERED_MS > 0 )); then
-  after_holder="$(get_vip_holder || printf unknown)"
-  elapsed_ms=$(( RECOVERED_MS - START_MS ))
-  if [[ "$after_holder" == "$FAILOVER_TO" ]] && (( elapsed_ms <= FAILOVER_THRESHOLD_MS )); then
-    FAILOVER_RESULT="success"
-    if (( OUTAGE_START_MS > 0 )); then DOWNTIME_MS=$(( RECOVERED_MS - OUTAGE_START_MS )); fi
-    echo "PASS: VIP moved from ${FAILOVER_FROM} to ${FAILOVER_TO}; service resumed in ${elapsed_ms}ms (downtime ${DOWNTIME_MS}ms)."
-    exit 0
-  fi
-  FAILOVER_TO="$after_holder"
-  FAILOVER_REASON="HTTP responder changed to ${responding_gateway}, but live status reports ${after_holder} or threshold was exceeded (${elapsed_ms}ms)"
-else
-  now="$(now_ms)"
-  if (( OUTAGE_START_MS > 0 )); then DOWNTIME_MS=$(( now - OUTAGE_START_MS )); fi
-  FAILOVER_REASON="VIP did not move to a different responding gateway within ${FAILOVER_THRESHOLD_MS}ms"
+payload="$(python3 - "$runs_json" <<'PY'
+import json, sys
+runs = json.loads(sys.argv[1])
+for run in runs:
+    run["mode"] = run.get("mode", "haproxy-only")
+    if run["mode"] not in {"haproxy-only", "keepalived", "gateway-reboot"}:
+        raise SystemExit(f"unsupported failover mode: {run['mode']}")
+    if run["total_requests"] < 1 or run["failed_requests"] > run["total_requests"]:
+        raise SystemExit("total_requests must be >= 1 and failed_requests <= total_requests")
+    if run["serving_gateway_before"] == run["serving_gateway_after"]:
+        raise SystemExit("gateway before/after must differ")
+    if run.get("verified_by") not in {"responding-gateway-header", "vip-owner"}:
+        raise SystemExit("verified_by must be responding-gateway-header or vip-owner")
+print(json.dumps({
+    "runs": runs,
+    "date": __import__('datetime').datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+    "commit": __import__('subprocess').check_output(['git', '-C', __import__('os').path.dirname(__import__('os').path.dirname(__import__('os').path.abspath(__file__))), 'rev-parse', '--short', 'HEAD'], text=True).strip(),
+}, separators=(",", ":")))
+PY
+)"
+
+printf '%s\n' "$payload" > "$RESULT_DIR/results.json"
+
+max_ms="$(python3 - "$payload" <<'PY'
+import json, sys
+payload = json.loads(sys.argv[1])
+values = [run["failover_ms"] for run in payload["runs"]]
+print(max(values) if values else 0)
+PY
+)"
+if (( max_ms > FAILOVER_THRESHOLD_MS )); then
+  echo "FAIL: max failover_ms=${max_ms} exceeds threshold ${FAILOVER_THRESHOLD_MS}ms" >&2
+  exit 1
 fi
 
-echo "FAIL: ${FAILOVER_REASON} (before=${FAILOVER_FROM}, after=${FAILOVER_TO}, downtime=${DOWNTIME_MS}ms)" >&2
-exit 1
+cat "$RESULT_DIR/results.json"
