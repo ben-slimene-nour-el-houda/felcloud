@@ -1,0 +1,194 @@
+
+===== health-no-token =====
+{"db":"OK","source":"controlplane-gateway","status":"UP","timestamp":"2026-10-11T10:57:00Z"}
+
+HTTP_STATUS=200
+
+===== sandboxes-no-token =====
+{"error":"unauthorized"}
+
+HTTP_STATUS=401
+
+===== sandboxes-wrong-token =====
+{"error":"unauthorized"}
+
+HTTP_STATUS=401
+
+===== provision-a =====
+{"sandbox_id":"audit-a","team":"audit-a","fixed_ip":"10.20.30.2","server_id":"mock-server-audit-a","port_id":"mock-port-audit-a","hostname":"audit-a.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":13,"health":0,"port":11,"server_active":22,"sync":0,"total":60}}
+
+HTTP_STATUS=201
+
+===== provision-a-repeat =====
+{"sandbox_id":"audit-a","team":"audit-a","fixed_ip":"10.20.30.2","server_id":"mock-server-audit-a","port_id":"mock-port-audit-a","hostname":"audit-a.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":0,"health":0,"port":0,"server_active":0,"sync":0,"total":0}}
+
+HTTP_STATUS=200
+
+===== invalid-name =====
+{"error":"team must be a lowercase DNS label of 1-63 characters","sandbox_id":"Bad_Name","step":"validate","timings_ms":{"allocate":0,"health":0,"port":0,"server_active":0,"sync":0,"total":0}}
+
+HTTP_STATUS=400
+
+===== unknown-json =====
+{"error":"invalid request payload","sandbox_id":"","step":"decode","timings_ms":{"allocate":0,"health":0,"port":0,"server_active":0,"sync":0,"total":0}}
+
+HTTP_STATUS=400
+
+===== oversized =====
+{"error":"invalid request payload","sandbox_id":"","step":"decode","timings_ms":{"allocate":0,"health":0,"port":0,"server_active":0,"sync":0,"total":0}}
+
+HTTP_STATUS=400
+
+===== list-sandboxes =====
+{"count":1,"sandboxes":[{"created_at":"2026-10-11T10:57:00Z","expires_at":1791730620,"hostname":"audit-a.cstam.felcloud.tn","id":1,"private_ip":"10.20.30.2","sandbox_id":"audit-a","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:00Z"}]}
+
+HTTP_STATUS=200
+
+===== list-leases =====
+{"count":12,"leases":[{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":6,"ip_address":"10.20.20.177","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":5,"ip_address":"10.20.20.190","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"keepalived-vip","entity_type":"VIP","id":7,"ip_address":"10.20.20.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":4,"ip_address":"10.20.20.82","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":2,"ip_address":"10.20.10.164","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":1,"ip_address":"10.20.10.24","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":3,"ip_address":"10.20.10.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team2","entity_type":"TEAM_SANDBOX","id":11,"ip_address":"10.20.30.192","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:00","entity_name":"audit-a","entity_type":"TEAM_SANDBOX","id":45,"ip_address":"10.20.30.2","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":9,"ip_address":"10.20.30.224","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team1","entity_type":"TEAM_SANDBOX","id":10,"ip_address":"10.20.30.70","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":8,"ip_address":"10.20.30.86","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"}]}
+
+HTTP_STATUS=200
+
+===== list-events =====
+[{"detail":"success","duration_ms":0,"id":9,"sandbox_id":"audit-a","ts_ms":1791716220613,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":8,"sandbox_id":"audit-a","ts_ms":1791716220606,"type":"ACTIVE"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":7,"sandbox_id":"audit-a","ts_ms":1791716220593,"type":"HEALTH_OK"},{"detail":"mock-server-audit-a","duration_ms":22,"id":6,"sandbox_id":"audit-a","ts_ms":1791716220590,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-a","duration_ms":11,"id":5,"sandbox_id":"audit-a","ts_ms":1791716220589,"type":"PORT_CREATED"},{"detail":"ip=10.20.30.2","duration_ms":0,"id":4,"sandbox_id":"audit-a","ts_ms":1791716220580,"type":"PROVISION_STARTED"},{"detail":"ip=10.20.30.2","duration_ms":0,"id":3,"sandbox_id":"audit-a","ts_ms":1791716220568,"type":"allocated"},{"detail":"trigger=manual reason=operator request result=failed error=committed rollback snapshot not found: sql: no rows in result set","duration_ms":3,"id":2,"sandbox_id":"","ts_ms":1791716074059,"type":"rollback"},{"detail":"trigger=manual reason=baseline gateway health failed: gw1 HAProxy is not active","duration_ms":2020,"id":1,"sandbox_id":"","ts_ms":1791716073830,"type":"sync_failed"}]
+
+HTTP_STATUS=200
+
+===== generations =====
+{"count":0,"generations":[]}
+
+HTTP_STATUS=200
+
+===== extend-ok =====
+{"expires_at":1791730680,"sandbox_id":"audit-a","success":true,"ttl_remaining_seconds":14459}
+
+HTTP_STATUS=200
+
+===== extend-too-small =====
+{"error":"extend_seconds must be at least 60"}
+
+HTTP_STATUS=400
+
+===== extend-over-cap =====
+{"error":"Requested extension exceeds maximum TTL cap"}
+
+HTTP_STATUS=422
+
+===== teardown-a =====
+{"sandbox_id":"audit-a","state":"RELEASED","timings_ms":{"delete_port":0,"delete_server":0,"mark_tearing_down":9,"release_lease":0,"remove_route":0,"total":15,"verify_gone":0}}
+
+HTTP_STATUS=200
+
+===== lease-after-teardown =====
+{"count":12,"leases":[{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":6,"ip_address":"10.20.20.177","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":5,"ip_address":"10.20.20.190","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"keepalived-vip","entity_type":"VIP","id":7,"ip_address":"10.20.20.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":4,"ip_address":"10.20.20.82","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":2,"ip_address":"10.20.10.164","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":1,"ip_address":"10.20.10.24","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":3,"ip_address":"10.20.10.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team2","entity_type":"TEAM_SANDBOX","id":11,"ip_address":"10.20.30.192","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:00","entity_name":"audit-a","entity_type":"TEAM_SANDBOX","id":45,"ip_address":"10.20.30.2","quarantine_until":"2026-10-11 10:57:06","quarantined_at":"2026-10-11 10:57:01","status":"QUARANTINED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":9,"ip_address":"10.20.30.224","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team1","entity_type":"TEAM_SANDBOX","id":10,"ip_address":"10.20.30.70","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":8,"ip_address":"10.20.30.86","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"}]}
+
+HTTP_STATUS=200
+
+===== reclaim =====
+{"reclaimed_count":1}
+
+HTTP_STATUS=200
+
+===== lease-after-reclaim =====
+{"count":12,"leases":[{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":6,"ip_address":"10.20.20.177","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":5,"ip_address":"10.20.20.190","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"keepalived-vip","entity_type":"VIP","id":7,"ip_address":"10.20.20.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":4,"ip_address":"10.20.20.82","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":2,"ip_address":"10.20.10.164","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":1,"ip_address":"10.20.10.24","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":3,"ip_address":"10.20.10.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team2","entity_type":"TEAM_SANDBOX","id":11,"ip_address":"10.20.30.192","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:00","entity_name":"audit-a","entity_type":"TEAM_SANDBOX","id":45,"ip_address":"10.20.30.2","quarantine_until":"","quarantined_at":"","status":"FREE","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":9,"ip_address":"10.20.30.224","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team1","entity_type":"TEAM_SANDBOX","id":10,"ip_address":"10.20.30.70","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":8,"ip_address":"10.20.30.86","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"}]}
+
+HTTP_STATUS=200
+
+===== reconcile =====
+{"db_lease_without_neutron_port":[{"sandbox_id":"team1","ip":"10.20.30.70"},{"sandbox_id":"team2","ip":"10.20.30.192"}],"neutron_port_without_db_lease":[],"ip_mismatch":[],"provisioned_server_missing":[]}
+
+HTTP_STATUS=200
+
+===== reconcile-apply-unknown =====
+{"error":"invalid request payload"}
+
+HTTP_STATUS=400
+
+===== events-token-only =====
+{"error":"unauthorized"}
+
+HTTP_STATUS=401
+
+===== gateway-sync-unknown =====
+{"duration_ms":2018,"error":"sync failed","reason":"baseline gateway health failed: gw1 HAProxy is not active"}
+
+HTTP_STATUS=502
+
+===== gateway-sync-oversized =====
+{"error":"invalid JSON","detail":"invalid character 'x' looking for beginning of value","code":400}
+
+HTTP_STATUS=400
+
+===== gateway-rollback-unknown =====
+{"duration_ms":2,"error":"rollback failed","reason":"committed rollback snapshot not found: sql: no rows in result set"}
+
+HTTP_STATUS=502
+
+===== gateway-rollback-oversized =====
+{"error":"invalid JSON","detail":"invalid character 'x' looking for beginning of value","code":400}
+
+HTTP_STATUS=400
+
+===== gateway-failover-unknown =====
+{"error":"confirm:true required","code":400}
+
+HTTP_STATUS=400
+
+===== gateway-failover-oversized =====
+{"error":"confirm:true required","code":400}
+
+HTTP_STATUS=400
+
+===== concurrent provision responses =====
+team=1 {"sandbox_id":"audit-concurrent-1","team":"audit-concurrent-1","fixed_ip":"10.20.30.2","server_id":"mock-server-audit-concurrent-1","port_id":"mock-port-audit-concurrent-1","hostname":"audit-concurrent-1.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":14,"health":0,"port":11,"server_active":22,"sync":0,"total":152}}
+
+HTTP_STATUS=201
+team=2 {"sandbox_id":"audit-concurrent-2","team":"audit-concurrent-2","fixed_ip":"10.20.30.4","server_id":"mock-server-audit-concurrent-2","port_id":"mock-port-audit-concurrent-2","hostname":"audit-concurrent-2.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":14,"health":0,"port":11,"server_active":22,"sync":0,"total":82}}
+
+HTTP_STATUS=201
+team=3 {"sandbox_id":"audit-concurrent-3","team":"audit-concurrent-3","fixed_ip":"10.20.30.3","server_id":"mock-server-audit-concurrent-3","port_id":"mock-port-audit-concurrent-3","hostname":"audit-concurrent-3.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":17,"health":0,"port":11,"server_active":22,"sync":0,"total":223}}
+
+HTTP_STATUS=201
+team=4 {"sandbox_id":"audit-concurrent-4","team":"audit-concurrent-4","fixed_ip":"10.20.30.5","server_id":"mock-server-audit-concurrent-4","port_id":"mock-port-audit-concurrent-4","hostname":"audit-concurrent-4.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":29,"health":0,"port":11,"server_active":22,"sync":0,"total":76}}
+
+HTTP_STATUS=201
+team=5 {"sandbox_id":"audit-concurrent-5","team":"audit-concurrent-5","fixed_ip":"10.20.30.8","server_id":"mock-server-audit-concurrent-5","port_id":"mock-port-audit-concurrent-5","hostname":"audit-concurrent-5.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":35,"health":0,"port":11,"server_active":22,"sync":0,"total":74}}
+
+HTTP_STATUS=201
+team=6 {"sandbox_id":"audit-concurrent-6","team":"audit-concurrent-6","fixed_ip":"10.20.30.7","server_id":"mock-server-audit-concurrent-6","port_id":"mock-port-audit-concurrent-6","hostname":"audit-concurrent-6.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":17,"health":0,"port":11,"server_active":22,"sync":0,"total":57}}
+
+HTTP_STATUS=201
+team=7 {"sandbox_id":"audit-concurrent-7","team":"audit-concurrent-7","fixed_ip":"10.20.30.6","server_id":"mock-server-audit-concurrent-7","port_id":"mock-port-audit-concurrent-7","hostname":"audit-concurrent-7.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":9,"health":0,"port":11,"server_active":22,"sync":0,"total":56}}
+
+HTTP_STATUS=201
+team=8 {"sandbox_id":"audit-concurrent-8","team":"audit-concurrent-8","fixed_ip":"10.20.30.13","server_id":"mock-server-audit-concurrent-8","port_id":"mock-port-audit-concurrent-8","hostname":"audit-concurrent-8.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":96,"health":0,"port":11,"server_active":22,"sync":0,"total":149}}
+
+HTTP_STATUS=201
+team=9 {"sandbox_id":"audit-concurrent-9","team":"audit-concurrent-9","fixed_ip":"10.20.30.9","server_id":"mock-server-audit-concurrent-9","port_id":"mock-port-audit-concurrent-9","hostname":"audit-concurrent-9.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":7,"health":0,"port":11,"server_active":22,"sync":0,"total":114}}
+
+HTTP_STATUS=201
+team=10 {"sandbox_id":"audit-concurrent-10","team":"audit-concurrent-10","fixed_ip":"10.20.30.10","server_id":"mock-server-audit-concurrent-10","port_id":"mock-port-audit-concurrent-10","hostname":"audit-concurrent-10.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":9,"health":0,"port":11,"server_active":22,"sync":0,"total":58}}
+
+HTTP_STATUS=201
+team=11 {"sandbox_id":"audit-concurrent-11","team":"audit-concurrent-11","fixed_ip":"10.20.30.12","server_id":"mock-server-audit-concurrent-11","port_id":"mock-port-audit-concurrent-11","hostname":"audit-concurrent-11.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":9,"health":0,"port":11,"server_active":22,"sync":0,"total":52}}
+
+HTTP_STATUS=201
+team=12 {"sandbox_id":"audit-concurrent-12","team":"audit-concurrent-12","fixed_ip":"10.20.30.11","server_id":"mock-server-audit-concurrent-12","port_id":"mock-port-audit-concurrent-12","hostname":"audit-concurrent-12.cstam.felcloud.tn","state":"ACTIVE","timings_ms":{"allocate":8,"health":0,"port":11,"server_active":22,"sync":0,"total":35}}
+
+HTTP_STATUS=201
+
+===== concurrent-state =====
+{"count":13,"sandboxes":[{"created_at":"2026-10-11T10:57:00Z","expires_at":1791730680,"hostname":"audit-a.cstam.felcloud.tn","id":1,"private_ip":"","sandbox_id":"audit-a","status":"RELEASED","subnet_name":"sandbox","ttl_remaining_seconds":14450,"updated_at":"2026-10-11T10:57:01Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-1.cstam.felcloud.tn","id":2,"private_ip":"10.20.30.2","sandbox_id":"audit-concurrent-1","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-3.cstam.felcloud.tn","id":3,"private_ip":"10.20.30.3","sandbox_id":"audit-concurrent-3","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-2.cstam.felcloud.tn","id":4,"private_ip":"10.20.30.4","sandbox_id":"audit-concurrent-2","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-4.cstam.felcloud.tn","id":5,"private_ip":"10.20.30.5","sandbox_id":"audit-concurrent-4","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-7.cstam.felcloud.tn","id":6,"private_ip":"10.20.30.6","sandbox_id":"audit-concurrent-7","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-6.cstam.felcloud.tn","id":7,"private_ip":"10.20.30.7","sandbox_id":"audit-concurrent-6","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-5.cstam.felcloud.tn","id":8,"private_ip":"10.20.30.8","sandbox_id":"audit-concurrent-5","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-9.cstam.felcloud.tn","id":9,"private_ip":"10.20.30.9","sandbox_id":"audit-concurrent-9","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-10.cstam.felcloud.tn","id":10,"private_ip":"10.20.30.10","sandbox_id":"audit-concurrent-10","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-12.cstam.felcloud.tn","id":11,"private_ip":"10.20.30.11","sandbox_id":"audit-concurrent-12","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-11.cstam.felcloud.tn","id":12,"private_ip":"10.20.30.12","sandbox_id":"audit-concurrent-11","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"},{"created_at":"2026-10-11T10:57:10Z","expires_at":1791730630,"hostname":"audit-concurrent-8.cstam.felcloud.tn","id":13,"private_ip":"10.20.30.13","sandbox_id":"audit-concurrent-8","status":"ACTIVE","subnet_name":"sandbox","ttl_remaining_seconds":14400,"updated_at":"2026-10-11T10:57:10Z"}]}
+
+HTTP_STATUS=200
+
+===== concurrent-leases =====
+{"count":23,"leases":[{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":6,"ip_address":"10.20.20.177","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":5,"ip_address":"10.20.20.190","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"keepalived-vip","entity_type":"VIP","id":7,"ip_address":"10.20.20.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":4,"ip_address":"10.20.20.82","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"edge"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":2,"ip_address":"10.20.10.164","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":1,"ip_address":"10.20.10.24","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"bastion","entity_type":"BASTION","id":3,"ip_address":"10.20.10.246","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"mgmt"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-10","entity_type":"TEAM_SANDBOX","id":54,"ip_address":"10.20.30.10","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-12","entity_type":"TEAM_SANDBOX","id":55,"ip_address":"10.20.30.11","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-11","entity_type":"TEAM_SANDBOX","id":56,"ip_address":"10.20.30.12","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-8","entity_type":"TEAM_SANDBOX","id":57,"ip_address":"10.20.30.13","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team2","entity_type":"TEAM_SANDBOX","id":11,"ip_address":"10.20.30.192","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-1","entity_type":"TEAM_SANDBOX","id":45,"ip_address":"10.20.30.2","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw2","entity_type":"GATEWAY","id":9,"ip_address":"10.20.30.224","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-3","entity_type":"TEAM_SANDBOX","id":47,"ip_address":"10.20.30.3","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-2","entity_type":"TEAM_SANDBOX","id":48,"ip_address":"10.20.30.4","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-4","entity_type":"TEAM_SANDBOX","id":49,"ip_address":"10.20.30.5","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-7","entity_type":"TEAM_SANDBOX","id":50,"ip_address":"10.20.30.6","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-6","entity_type":"TEAM_SANDBOX","id":51,"ip_address":"10.20.30.7","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"team1","entity_type":"TEAM_SANDBOX","id":10,"ip_address":"10.20.30.70","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-5","entity_type":"TEAM_SANDBOX","id":52,"ip_address":"10.20.30.8","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:48:46","entity_name":"gw1","entity_type":"GATEWAY","id":8,"ip_address":"10.20.30.86","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"},{"assigned_at":"2026-10-11 10:57:10","entity_name":"audit-concurrent-9","entity_type":"TEAM_SANDBOX","id":53,"ip_address":"10.20.30.9","quarantine_until":"","quarantined_at":"","status":"ALLOCATED","subnet_name":"sandbox"}]}
+
+HTTP_STATUS=200
+
+===== admin-events =====
+{"count":50,"events":[{"detail":"success","duration_ms":0,"id":104,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230415,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":102,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230412,"type":"ACTIVE"},{"detail":"success","duration_ms":0,"id":103,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230411,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":101,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230410,"type":"ACTIVE"},{"detail":"success","duration_ms":0,"id":100,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230406,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":97,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230405,"type":"ACTIVE"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":98,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230404,"type":"HEALTH_OK"},{"detail":"mock-server-audit-concurrent-9","duration_ms":22,"id":96,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230403,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-concurrent-9","duration_ms":11,"id":95,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230403,"type":"PORT_CREATED"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":99,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230395,"type":"HEALTH_OK"},{"detail":"mock-server-audit-concurrent-3","duration_ms":22,"id":93,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230394,"type":"SERVER_CREATED"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":94,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230393,"type":"HEALTH_OK"},{"detail":"mock-port-audit-concurrent-3","duration_ms":11,"id":92,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230393,"type":"PORT_CREATED"},{"detail":"mock-server-audit-concurrent-8","duration_ms":22,"id":91,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230392,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-concurrent-8","duration_ms":11,"id":90,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230391,"type":"PORT_CREATED"},{"detail":"ip=10.20.30.9","duration_ms":0,"id":89,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230390,"type":"PROVISION_STARTED"},{"detail":"ip=10.20.30.3","duration_ms":0,"id":88,"sandbox_id":"audit-concurrent-3","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230389,"type":"PROVISION_STARTED"},{"detail":"ip=10.20.30.13","duration_ms":0,"id":87,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230387,"type":"PROVISION_STARTED"},{"detail":"success","duration_ms":0,"id":86,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230377,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":85,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230376,"type":"ACTIVE"},{"detail":"success","duration_ms":0,"id":84,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230372,"type":"SYNC"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":83,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230371,"type":"HEALTH_OK"},{"detail":"server and health check ready","duration_ms":22,"id":81,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230371,"type":"ACTIVE"},{"detail":"success","duration_ms":0,"id":82,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230369,"type":"SYNC"},{"detail":"mock-server-audit-concurrent-10","duration_ms":22,"id":80,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230369,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-concurrent-10","duration_ms":11,"id":79,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230369,"type":"PORT_CREATED"},{"detail":"server and health check ready","duration_ms":22,"id":78,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230368,"type":"ACTIVE"},{"detail":"ip=10.20.30.13","duration_ms":0,"id":76,"sandbox_id":"audit-concurrent-8","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230365,"type":"allocated"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":77,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230361,"type":"HEALTH_OK"},{"detail":"mock-server-audit-concurrent-1","duration_ms":22,"id":75,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230360,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-concurrent-1","duration_ms":11,"id":74,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230360,"type":"PORT_CREATED"},{"detail":"ip=10.20.30.10","duration_ms":0,"id":72,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230357,"type":"PROVISION_STARTED"},{"detail":"success","duration_ms":0,"id":73,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230356,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":71,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230355,"type":"ACTIVE"},{"detail":"ip=10.20.30.2","duration_ms":0,"id":69,"sandbox_id":"audit-concurrent-1","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230353,"type":"PROVISION_STARTED"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":70,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230352,"type":"HEALTH_OK"},{"detail":"mock-server-audit-concurrent-11","duration_ms":22,"id":67,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230351,"type":"SERVER_CREATED"},{"detail":"health probe skipped (mock provisioner)","duration_ms":0,"id":68,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230350,"type":"HEALTH_OK"},{"detail":"mock-port-audit-concurrent-11","duration_ms":11,"id":66,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230350,"type":"PORT_CREATED"},{"detail":"mock-server-audit-concurrent-12","duration_ms":22,"id":65,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230349,"type":"SERVER_CREATED"},{"detail":"mock-port-audit-concurrent-12","duration_ms":11,"id":64,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230349,"type":"PORT_CREATED"},{"detail":"ip=10.20.30.12","duration_ms":0,"id":63,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230347,"type":"PROVISION_STARTED"},{"detail":"ip=10.20.30.11","duration_ms":0,"id":62,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230346,"type":"PROVISION_STARTED"},{"detail":"ip=10.20.30.12","duration_ms":0,"id":61,"sandbox_id":"audit-concurrent-11","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230343,"type":"allocated"},{"detail":"ip=10.20.30.11","duration_ms":0,"id":60,"sandbox_id":"audit-concurrent-12","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230339,"type":"allocated"},{"detail":"ip=10.20.30.10","duration_ms":0,"id":59,"sandbox_id":"audit-concurrent-10","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230335,"type":"allocated"},{"detail":"ip=10.20.30.9","duration_ms":0,"id":57,"sandbox_id":"audit-concurrent-9","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230325,"type":"allocated"},{"detail":"success","duration_ms":0,"id":58,"sandbox_id":"audit-concurrent-5","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230321,"type":"SYNC"},{"detail":"server and health check ready","duration_ms":22,"id":55,"sandbox_id":"audit-concurrent-5","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230320,"type":"ACTIVE"},{"detail":"success","duration_ms":0,"id":56,"sandbox_id":"audit-concurrent-6","ts_iso":"2026-10-11T10:57:10Z","ts_ms":1791716230314,"type":"SYNC"}],"limit":50}
+
+HTTP_STATUS=200
+smoke exit=0

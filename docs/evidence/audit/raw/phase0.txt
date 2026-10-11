@@ -1,0 +1,12 @@
+9d6a0b24d425318169c27746103014d1d1a0a2a5
+?? docs/evidence/
+go version go1.27.1 linux/amd64
+Python 3.14.7
+ansible 2.10.8
+  config file = None
+  configured module search path = ['/home/yassmine/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules']
+  ansible python module location = /usr/lib/python3/dist-packages/ansible
+  executable location = /usr/bin/ansible
+  python version = 3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]
+timeout: failed to run command ‘ansible-lint’: No such file or directory
+timeout: failed to run command ‘haproxy’: No such file or directory

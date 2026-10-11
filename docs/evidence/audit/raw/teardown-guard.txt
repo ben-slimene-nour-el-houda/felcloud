@@ -1,0 +1,8 @@
+{"error":"sandbox is not managed by the control plane (managed_by=\"external\")","sandbox_id":"team1","step":"guard"}
+
+HTTP=403
+{"error":"sandbox is not managed by the control plane (managed_by=\"external\")","sandbox_id":"team2","step":"guard"}
+
+HTTP=403
+team1 refused_events= 1 status= ACTIVE
+team2 refused_events= 1 status= ACTIVE
