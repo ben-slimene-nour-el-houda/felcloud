@@ -265,11 +265,11 @@ func handleGatewaySync(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	if !failoverMu.TryLock() {
-		sendJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+	if err := tryGatewayOp("sync-manual"); err != nil {
+		sendJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "duration_ms": int64(0)})
 		return
 	}
-	defer failoverMu.Unlock()
+	defer releaseGatewayOp("sync-manual")
 	var params struct {
 		DryRun bool `json:"dry_run"`
 	}
@@ -291,11 +291,11 @@ func handleGatewayRollback(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 		return
 	}
-	if !failoverMu.TryLock() {
-		sendJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+	if err := tryGatewayOp("rollback-manual"); err != nil {
+		sendJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "duration_ms": int64(0)})
 		return
 	}
-	defer failoverMu.Unlock()
+	defer releaseGatewayOp("rollback-manual")
 	var body struct {
 		TargetGeneration string `json:"target_generation"`
 	}

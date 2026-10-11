@@ -276,11 +276,11 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if !failoverMu.TryLock() {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+		if err := tryGatewayOp("sync-manual"); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "duration_ms": int64(0)})
 			return
 		}
-		defer failoverMu.Unlock()
+		defer releaseGatewayOp("sync-manual")
 		var body struct {
 			DryRun bool `json:"dry_run"`
 		}
@@ -303,11 +303,11 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		if !failoverMu.TryLock() {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "gateway operation already running", "duration_ms": int64(0)})
+		if err := tryGatewayOp("rollback-manual"); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "duration_ms": int64(0)})
 			return
 		}
-		defer failoverMu.Unlock()
+		defer releaseGatewayOp("rollback-manual")
 		var body struct {
 			TargetGeneration string `json:"target_generation"`
 		}

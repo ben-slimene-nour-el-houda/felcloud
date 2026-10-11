@@ -183,6 +183,8 @@ func initDB() error {
 			generation_id TEXT UNIQUE NOT NULL,
 			config_snapshot TEXT NOT NULL,
 			status TEXT CHECK(status IN ('PROPOSED', 'VALIDATED', 'COMMITTED', 'ROLLED_BACK', 'FAILED')) DEFAULT 'PROPOSED',
+			source_generation TEXT,
+			content_sha TEXT,
 			gw1_backup TEXT,
 			gw2_backup TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -193,6 +195,25 @@ func initDB() error {
 	}
 	if err := ensureConfigGenerationBackupColumns(db); err != nil {
 		return fmt.Errorf("config generation backup migration failed: %w", err)
+	}
+	if err := ensureConfigGenerationMetaColumns(db); err != nil {
+		return fmt.Errorf("config generation metadata migration failed: %w", err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS gateway_lock (
+			id INTEGER PRIMARY KEY CHECK(id = 1),
+			holder TEXT,
+			expires_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS gateway_state (
+			key TEXT PRIMARY KEY,
+			value TEXT,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("error creating gateway lock/state tables: %w", err)
 	}
 
 	// 5. Events table & index
@@ -273,6 +294,32 @@ func ensureConfigGenerationBackupColumns(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureConfigGenerationMetaColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(config_generations)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		columns[name] = true
+	}
+	for _, name := range []string{"source_generation", "content_sha"} {
+		if !columns[name] {
+			if _, err := db.Exec(`ALTER TABLE config_generations ADD COLUMN ` + name + ` TEXT`); err != nil {
+				return err
+			}
+		}
+	}
+	return rows.Err()
 }
 
 func migrateSandboxesSchema(db *sql.DB) error {
