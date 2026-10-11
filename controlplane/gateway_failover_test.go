@@ -24,6 +24,7 @@ func failoverTestStore(t *testing.T) *gatewayStore {
 
 func setFailoverTestHooks(t *testing.T, status ProbeResult, command any, probe any) {
 	t.Helper()
+	failoverHookMu.Lock()
 	oldStatus, oldCommand, oldProbe, oldInterval := failoverStatusReader, failoverCommandRunner, failoverVIPProbe, failoverPollInterval
 	failoverStatusReader = func(*gatewayStore) ProbeResult { return status }
 	switch runner := command.(type) {
@@ -34,6 +35,7 @@ func setFailoverTestHooks(t *testing.T, status ProbeResult, command any, probe a
 			return runner(gateway, action)
 		}
 	default:
+		failoverHookMu.Unlock()
 		t.Fatalf("unsupported failover command hook type %T", command)
 	}
 	switch probeFn := probe.(type) {
@@ -44,11 +46,15 @@ func setFailoverTestHooks(t *testing.T, status ProbeResult, command any, probe a
 			return probeFn(target, host)
 		}
 	default:
+		failoverHookMu.Unlock()
 		t.Fatalf("unsupported failover probe hook type %T", probe)
 	}
 	failoverPollInterval = time.Millisecond
+	failoverHookMu.Unlock()
 	t.Cleanup(func() {
+		failoverHookMu.Lock()
 		failoverStatusReader, failoverCommandRunner, failoverVIPProbe, failoverPollInterval = oldStatus, oldCommand, oldProbe, oldInterval
+		failoverHookMu.Unlock()
 	})
 }
 

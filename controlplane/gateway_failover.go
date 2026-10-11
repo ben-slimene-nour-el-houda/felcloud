@@ -19,11 +19,36 @@ import (
 const defaultFailoverThreshold = 3000 * time.Millisecond
 
 var (
+	failoverHookMu        sync.RWMutex
 	failoverPollInterval  = 50 * time.Millisecond
 	failoverStatusReader  = liveFailoverStatus
 	failoverCommandRunner = runServiceCommand
 	failoverVIPProbe      = probeFailoverVIP
 )
+
+func currentFailoverStatusReader() func(*gatewayStore) ProbeResult {
+	failoverHookMu.RLock()
+	defer failoverHookMu.RUnlock()
+	return failoverStatusReader
+}
+
+func currentFailoverCommandRunner() func(string, string, string) error {
+	failoverHookMu.RLock()
+	defer failoverHookMu.RUnlock()
+	return failoverCommandRunner
+}
+
+func currentFailoverVIPProbe() func(context.Context, *url.URL, string) failoverVIPResponse {
+	failoverHookMu.RLock()
+	defer failoverHookMu.RUnlock()
+	return failoverVIPProbe
+}
+
+func currentFailoverPollInterval() time.Duration {
+	failoverHookMu.RLock()
+	defer failoverHookMu.RUnlock()
+	return failoverPollInterval
+}
 
 func normalizeFailoverMode(mode string) (string, error) {
 	switch strings.TrimSpace(mode) {
@@ -152,7 +177,7 @@ func failoverPollDelay() time.Duration {
 			return time.Duration(ms) * time.Millisecond
 		}
 	}
-	return failoverPollInterval
+	return currentFailoverPollInterval()
 }
 
 type failoverSample struct {
@@ -194,7 +219,7 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 	}
 	defer func() {
 		if stoppedGateway != "" {
-			if restartErr := failoverCommandRunner(stoppedGateway, serviceName, "start"); restartErr != nil {
+			if restartErr := currentFailoverCommandRunner()(stoppedGateway, serviceName, "start"); restartErr != nil {
 				result.Success = false
 				result.Reason = strings.TrimSpace(strings.Join([]string{result.Reason, "failed to restart " + serviceName + ": " + restartErr.Error()}, "; "))
 				if statusCode != http.StatusGatewayTimeout {
@@ -224,7 +249,7 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 		result.Reason = err.Error()
 		return result, http.StatusBadRequest
 	}
-	state := failoverStatusReader(store)
+	state := currentFailoverStatusReader()(store)
 	result.Before = state.VIPHolder
 	result.After = state.VIPHolder
 	if !allowedGateways[result.Before] || !state.Gateways[result.Before].Reachable || !state.Gateways[result.Before].VIPHolder {
@@ -249,7 +274,7 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 			default:
 			}
 			probeCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-			probe := failoverVIPProbe(probeCtx, probeTarget, probeHost)
+			probe := currentFailoverVIPProbe()(probeCtx, probeTarget, probeHost)
 			cancel()
 			sample := failoverSample{TS: time.Now(), Gateway: probe.Gateway, Status: probe.Status, OK: probe.Err == nil && probe.Status >= 200 && probe.Status < 400 && allowedGateways[probe.Gateway]}
 			select {
@@ -265,7 +290,7 @@ func performGatewayFailover(store *gatewayStore, mode ...string) (result failove
 	}()
 
 	stopIssuedAt = time.Now()
-	if err := failoverCommandRunner(stoppedGateway, serviceName, "stop"); err != nil {
+	if err := currentFailoverCommandRunner()(stoppedGateway, serviceName, "stop"); err != nil {
 		result.Reason = "could not stop " + serviceName + ": " + err.Error()
 		return result, http.StatusBadGateway
 	}
