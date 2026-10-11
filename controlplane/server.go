@@ -758,14 +758,18 @@ func runServer(ctx context.Context, port int) (runErr error) {
 		}
 		return err
 	case <-ctx.Done():
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			_ = server.Close()
-			return fmt.Errorf("shut down HTTP server: %w", err)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("shut down HTTP server: %w", err)
+			}
 		}
 		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("HTTP server: %w", err)
+			if !errors.Is(err, net.ErrClosed) {
+				return fmt.Errorf("HTTP server: %w", err)
+			}
 		}
 		return nil
 	}
