@@ -11,12 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
-
-var gatewayConfigValidator = validateHAProxySyntax
-var gatewayPlaybookRunner = runGatewayPlaybook
 
 func checkSandboxHealth(ipAddress string, port int, timeout time.Duration, maxRetries int, retryInterval time.Duration) (bool, string) {
 	if port <= 0 {
@@ -67,7 +62,6 @@ func validateHAProxySyntax(configContent string) (bool, string) {
 	testContent := configContent
 	tempCertCreated := false
 
-	// Find cert matches
 	re := regexp.MustCompile(`crt\s+(\S+)`)
 	matches := re.FindAllStringSubmatch(configContent, -1)
 	for _, m := range matches {
@@ -84,7 +78,7 @@ func validateHAProxySyntax(configContent string) (bool, string) {
 					if err1 == nil && err2 == nil {
 						combined := append(kData, '\n')
 						combined = append(combined, cData...)
-						os.WriteFile(tempCertPath, combined, 0644)
+						_ = os.WriteFile(tempCertPath, combined, 0644)
 						tempCertCreated = true
 					}
 					_ = os.Remove("/tmp/temp_k.key")
@@ -103,8 +97,8 @@ func validateHAProxySyntax(configContent string) (bool, string) {
 	}
 	defer os.Remove(tmpFile.Name())
 
-	tmpFile.WriteString(testContent)
-	tmpFile.Close()
+	_, _ = tmpFile.WriteString(testContent)
+	_ = tmpFile.Close()
 
 	cmd := exec.Command("haproxy", "-c", "-f", tmpFile.Name())
 	var outBuf, errBuf bytes.Buffer
@@ -123,12 +117,11 @@ func validateHAProxySyntax(configContent string) (bool, string) {
 		_ = os.Remove(tempCertPath)
 	}
 
-	// If haproxy CLI is missing on the system
 	if strings.Contains(err.Error(), "executable file not found") {
 		if strings.Contains(configContent, "frontend") && strings.Contains(configContent, "backend") {
-			return true, "Syntax structure valid (haproxy CLI not found on host)"
+			return false, "structural check only, haproxy not installed"
 		}
-		return false, "Missing frontend or backend definitions"
+		return false, "structural check only, haproxy not installed"
 	}
 
 	return false, fmt.Sprintf("HAProxy syntax error:\n%s\n%s", errBuf.String(), outBuf.String())
@@ -160,9 +153,19 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("    option  dontlognull\n")
 	sb.WriteString("    timeout connect 5000ms\n")
 	sb.WriteString("    timeout client  50000ms\n")
-	sb.WriteString("    timeout server  50000ms\n\n")
+	sb.WriteString("    timeout server  50000ms\n")
+	sb.WriteString("    errorfile 400 /etc/haproxy/errors/400.http\n")
+	sb.WriteString("    errorfile 403 /etc/haproxy/errors/403.http\n")
+	sb.WriteString("    errorfile 408 /etc/haproxy/errors/408.http\n")
+	sb.WriteString("    errorfile 500 /etc/haproxy/errors/500.http\n")
+	sb.WriteString("    errorfile 502 /etc/haproxy/errors/502.http\n")
+	sb.WriteString("    errorfile 503 /etc/haproxy/errors/503.http\n")
+	sb.WriteString("    errorfile 504 /etc/haproxy/errors/504.http\n\n")
 
-	sb.WriteString("# --- Hostname-Based ACL Routing (HTTP 80 & HTTPS 443) ---\n\n")
+	sb.WriteString("frontend health_check\n")
+	sb.WriteString("    bind 127.0.0.1:9000\n")
+	sb.WriteString("    mode http\n")
+	sb.WriteString("    monitor-uri /healthz\n\n")
 
 	sb.WriteString("frontend http_front\n")
 	sb.WriteString("    bind *:80\n")
@@ -197,7 +200,7 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 
 	sb.WriteString("backend default_maintenance\n")
 	sb.WriteString("    mode http\n")
-	sb.WriteString("    http-request return status 503 content-type \"text/plain\" lf-string \"503 Service Unavailable - FelCloud Resilient Gateway Maintenance\\n\"\n\n")
+	sb.WriteString("    http-request return status 503 content-type \"text/plain\" lf-string \"503 Service Unavailable - FelCloud Resilient Gateway Maintenance\\n\"\n")
 
 	return sb.String()
 }
@@ -209,7 +212,7 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query("SELECT sandbox_id, private_ip FROM sandboxes WHERE status IN ('ACTIVE', 'PROVISIONING')")
+	rows, err := db.Query("SELECT sandbox_id, private_ip FROM sandboxes WHERE status IN ('ACTIVE', 'EXPIRING') AND private_ip <> ''")
 	if err != nil {
 		return nil, err
 	}
@@ -218,41 +221,22 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 	var teams []TeamEntry
 	for rows.Next() {
 		var sID, ip string
-		if err := rows.Scan(&sID, &ip); err == nil && ip != "" {
-			teams = append(teams, TeamEntry{
-				Name: sID,
-				IP:   ip,
-				Port: 80,
-			})
+		if err := rows.Scan(&sID, &ip); err != nil {
+			continue
 		}
+		sID = strings.TrimSpace(sID)
+		ip = strings.TrimSpace(ip)
+		if sID == "" || !dnsLabelRE.MatchString(sID) {
+			log.Printf("skip route generation for invalid sandbox_id %q", sID)
+			continue
+		}
+		if !validIPv4Address(ip) {
+			log.Printf("skip route generation for invalid private_ip %q on sandbox %q", ip, sID)
+			continue
+		}
+		teams = append(teams, TeamEntry{Name: sID, IP: ip, Port: 80})
 	}
-
 	return teams, nil
-}
-
-func createGeneratedRoutesVars(teams []TeamEntry) (string, func(), error) {
-	content, err := yaml.Marshal(map[string]interface{}{
-		"teams":          teams,
-		"routing_domain": routingDomain,
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("encode generated gateway routes: %w", err)
-	}
-	file, err := os.CreateTemp("", "felcloud-routes-*.yml")
-	if err != nil {
-		return "", nil, fmt.Errorf("create generated gateway routes file: %w", err)
-	}
-	path := file.Name()
-	if _, err := file.Write(content); err != nil {
-		file.Close()
-		os.Remove(path)
-		return "", nil, fmt.Errorf("write generated gateway routes file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(path)
-		return "", nil, fmt.Errorf("close generated gateway routes file: %w", err)
-	}
-	return path, func() { _ = os.Remove(path) }, nil
 }
 
 func rollbackConfig() bool {
@@ -275,6 +259,7 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 		return false, msg, duration
 	}
 	candidateCfg := generateHAProxyConfig(teams)
+	contentSHA := generationContentSHA(candidateCfg)
 
 	if dryRun {
 		isValid, validationMsg := gatewayConfigValidator(candidateCfg)
@@ -309,15 +294,16 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
 		return false, err.Error(), duration
 	}
-
-	_, err = db.Exec("INSERT INTO config_generations (generation_id, config_snapshot, status) VALUES (?, ?, 'VALIDATED')", genID, candidateCfg)
-	db.Close()
+	activeGen, _ := gatewayStateValue(db, "active_generation")
+	_, err = db.Exec("INSERT INTO config_generations (generation_id, config_snapshot, status, source_generation, content_sha, gw1_backup, gw2_backup) VALUES (?, ?, 'VALIDATED', ?, ?, '', '')", genID, candidateCfg, activeGen, contentSHA)
 	if err != nil {
+		db.Close()
 		msg := fmt.Sprintf("Failed to record config generation: %v", err)
 		duration := time.Since(started).Milliseconds()
 		recordGatewayOperationEvent("sync_failed", trigger, msg, duration)
 		return false, msg, duration
 	}
+	db.Close()
 
 	deployment, err := gatewayDeploymentRunner(genID, candidateCfg, active, standby)
 	if err == nil {
@@ -325,11 +311,11 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 	}
 	if err != nil {
 		msg := err.Error()
-		db, _ := getDBConnection()
+		db, _ = getDBConnection()
 		if db != nil {
-			db.Exec("UPDATE config_generations SET status='FAILED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
+			_, _ = db.Exec("UPDATE config_generations SET status='FAILED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
 			recordEvent(db, "", "sync_failed", fmt.Sprintf("trigger=%s reason=%s", trigger, msg), time.Since(started).Milliseconds())
-			db.Close()
+			_ = db.Close()
 		}
 		_, _, rollbackErr := rollbackConfigWithOptions("", "auto", msg)
 		if rollbackErr != nil {
@@ -345,9 +331,12 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 	}
 	_, err = db.Exec("UPDATE config_generations SET status='COMMITTED', gw1_backup=?, gw2_backup=? WHERE generation_id=?", deployment.GW1Backup, deployment.GW2Backup, genID)
 	if err == nil {
+		if err = setGatewayState(db, "active_generation", genID); err != nil {
+			recordGatewayOperationEvent("sync_failed", trigger, err.Error(), time.Since(started).Milliseconds())
+		}
 		recordEvent(db, "", "sync", fmt.Sprintf("trigger=%s reason=deploy generation=%s", trigger, genID), time.Since(started).Milliseconds())
 	}
-	db.Close()
+	_ = db.Close()
 	if err != nil {
 		duration := time.Since(started).Milliseconds()
 		recordGatewayOperationEvent("sync_failed", trigger, err.Error(), duration)
@@ -355,26 +344,6 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 	}
 	gwCache.Invalidate()
 	return true, fmt.Sprintf("Generation %s applied", genID), time.Since(started).Milliseconds()
-}
-
-func runGatewayPlaybook(routesVarsPath string) (string, error) {
-	bastionIP := os.Getenv("BASTION_IP")
-	if bastionIP == "" {
-		bastionIP = "203.0.113.119"
-	}
-	cmd := exec.Command("ansible-playbook",
-		"-i", "../ansible/inventory/hosts.yml",
-		"../ansible/site.yml",
-		"--vault-password-file", "../ansible/.vault_pass",
-		"--tags", "haproxy",
-		"-e", "@"+routesVarsPath,
-		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", bastionIP),
-	)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	err := cmd.Run()
-	return output.String(), err
 }
 
 func addTeamFlow(teamName, ipAddress string, port int, skipHealthCheck bool) (bool, string) {

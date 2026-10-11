@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +103,9 @@ var gatewayHosts = []string{"gw1", "gw2"}
 
 func runGatewayProbes(store *gatewayStore) ProbeResult {
 	vip := envOr("VIP_ADDRESS", "10.20.20.246")
+	if vip == "" || net.ParseIP(vip) == nil {
+		vip = "10.20.20.246"
+	}
 	inv := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")
 	bastion := envOr("BASTION_IP", "203.0.113.119")
 	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
@@ -237,35 +242,35 @@ func parseProbeOutput(raw string) GWProbe {
 
 const logFetchTimeout = 10 * time.Second
 
+var gatewayLogSinceRE = regexp.MustCompile(`^[0-9A-Za-z:.+ -]{1,40}$`)
+
+func shellQuoteSingle(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
 // FetchGatewayLogs runs journalctl/tail on the target gateway via Ansible.
 // gateway and source are already whitelist-validated by the caller.
 func FetchGatewayLogs(gateway, source, since string, limit int) ([]string, error) {
+	if since != "" && !gatewayLogSinceRE.MatchString(since) {
+		return nil, fmt.Errorf("invalid since value")
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
 	var shellCmd string
+	sinceArg := ""
+	if since != "" {
+		sinceArg = " --since " + shellQuoteSingle(since)
+	}
 	switch source {
 	case "keepalived":
-		if since != "" {
-			shellCmd = fmt.Sprintf(
-				"journalctl -u keepalived --no-pager --since %q -n %d 2>/dev/null; echo '---events---'; tail -n %d /var/log/keepalived-events.log 2>/dev/null || true",
-				since, limit, limit,
-			)
-		} else {
-			shellCmd = fmt.Sprintf(
-				"journalctl -u keepalived --no-pager -n %d 2>/dev/null; echo '---events---'; tail -n %d /var/log/keepalived-events.log 2>/dev/null || true",
-				limit, limit,
-			)
-		}
+		shellCmd = fmt.Sprintf("journalctl -u keepalived --no-pager%s -n %d 2>/dev/null; echo '---events---'; tail -n %d /var/log/keepalived-events.log 2>/dev/null || true", sinceArg, limit, limit)
 	default: // haproxy
-		if since != "" {
-			shellCmd = fmt.Sprintf(
-				"journalctl -u haproxy --no-pager --since %q -n %d 2>/dev/null || tail -n %d /var/log/haproxy.log 2>/dev/null || echo 'no haproxy log'",
-				since, limit, limit,
-			)
-		} else {
-			shellCmd = fmt.Sprintf(
-				"journalctl -u haproxy --no-pager -n %d 2>/dev/null || tail -n %d /var/log/haproxy.log 2>/dev/null || echo 'no haproxy log'",
-				limit, limit,
-			)
-		}
+		shellCmd = fmt.Sprintf("journalctl -u haproxy --no-pager%s -n %d 2>/dev/null || tail -n %d /var/log/haproxy.log 2>/dev/null || echo 'no haproxy log'", sinceArg, limit, limit)
 	}
 
 	inv := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")

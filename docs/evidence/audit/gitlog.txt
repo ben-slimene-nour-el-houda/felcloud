@@ -1,0 +1,40 @@
+9d6a0b2 Merge origin/Dev into Dev
+2511aa0 Resolve legacy API/server duplication by making the legacy API wrapper delegate to the canonical gatewayHandler implementation.
+025e136 docs: deferred integration test plan
+31e4044 feat(ha): haproxy stage-validate-swap transaction playbook for rollback (Req 1.4) [unverified]
+9b56c89 feat(security): egress allowlist, sandbox-to-mgmt block, DPA scoped to ControlPlaneCIDR (Req 2.3) [unverified]
+9f6f3f9 feat(security): egress allowlist, sandbox-to-mgmt block, DPA scoped to ControlPlaneCIDR (Req 2.3)
+ebf75b9 feat(ha): remote rollback with per-gateway backup, dual validation, auto-rollback on regression (Req 1.4)
+5e94616 Merge pull request #2 from ben-slimene-nour-el-houda/nour
+4893767 fix: update scripts and docs after removing Python control plane
+e8641b9 feat(ha): failover endpoint, X-Gateway-ID header, failover-test.sh with stored timings (Req 1.2) [unverified]
+455401f chore: remove legacy Python control plane
+3f0c40d test: move benchmark report tests under scripts/
+5b7ffb2 docs: benchmark report generator and IP recycling benchmark
+b8af2ba feat(api): live gateway status, logs, events (GET/POST), generations, sandboxes, leases
+7af6fbb feat(keepalived): check_haproxy, notify scripts, loopback /healthz probe, /run state dir, fix role order
+d556bfc test: concurrent provisioning stress harness with stored results
+3c1b2e7 refactor(controlplane): split gateway.go into server.go and gateway_sync.go, add serve subcommand, remove conflict markers
+3ec92f7 feat(controlplane): bearer auth, strict JSON, rate limit, CORS
+9d4e7e4 Merge pull request #1 from ben-slimene-nour-el-houda/dev_yassmine
+89f7e51 Merge branch 'nour' into dev_yassmine
+75a38b3 fix(controlplane): pass generated routes via -e @tmpfile instead of rewriting vars.yml
+99ac95e fix(ha): correct failover logic and add Go gateway scaffold
+f3876af feat(controlplane): managed_by guard protects non-control-plane sandboxes
+d7fa899 chore: ignore build artifact
+681cf13 Implement durable sandbox teardown and IPAM reconciliation
+3bd4b6c chore: untrack binaries and live db
+36f506e feat(controlplane): Nova/Neutron provisioning, compensation, gateway-ssh health probe
+00f8a4a refactor(controlplane): split main.go into modules, untrack binaries and db
+86115ba feat: S4 expiry reaper, resumable teardown, release_ips step, event pruning
+2c58125 feat: sandbox TTL (expires_at), extend endpoint, overflow-safe cap, typed errors
+ea2c6d3 feat: routing domain support, sandbox state machine and events log
+0dd34fa feat: configurable ROUTING_DOMAIN in templates, scripts and docs
+18a0ac5 feat: configurable ROUTING_DOMAIN (default cstam.felcloud.tn), single-suffix routing ACLs
+646dacf test: selective runner with --list/--test, auto-rebuild, go test integration
+129d987 fix(ipam): atomic allocation with immediate transactions and CIDR-driven host range
+2f86b51 feat: track Go control plane with hermetic IPAM tests
+219a41f chore: untrack compiled infra binary and ignore build artifacts
+7b5f5cc final
+47c0f7f  readme
+853b88f updates

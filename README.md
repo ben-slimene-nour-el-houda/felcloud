@@ -94,7 +94,7 @@ flowchart TB
         GW1M["gw1 mgmt: 10.20.10.24<br/>(DPA: 5555)"]
         GW2M["gw2 mgmt: 10.20.10.164<br/>(DPA: 5555)"]
         BASM["bastion mgmt: 10.20.10.246"]
-        IPAM["Control Plane (Go + SQLite)<br/>Target: Go + PostgreSQL<br/>REST API Port 8080"]
+        IPAM["Control Plane (Go + SQLite)<br/>Target: Go + PostgreSQL<br/>REST API Port 8081"]
     end
 
     subgraph SBX["felcloud-sandbox - 10.20.30.0/24 (Isolated)"]
@@ -312,7 +312,7 @@ Before opening a route in HAProxy:
 - Only when health check passes (HTTP 200/2xx) is the route deployed to HAProxy.
 - If the probe fails, the route is not opened, preventing gateway 502/503 errors.
 
-### REST API Endpoints (Port 8080)
+### REST API Endpoints (Port 8081)
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -418,12 +418,12 @@ Click any path to open the file or folder.
    ```
 4. **Build and start the Go control plane:**
    ```bash
-   go build -o /tmp/felcloud-controlplane ./controlplane
+   cd controlplane && go build -o /tmp/felcloud-controlplane .
    export ADMIN_TOKEN="$(openssl rand -hex 32)"
    export LISTEN_ADDR=127.0.0.1
    # Use mock only for local development without OpenStack provisioning.
    export PROVISIONER=mock
-   /tmp/felcloud-controlplane serve --port 8080
+   /tmp/felcloud-controlplane serve --port 8081
    ```
 
    `ADMIN_TOKEN` must contain at least 24 characters. Set `PROVISIONER=mock`
@@ -461,10 +461,10 @@ Confirm the platform is up before starting the demo.
 
 ```bash
 # Control plane is serving (health is the only unauthenticated endpoint)
-curl -s http://localhost:8080/health
+curl -s http://localhost:8081/health
 
 # Current leases and quarantine timers
-curl -s http://localhost:8080/ipam/leases \
+curl -s http://localhost:8081/ipam/leases \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # DNS resolves tenant hostnames to the public floating IP
@@ -617,29 +617,29 @@ Or step by step through the REST API:
 
 ```bash
 # 1. Allocate a lease
-curl -s -X POST http://localhost:8080/ipam/leases/allocate \
+curl -s -X POST http://localhost:8081/ipam/leases/allocate \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sandbox_id":"demo-team-a"}'
 
 # 2. Release it (the IP enters QUARANTINED)
-curl -s -X POST http://localhost:8080/ipam/leases/release \
+curl -s -X POST http://localhost:8081/ipam/leases/release \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sandbox_id":"demo-team-a","ip_address":"<allocated_ip>"}'
 
 # 3. Allocate again immediately: a DIFFERENT IP must be returned
-curl -s -X POST http://localhost:8080/ipam/leases/allocate \
+curl -s -X POST http://localhost:8081/ipam/leases/allocate \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sandbox_id":"demo-team-b"}'
 
 # 4. Check the quarantine timer
-curl -s http://localhost:8080/ipam/leases \
+curl -s http://localhost:8081/ipam/leases \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 
 # 5. After the cooldown (e.g. 60s), reclaim: the IP returns to FREE
-curl -s -X POST http://localhost:8080/ipam/leases/reclaim \
+curl -s -X POST http://localhost:8081/ipam/leases/reclaim \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{}'

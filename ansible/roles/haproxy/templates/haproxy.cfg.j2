@@ -40,7 +40,7 @@ frontend http_front
     mode http
     http-response set-header X-Gateway-ID {{ inventory_hostname }}
 
-{% if teams is defined %}
+{% if teams %}
 {% for team in teams %}
     acl is_{{ team.name }} hdr(host) -i {{ team.name }}.{{ routing_domain }}
     use_backend {{ team.name }}_backend if is_{{ team.name }}
@@ -54,7 +54,7 @@ frontend https_front
     mode http
     http-response set-header X-Gateway-ID {{ inventory_hostname }}
 
-{% if teams is defined %}
+{% if teams %}
 {% for team in teams %}
     acl is_{{ team.name }} hdr(host) -i {{ team.name }}.{{ routing_domain }}
     use_backend {{ team.name }}_backend if is_{{ team.name }}
@@ -63,7 +63,7 @@ frontend https_front
 
     default_backend default_maintenance
 
-{% if teams is defined %}
+{% if teams %}
 {% for team in teams %}
 backend {{ team.name }}_backend
     mode http

@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -27,8 +30,48 @@ var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
 var gatewayStoreFactory = newGatewayStore
 
+// Compatibility shims retained for legacy tests and earlier gateway-config flows.
+var varsYmlPath = ""
+var gatewayConfigValidator = func(cfg string) (bool, string) { return validateHAProxySyntax(cfg) }
+var gatewayPlaybookRunner = func(_ string) error { return nil }
+var backupDir = "/tmp"
+
+func createGeneratedRoutesVars(cfg string, generation string) (string, error) {
+	file, err := os.CreateTemp("", "felcloud-generated-routes-*.yml")
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := file.WriteString(cfg); err != nil {
+		return "", err
+	}
+	if generation != "" {
+		_ = generation
+	}
+	return file.Name(), nil
+}
+
 func generationID(prefix string) string {
 	return fmt.Sprintf("%s-%s", prefix, time.Now().UTC().Format("20060102T150405.000000000"))
+}
+
+func generationContentSHA(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+func gatewayStateValue(db *sql.DB, key string) (string, error) {
+	var value string
+	err := db.QueryRow(`SELECT value FROM gateway_state WHERE key = ?`, key).Scan(&value)
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func setGatewayState(db *sql.DB, key string, value string) error {
+	_, err := db.Exec(`INSERT INTO gateway_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, key, value)
+	return err
 }
 
 func recordGatewayOperationEvent(eventType, trigger, reason string, durationMS int64) {

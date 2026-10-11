@@ -1,0 +1,9 @@
+{"error":"unauthorized"}
+
+HTTP=401
+{"error":"invalid X-Events-Token","code":401}
+
+HTTP=401
+{"error":"invalid type","detail":"allowed: rollback, keepalived_state, sync, failover_test, health_check, failover","code":400}
+
+HTTP=400

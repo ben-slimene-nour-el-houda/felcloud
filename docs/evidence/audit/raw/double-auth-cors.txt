@@ -1,0 +1,13 @@
+auth-case-1 HTTP=400
+auth-case-2 HTTP=400
+auth-case-3 HTTP=400
+preflight HTTP=204
+HTTP/1.1 204 No Content
+Date: Sun, 11 Oct 2026 11:16:45 GMT
+
+event bodies: {"error":"type is required","code":400}
+
+{"error":"type is required","code":400}
+
+{"error":"type is required","code":400}
+

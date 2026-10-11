@@ -131,6 +131,7 @@
   when: haproxy_current_config.stat.exists
 
 - name: Deploy HAProxy configuration template
+  when: haproxy_force_template | default(false) | bool or not haproxy_current_config.stat.exists
   ansible.builtin.template:
     src: haproxy.cfg.j2
     dest: /etc/haproxy/haproxy.cfg

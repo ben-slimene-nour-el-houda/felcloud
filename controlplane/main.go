@@ -30,8 +30,6 @@ var (
 var (
 	dbMutex                  sync.Mutex
 	dbPath                   string
-	varsYmlPath              string
-	backupDir                string
 	defaultQuarantineSeconds int
 	routingDomain            string       = "cstam.felcloud.tn"
 	defaultTTLSeconds        int64        = 14400
@@ -153,6 +151,21 @@ func parseReaperConfig(lookupEnv func(string) string) (int, int, int, int, error
 	return interval, batchSize, maxAttempts, retention, nil
 }
 
+func parseIPQuarantineSeconds(value string) (int, error) {
+	seconds := 60
+	if value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			return 0, fmt.Errorf("IP_QUARANTINE_SECONDS must be an integer from 1 to 86400: %w", err)
+		}
+		seconds = parsed
+	}
+	if seconds < 1 || seconds > 86400 {
+		return 0, fmt.Errorf("IP_QUARANTINE_SECONDS must be an integer from 1 to 86400 (got %d)", seconds)
+	}
+	return seconds, nil
+}
+
 func initEnv() {
 	execDir, err := os.Getwd()
 	if err != nil {
@@ -170,21 +183,16 @@ func initEnv() {
 		// Fallback relative to project root
 		dbPath = filepath.Join(execDir, "ipam", "ipam.db")
 	}
-
-	// Determine Ansible vars.yml path
-	if envVars := os.Getenv("VARS_YML_PATH"); envVars != "" {
-		varsYmlPath = envVars
-	} else {
-		varsYmlPath = filepath.Join(filepath.Dir(dbPath), "..", "ansible", "group_vars", "gateways", "vars.yml")
+	dbPath, err = filepath.Abs(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: cannot resolve IPAM database path: %v\n", err)
+		os.Exit(1)
 	}
 
-	backupDir = filepath.Join(filepath.Dir(dbPath), "..", "ansible", "backups")
-
-	defaultQuarantineSeconds = 60
-	if envQ := os.Getenv("IP_QUARANTINE_SECONDS"); envQ != "" {
-		if sec, err := strconv.Atoi(envQ); err == nil {
-			defaultQuarantineSeconds = sec
-		}
+	defaultQuarantineSeconds, err = parseIPQuarantineSeconds(os.Getenv("IP_QUARANTINE_SECONDS"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
+		os.Exit(1)
 	}
 
 	routingDomain = "cstam.felcloud.tn"

@@ -1,0 +1,18 @@
+Preflight PASS: /health and authenticated /api/sandboxes at http://127.0.0.1:18081
+Starting 12 simultaneous provisions (concurrency=12)...
+PASS: success count: 12/12; failures by step/status: none
+PASS: unique valid sandbox IPs: 12/12 unique; subnet=10.20.30.0/24; excluded addresses checked
+PASS: unique server_id and port_id values: servers=12/12, ports=12/12
+PASS: one allocated lease per successful team: lease endpoint HTTP 200; checked 12 successful teams and duplicate allocated IPs
+SKIPPED: successful hostnames respond via VIP/PUBLIC IP: Set VIP_IP or PUBLIC_IP to enable routed HTTP verification
+PASS: no sandbox remains PROVISIONING: endpoint HTTP 200; stuck=[]
+PASS: gateway sync events observed: 9 SYNC events versus 12 successful provisions (HTTP 200)
+Starting parallel teardown of 12 successful provisions...
+PASS: teardown requests succeeded: 12/12 returned 200
+PASS: leases enter QUARANTINED: endpoint HTTP 200; verified 12 leases
+FAIL: quarantined leases become FREE: completed within 120 seconds=False
+PASS: torn-down sandboxes are RELEASED: all 12 states RELEASED=True
+SKIPPED: OpenStack server/port cleanup: mock mode does not query OpenStack
+PASS: success rate threshold: 100.0% >= 100.0%
+Results: /tmp/audit/stress/results.json, results.csv, summary.md
+stress test exit=1
