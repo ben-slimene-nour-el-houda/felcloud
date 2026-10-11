@@ -12,26 +12,32 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 const defaultFailoverThreshold = 3000 * time.Millisecond
 
 var (
-	failoverMu            sync.Mutex
 	failoverPollInterval  = 75 * time.Millisecond
 	failoverStatusReader  = liveFailoverStatus
-	failoverCommandRunner = runKeepalivedCommand
+	failoverCommandRunner = runServiceCommand
 	failoverVIPProbe      = probeFailoverVIP
 )
 
 type failoverResponse struct {
-	Success    bool   `json:"success"`
-	Before     string `json:"before"`
-	After      string `json:"after"`
-	DowntimeMS int64  `json:"downtime_ms"`
-	Reason     string `json:"reason,omitempty"`
+	Success                 bool   `json:"success"`
+	Before                 string `json:"before"`
+	After                  string `json:"after"`
+	DowntimeMS             int64  `json:"downtime_ms"`
+	FailoverMS             int64  `json:"failover_ms,omitempty"`
+	FailedRequests         int    `json:"failed_requests,omitempty"`
+	TotalRequests          int    `json:"total_requests,omitempty"`
+	ServingGatewayBefore   string `json:"serving_gateway_before,omitempty"`
+	ServingGatewayAfter    string `json:"serving_gateway_after,omitempty"`
+	VerifiedBy             string `json:"verified_by,omitempty"`
+	Mode                   string `json:"mode,omitempty"`
+	FailbackDowntimeMS     int64  `json:"failback_downtime_ms,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
 }
 
 type failoverVIPResponse struct {
@@ -87,9 +93,12 @@ func probeFailoverVIP(ctx context.Context, target *url.URL, host string) failove
 	return failoverVIPResponse{Gateway: strings.TrimSpace(response.Header.Get("X-Gateway-ID")), Status: response.StatusCode}
 }
 
-func runKeepalivedCommand(gateway, action string) error {
+func runServiceCommand(gateway, service, action string) error {
 	if !allowedGateways[gateway] || (action != "stop" && action != "start") {
-		return errors.New("invalid gateway or keepalived action")
+		return errors.New("invalid gateway or service action")
+	}
+	if service != "keepalived" && service != "haproxy" {
+		return errors.New("invalid service")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -98,7 +107,7 @@ func runKeepalivedCommand(gateway, action string) error {
 	bastion := envOr("BASTION_IP", "203.0.113.119")
 	cmd := exec.CommandContext(ctx, "ansible",
 		"-i", inventory, gateway,
-		"-m", "command", "-a", "systemctl "+action+" keepalived", "-b",
+		"-m", "command", "-a", "systemctl "+action+" "+service, "-b",
 		"--vault-password-file", vault,
 		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes'", bastion),
 	)
@@ -107,25 +116,81 @@ func runKeepalivedCommand(gateway, action string) error {
 	cmd.Stderr = &output
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("Ansible %s keepalived on %s: %w (%s)", action, gateway, ctx.Err(), strings.TrimSpace(output.String()))
+			return fmt.Errorf("Ansible %s %s on %s: %w (%s)", action, service, gateway, ctx.Err(), strings.TrimSpace(output.String()))
 		}
-		return fmt.Errorf("Ansible %s keepalived on %s: %w (%s)", action, gateway, err, strings.TrimSpace(output.String()))
+		return fmt.Errorf("Ansible %s %s on %s: %w (%s)", action, service, gateway, err, strings.TrimSpace(output.String()))
 	}
 	return nil
 }
 
-func performGatewayFailover(store *gatewayStore) (result failoverResponse, statusCode int) {
-	result = failoverResponse{Before: "unknown", After: "unknown"}
+func runKeepalivedCommand(gateway, action string) error {
+	return runServiceCommand(gateway, "keepalived", action)
+}
+
+func normalizeFailoverMode(mode string) (string, error) {
+	switch strings.TrimSpace(mode) {
+	case "", "keepalived":
+		return "keepalived", nil
+	case "haproxy-only":
+		return "haproxy-only", nil
+	default:
+		return "", errors.New("invalid failover mode: must be keepalived or haproxy-only")
+	}
+}
+
+func allowedFailoverService(mode string) string {
+	if strings.TrimSpace(mode) == "haproxy-only" {
+		return "haproxy"
+	}
+	return "keepalived"
+}
+
+func failoverPollDelay() time.Duration {
+	if value := strings.TrimSpace(os.Getenv("FAILOVER_POLL_MS")); value != "" {
+		if ms, err := strconv.Atoi(value); err == nil && ms > 0 && ms <= 5000 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	return failoverPollInterval
+}
+
+type failoverSample struct {
+	TS      time.Time
+	Gateway string
+	Status  int
+	OK      bool
+}
+
+func performGatewayFailover(store *gatewayStore, mode string) (result failoverResponse, statusCode int) {
+	result = failoverResponse{Before: "unknown", After: "unknown", Mode: "keepalived", VerifiedBy: "responding-gateway-header"}
 	statusCode = http.StatusBadGateway
 	eventResult := "failed"
 	stoppedGateway := ""
+	serviceName := "keepalived"
+	if normalized, err := normalizeFailoverMode(mode); err == nil {
+		serviceName = allowedFailoverService(normalized)
+		result.Mode = normalized
+	} else {
+		result.Reason = err.Error()
+		return result, http.StatusBadRequest
+	}
 	startedAt := time.Now()
+	stopIssuedAt := startedAt
 	var outageStarted time.Time
+	var lastOKBeforeStop time.Time
+	var failoverAt time.Time
+	var failedRequests, totalRequests int
+	var sampleCh = make(chan failoverSample, 32)
+	probeTarget, probeHost, targetErr := failoverProbeTarget()
+	if targetErr != nil {
+		result.Reason = targetErr.Error()
+		return result, http.StatusBadRequest
+	}
 	defer func() {
 		if stoppedGateway != "" {
-			if restartErr := failoverCommandRunner(stoppedGateway, "start"); restartErr != nil {
+			if restartErr := failoverCommandRunner(stoppedGateway, serviceName, "start"); restartErr != nil {
 				result.Success = false
-				result.Reason = strings.TrimSpace(strings.Join([]string{result.Reason, "failed to restart keepalived: " + restartErr.Error()}, "; "))
+				result.Reason = strings.TrimSpace(strings.Join([]string{result.Reason, "failed to restart " + serviceName + ": " + restartErr.Error()}, "; "))
 				if statusCode != http.StatusGatewayTimeout {
 					statusCode = http.StatusBadGateway
 				}
@@ -134,21 +199,17 @@ func performGatewayFailover(store *gatewayStore) (result failoverResponse, statu
 				gwCache.Invalidate()
 			}
 		}
+		result.ServingGatewayBefore = result.Before
+		result.ServingGatewayAfter = result.After
+		if result.VerifiedBy == "" {
+			result.VerifiedBy = "responding-gateway-header"
+		}
 		if store != nil && store.db != nil {
-			detail := fmt.Sprintf("from=%s to=%s result=%s", result.Before, result.After, eventResult)
-			if result.Reason != "" {
-				detail += " reason=" + result.Reason
-			}
-			recordEvent(store.db, "", "failover", detail, result.DowntimeMS)
+			payload, _ := json.Marshal(result)
+			recordEvent(store.db, "", "failover", string(payload), result.DowntimeMS)
 		}
 	}()
-
 	threshold, err := failoverThreshold()
-	if err != nil {
-		result.Reason = err.Error()
-		return result, http.StatusBadRequest
-	}
-	target, host, err := failoverProbeTarget()
 	if err != nil {
 		result.Reason = err.Error()
 		return result, http.StatusBadRequest
@@ -160,49 +221,112 @@ func performGatewayFailover(store *gatewayStore) (result failoverResponse, statu
 		result.Reason = "live gateway status did not identify a reachable VIP holder"
 		return result, http.StatusGatewayTimeout
 	}
-
-	// Arm restoration before issuing the stop command; a partial Ansible failure
-	// can still leave keepalived stopped remotely.
+	result.ServingGatewayBefore = result.Before
+	result.ServingGatewayAfter = result.After
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	probe := failoverVIPProbe(probeCtx, probeTarget, probeHost)
+	probeCancel()
+	if probe.Err == nil && probe.Status >= 200 && probe.Status < 400 && probe.Gateway != "" && allowedGateways[probe.Gateway] {
+		lastOKBeforeStop = time.Now()
+	}
 	stoppedGateway = result.Before
-	if err := failoverCommandRunner(stoppedGateway, "stop"); err != nil {
-		result.Reason = "could not stop keepalived: " + err.Error()
+	servicePoll := make(chan struct{})
+	go func() {
+		defer close(servicePoll)
+		poll := failoverPollDelay()
+		ticker := time.NewTicker(poll)
+		defer ticker.Stop()
+		for {
+			probeCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			probe := failoverVIPProbe(probeCtx, probeTarget, probeHost)
+			cancel()
+			sample := failoverSample{TS: time.Now(), Gateway: probe.Gateway, Status: probe.Status, OK: probe.Err == nil && probe.Status >= 200 && probe.Status < 400 && allowedGateways[probe.Gateway]}
+			select {
+			case sampleCh <- sample:
+			default:
+			}
+			select {
+			case <-servicePoll:
+				return
+			default:
+			}
+			select {
+			case <-time.After(poll):
+			case <-servicePoll:
+				return
+			}
+		}
+	}()
+	stopIssuedAt = time.Now()
+	if err := failoverCommandRunner(stoppedGateway, serviceName, "stop"); err != nil {
+		result.Reason = "could not stop " + serviceName + ": " + err.Error()
 		return result, http.StatusBadGateway
 	}
-
 	deadline := time.Now().Add(threshold)
 	for time.Now().Before(deadline) {
-		probeCtx, cancel := context.WithDeadline(context.Background(), deadline)
-		probe := failoverVIPProbe(probeCtx, target, host)
-		cancel()
-		if probe.Err != nil || probe.Status < 200 || probe.Status >= 400 || !allowedGateways[probe.Gateway] {
+		select {
+		case sample := <-sampleCh:
+			totalRequests++
+			if !sample.OK {
+				failedRequests++
+				if outageStarted.IsZero() {
+					outageStarted = sample.TS
+				}
+				continue
+			}
+			if lastOKBeforeStop.IsZero() {
+				lastOKBeforeStop = sample.TS
+			}
+			if sample.Gateway != result.Before {
+				if failoverAt.IsZero() {
+					failoverAt = sample.TS
+				}
+				result.After = sample.Gateway
+				result.Success = true
+				result.Reason = ""
+				result.DowntimeMS = 0
+				if !lastOKBeforeStop.IsZero() && sample.TS.After(lastOKBeforeStop) {
+					result.DowntimeMS = sample.TS.Sub(lastOKBeforeStop).Milliseconds()
+				}
+				result.FailoverMS = failoverAt.Sub(stopIssuedAt).Milliseconds()
+				if result.FailoverMS < 0 {
+					result.FailoverMS = 0
+				}
+				result.FailedRequests = failedRequests
+				result.TotalRequests = totalRequests
+				result.ServingGatewayAfter = result.After
+				result.VerifiedBy = "responding-gateway-header"
+				statusCode = http.StatusOK
+				eventResult = "success"
+				close(servicePoll)
+				return result, statusCode
+			}
 			if outageStarted.IsZero() {
-				outageStarted = time.Now()
+				outageStarted = sample.TS
 			}
-		} else if probe.Gateway != result.Before {
-			result.After = probe.Gateway
-			if !outageStarted.IsZero() {
-				result.DowntimeMS = time.Since(outageStarted).Milliseconds()
+			if !failoverAt.IsZero() {
+				result.FailoverMS = failoverAt.Sub(startedAt).Milliseconds()
+				if result.FailoverMS < 0 {
+					result.FailoverMS = 0
+				}
 			}
-			result.Success = true
-			result.Reason = ""
-			statusCode = http.StatusOK
-			eventResult = "success"
-			return result, statusCode
-		}
-		remaining := time.Until(deadline)
-		if remaining > 0 {
-			wait := failoverPollInterval
-			if wait > remaining {
-				wait = remaining
+		default:
+			if time.Now().After(deadline) {
+				goto timeout
 			}
-			time.Sleep(wait)
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
+
+timeout:
+	close(servicePoll)
 	if !outageStarted.IsZero() {
 		result.DowntimeMS = time.Since(outageStarted).Milliseconds()
 	} else {
 		result.DowntimeMS = time.Since(startedAt).Milliseconds()
 	}
+	result.FailedRequests = failedRequests
+	result.TotalRequests = totalRequests
 	result.Reason = fmt.Sprintf("VIP did not move to a different gateway within %dms", threshold.Milliseconds())
 	return result, http.StatusGatewayTimeout
 }
@@ -213,10 +337,16 @@ func handleGatewayFailover(store *gatewayStore, w http.ResponseWriter, r *http.R
 		return
 	}
 	var body struct {
-		Confirm bool `json:"confirm"`
+		Confirm bool   `json:"confirm"`
+		Mode    string `json:"mode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.Confirm {
 		errJSON(w, http.StatusBadRequest, "confirm:true required")
+		return
+	}
+	mode, err := normalizeFailoverMode(body.Mode)
+	if err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := tryGatewayOp("failover-manual"); err != nil {
@@ -224,6 +354,6 @@ func handleGatewayFailover(store *gatewayStore, w http.ResponseWriter, r *http.R
 		return
 	}
 	defer releaseGatewayOp("failover-manual")
-	result, status := performGatewayFailover(store)
+	result, status := performGatewayFailover(store, mode)
 	writeJSON(w, status, result)
 }
