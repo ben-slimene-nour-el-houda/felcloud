@@ -33,6 +33,12 @@ func loadAPISecurityConfig() (apiSecurityConfig, error) {
 	var config apiSecurityConfig
 	config.authDisabled = os.Getenv("AUTH_DISABLED") == "true"
 	token := os.Getenv("ADMIN_TOKEN")
+	if token == "" {
+		if legacy := os.Getenv("CONTROL_PLANE_TOKEN"); legacy != "" {
+			log.Printf("DEPRECATION WARNING: CONTROL_PLANE_TOKEN is deprecated; using it as ADMIN_TOKEN")
+			token = legacy
+		}
+	}
 	if token != "" && len(token) < 24 {
 		return config, errors.New("ADMIN_TOKEN must be at least 24 characters")
 	}
@@ -85,10 +91,21 @@ func setupAPISecurity(next http.Handler, config apiSecurityConfig) http.Handler 
 			w.Header().Add("Vary", "Origin")
 		}
 
-		if !(r.Method == http.MethodGet && r.URL.Path == "/health") && !config.authDisabled && !hasValidBearerToken(r, config.tokenHash) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="controlplane"`)
-			sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		if r.Method == http.MethodGet && r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
 			return
+		}
+
+		if !config.authDisabled {
+			if r.URL.Path == "/api/gateways/events" && r.Method == http.MethodPost && allowGatewayEventRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !hasValidBearerToken(r, config.tokenHash) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="controlplane"`)
+				sendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
 		}
 
 		if isMutatingRoute(r) {
@@ -102,6 +119,39 @@ func setupAPISecurity(next http.Handler, config apiSecurityConfig) http.Handler 
 	})
 }
 
+func allowGatewayEventRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost || r.URL.Path != "/api/gateways/events" {
+		return false
+	}
+	if hasValidBearerToken(r, sha256.Sum256([]byte(os.Getenv("ADMIN_TOKEN")))) {
+		return true
+	}
+	if hasValidEventsToken(r) {
+		return true
+	}
+	if strings.EqualFold(os.Getenv("EVENTS_ALLOW_SUBNET"), "true") {
+		_, network, err := net.ParseCIDR(envOr("GATEWAY_SUBNET", "10.20.10.0/24"))
+		if err == nil {
+			if ip := clientIP(r); ip != "unknown" {
+				addr := net.ParseIP(ip)
+				if addr != nil && network.Contains(addr) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasValidEventsToken(r *http.Request) bool {
+	provided := r.Header.Get("X-Events-Token")
+	expected := os.Getenv("EVENTS_TOKEN")
+	if provided == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
 func handleCORSPreflight(w http.ResponseWriter, r *http.Request, config apiSecurityConfig) {
 	origin := r.Header.Get("Origin")
 	if config.corsOrigin == "" {
@@ -113,7 +163,7 @@ func handleCORSPreflight(w http.ResponseWriter, r *http.Request, config apiSecur
 		return
 	}
 	method := r.Header.Get("Access-Control-Request-Method")
-	if method != http.MethodGet && method != http.MethodPost && method != http.MethodDelete {
+	if method != http.MethodGet && method != http.MethodPost && method != http.MethodDelete && method != http.MethodOptions {
 		http.Error(w, "CORS method not allowed", http.StatusForbidden)
 		return
 	}

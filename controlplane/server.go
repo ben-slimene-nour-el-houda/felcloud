@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -67,103 +66,10 @@ func newGatewayStoreWithDB(db *sql.DB) (*gatewayStore, error) {
 
 func (s *gatewayStore) close() { _ = s.db.Close() }
 
-// ── Auth middleware ────────────────────────────────────────────────────────────
-
-// requireBearerToken enforces CONTROL_PLANE_TOKEN when set.
-func requireBearerToken(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// CORS preflight — always allow
-		if r.Method == http.MethodOptions {
-			writeJSON(w, http.StatusNoContent, nil)
-			return
-		}
-		token := os.Getenv("CONTROL_PLANE_TOKEN")
-		if token == "" {
-			next(w, r)
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != token {
-			errJSON(w, http.StatusUnauthorized, "invalid or missing bearer token")
-			return
-		}
-		next(w, r)
-	}
-}
-
-// requireEventsAuth is the dual-token check for POST /api/gateways/events.
-// Priority: ****** → X-Events-Token → gateway mgmt subnet (only when both env vars are unset).
-func requireEventsAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodOptions {
-			writeJSON(w, http.StatusNoContent, nil)
-			return
-		}
-		cpToken := os.Getenv("CONTROL_PLANE_TOKEN")
-		evToken := os.Getenv("EVENTS_TOKEN")
-
-		// 1. ****** token (dashboard / operators)
-		if cpToken != "" {
-			auth := r.Header.Get("Authorization")
-			if strings.HasPrefix(auth, "Bearer ") && strings.TrimPrefix(auth, "Bearer ") == cpToken {
-				next(w, r)
-				return
-			}
-			// token is configured but not matched → reject; don't fall through
-			errJSON(w, http.StatusUnauthorized, "invalid or missing bearer token")
-			return
-		}
-		// 2. X-Events-Token for notify scripts (lightweight shared secret)
-		if evToken != "" {
-			if r.Header.Get("X-Events-Token") == evToken {
-				next(w, r)
-				return
-			}
-			// token is configured but not matched → reject; don't fall through
-			errJSON(w, http.StatusUnauthorized, "invalid X-Events-Token")
-			return
-		}
-		// 3. Neither token env var is set: accept only from the gateway mgmt subnet.
-		// Gateway mgmt NICs: gw1=10.20.10.24, gw2=10.20.10.164 (subnet 10.20.10.0/24).
-		// Confirmed in Pulumi.dev.yaml (felcloud-infra:mgmtCidr), Ansible inventory,
-		// and IPAM DB subnets tables. Uses r.RemoteAddr only — never X-Forwarded-For.
-		if fromRemoteAddr(r, envOr("GATEWAY_SUBNET", "10.20.10.0/24")) {
-			next(w, r)
-			return
-		}
-		errJSON(w, http.StatusForbidden, "forbidden: not from gateway subnet")
-	}
-}
-
-// fromRemoteAddr checks whether r.RemoteAddr belongs to cidr.
-// Uses ONLY r.RemoteAddr — X-Forwarded-For is intentionally ignored (trivially spoofed).
-func fromRemoteAddr(r *http.Request, cidr string) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		// RemoteAddr without port (unusual but possible in tests)
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return false
-	}
-	_, network, err := net.ParseCIDR(cidr)
-	if err != nil {
-		return false
-	}
-	return network.Contains(ip)
-}
-
 // ── JSON / CORS helpers ───────────────────────────────────────────────────────
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
-	origin := strings.TrimSpace(os.Getenv("DASHBOARD_ORIGIN"))
 	w.Header().Set("Content-Type", "application/json")
-	if origin != "" {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-	}
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Events-Token")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	if status == http.StatusNoContent {
 		w.WriteHeader(status)
 		return
@@ -234,7 +140,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	}))
 
 	// ── GET /api/gateways/status ───────────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/status", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/status", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -244,7 +150,6 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		}
 		pr := gwCache.Get(store)
 
-		// Build per-gateway map with the VIP address included
 		vip := envOr("VIP_ADDRESS", "10.20.20.246")
 		gwOut := make(map[string]any, len(pr.Gateways))
 		for name, p := range pr.Gateways {
@@ -265,10 +170,10 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			"latest_generation": pr.LatestGenID,
 			"fetched_at_ms":     pr.FetchedAtUnix,
 		})
-	})))
+	}))
 
 	// ── GET /api/gateways/logs ─────────────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/logs", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/logs", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -309,11 +214,10 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		lines, err := FetchGatewayLogs(gateway, source, since, limit)
 		if err != nil {
 			errStr := err.Error()
-			code := http.StatusBadGateway // 502 = ansible/ssh error
+			code := http.StatusBadGateway
 			if strings.Contains(errStr, "timed out") {
-				code = http.StatusGatewayTimeout // 504 = timeout specifically
+				code = http.StatusGatewayTimeout
 			}
-			// Include applied_limit so callers can confirm clamping even in error path
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(code)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -332,45 +236,38 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			"count":   len(lines),
 			"entries": lines,
 		})
-	})))
+	}))
 
 	// ── GET /api/gateways/events   POST /api/gateways/events ──────────────────
 	mux.HandleFunc("/api/gateways/events", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodOptions:
 			writeJSON(w, http.StatusNoContent, nil)
-
 		case http.MethodGet:
-			requireBearerToken(func(w http.ResponseWriter, r *http.Request) {
-				gwEventsGet(w, r, store)
-			})(w, r)
-
+			gwEventsGet(w, r, store)
 		case http.MethodPost:
-			requireEventsAuth(func(w http.ResponseWriter, r *http.Request) {
-				gwEventsPost(w, r, store)
-			})(w, r)
-
+			gwEventsPost(w, r, store)
 		default:
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	}))
 
 	// ── GET /api/gateways/generations ─────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/generations", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/generations", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		gwGenerationsGet(w, r, store)
-	})))
+	}))
 
 	// ── POST /api/gateways/failover ────────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/failover", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/failover", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		handleGatewayFailover(store, w, r)
-	})))
+	}))
 
 	// ── POST /api/gateways/sync ────────────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/sync", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/sync", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -380,23 +277,24 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			return
 		}
 		defer failoverMu.Unlock()
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		var body struct {
+			DryRun bool `json:"dry_run"`
+		}
+		if err := decodeStrictJSON(w, r, &body); err != nil {
 			errJSON(w, http.StatusBadRequest, "invalid JSON", err.Error())
 			return
 		}
-		dryRun, _ := body["dry_run"].(bool)
-		success, msg, duration := syncHAProxyDualGatewaysTimed(dryRun, "manual")
+		success, msg, duration := syncHAProxyDualGatewaysTimed(body.DryRun, "manual")
 		if !success {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "sync failed", "reason": msg, "duration_ms": duration})
 			return
 		}
 		gwCache.Invalidate()
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": msg, "duration_ms": duration})
-	})))
+	}))
 
 	// ── POST /api/gateways/rollback ────────────────────────────────────────────
-	mux.HandleFunc("/api/gateways/rollback", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gateways/rollback", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -409,7 +307,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		var body struct {
 			TargetGeneration string `json:"target_generation"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		if err := decodeStrictJSON(w, r, &body); err != nil {
 			errJSON(w, http.StatusBadRequest, "invalid JSON", err.Error())
 			return
 		}
@@ -420,42 +318,42 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		}
 		gwCache.Invalidate()
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "generation": generation, "duration_ms": duration})
-	})))
+	}))
 
 	// ── GET /api/sandboxes ─────────────────────────────────────────────────────
-	mux.HandleFunc("/api/sandboxes", requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sandboxes", logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		gwSandboxesGet(w, r)
-	})))
+	}))
 
 	// ── GET /api/leases + /ipam/leases ────────────────────────────────────────
-	leasesHandler := requireBearerToken(logRequest(func(w http.ResponseWriter, r *http.Request) {
+	leasesHandler := logRequest(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
 		gwLeasesGet(w, r)
-	}))
+	})
 	mux.HandleFunc("/api/leases", leasesHandler)
 	mux.HandleFunc("/ipam/leases", leasesHandler)
 
 	// Legacy control-plane API routes stay on the canonical router so they
 	// retain the same authentication, rate limiting, and request logging.
-	mux.HandleFunc("/ipam/leases/allocate", requireBearerToken(logRequest(handleAllocate)))
-	mux.HandleFunc("/api/leases/allocate", requireBearerToken(logRequest(handleAllocate)))
-	mux.HandleFunc("/ipam/leases/release", requireBearerToken(logRequest(handleRelease)))
-	mux.HandleFunc("/api/leases/release", requireBearerToken(logRequest(handleRelease)))
-	mux.HandleFunc("/ipam/leases/reclaim", requireBearerToken(logRequest(handleReclaim)))
-	mux.HandleFunc("/api/leases/reclaim", requireBearerToken(logRequest(handleReclaim)))
-	mux.HandleFunc("/api/sandboxes/provision", requireBearerToken(logRequest(handleProvision)))
-	mux.HandleFunc("/api/sandboxes/extend", requireBearerToken(logRequest(handleExtendSandbox)))
-	mux.HandleFunc("/api/sandboxes/", requireBearerToken(logRequest(handleSandboxTeardown)))
-	mux.HandleFunc("/api/reconcile", requireBearerToken(logRequest(handleReconcile)))
-	mux.HandleFunc("/api/reconcile/apply", requireBearerToken(logRequest(handleReconcileApply)))
-	mux.HandleFunc("/api/events", requireBearerToken(logRequest(handleEvents)))
+	mux.HandleFunc("/ipam/leases/allocate", logRequest(handleAllocate))
+	mux.HandleFunc("/api/leases/allocate", logRequest(handleAllocate))
+	mux.HandleFunc("/ipam/leases/release", logRequest(handleRelease))
+	mux.HandleFunc("/api/leases/release", logRequest(handleRelease))
+	mux.HandleFunc("/ipam/leases/reclaim", logRequest(handleReclaim))
+	mux.HandleFunc("/api/leases/reclaim", logRequest(handleReclaim))
+	mux.HandleFunc("/api/sandboxes/provision", logRequest(handleProvision))
+	mux.HandleFunc("/api/sandboxes/extend", logRequest(handleExtendSandbox))
+	mux.HandleFunc("/api/sandboxes/", logRequest(handleSandboxTeardown))
+	mux.HandleFunc("/api/reconcile", logRequest(handleReconcile))
+	mux.HandleFunc("/api/reconcile/apply", logRequest(handleReconcileApply))
+	mux.HandleFunc("/api/events", logRequest(handleEvents))
 
 	// ── Catch-all ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("/", logRequest(func(w http.ResponseWriter, r *http.Request) {
@@ -553,32 +451,57 @@ type eventsPostBody struct {
 	SandboxID  string `json:"sandbox_id"`
 }
 
-func gwEventsPost(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8192)
-	var body eventsPostBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		errJSON(w, http.StatusBadRequest, "invalid JSON body", err.Error())
-		return
-	}
+func validateGatewayEventBody(body *eventsPostBody) error {
 	if body.Type == "" {
-		errJSON(w, http.StatusBadRequest, "type is required")
-		return
+		return errors.New("type is required")
 	}
 	if !allowedEventTypes[body.Type] {
 		types := make([]string, 0, len(allowedEventTypes))
 		for t := range allowedEventTypes {
 			types = append(types, t)
 		}
-		errJSON(w, http.StatusBadRequest, "invalid type",
-			fmt.Sprintf("allowed: %s", strings.Join(types, ", ")))
+		return fmt.Errorf("invalid type: allowed %s", strings.Join(types, ", "))
+	}
+	if body.Host != "" && !allowedGateways[strings.ToLower(body.Host)] {
+		return errors.New("hostname must be empty or gw1/gw2")
+	}
+	if body.State != "" {
+		switch strings.ToUpper(body.State) {
+		case "MASTER", "BACKUP", "FAULT":
+		default:
+			return errors.New("state must be empty or MASTER/BACKUP/FAULT")
+		}
+		body.State = strings.ToUpper(body.State)
+	}
+	if body.SandboxID != "" && !dnsLabelRE.MatchString(body.SandboxID) {
+		return errors.New("sandbox_id must be a lowercase DNS label")
+	}
+	if len(body.Detail) > 512 {
+		return errors.New("detail exceeds 512 characters")
+	}
+	if body.TsMs != 0 {
+		now := time.Now().UTC().UnixMilli()
+		if body.TsMs < now-86400000 || body.TsMs > now+86400000 {
+			return errors.New("ts_ms is outside the allowed ±1 day window")
+		}
+	}
+	return nil
+}
+
+func gwEventsPost(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
+	var body eventsPostBody
+	if err := decodeStrictJSON(w, r, &body); err != nil {
+		errJSON(w, http.StatusBadRequest, "invalid JSON body", err.Error())
 		return
 	}
-
+	if err := validateGatewayEventBody(&body); err != nil {
+		errJSON(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if body.TsMs == 0 {
 		body.TsMs = time.Now().UTC().UnixMilli()
 	}
-
-	// Build detail string from fields if not explicitly set
+	body.Host = strings.ToLower(body.Host)
 	detail := body.Detail
 	if detail == "" && (body.State != "" || body.Host != "") {
 		detail = fmt.Sprintf("state=%s host=%s", body.State, body.Host)

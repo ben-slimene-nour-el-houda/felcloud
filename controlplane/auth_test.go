@@ -5,8 +5,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testAdminToken = "test-admin-token-1234567890"
@@ -162,4 +164,73 @@ func TestIPAndTeamValidation(t *testing.T) {
 			t.Fatalf("body=%s status=%d response=%s; want 400", body, response.Code, response.Body.String())
 		}
 	}
+}
+
+func TestAuthMatrixAndCORS(t *testing.T) {
+	setupTestDB(t)
+	t.Setenv("AUTH_DISABLED", "false")
+	t.Setenv("ADMIN_TOKEN", testAdminToken)
+	t.Setenv("EVENTS_TOKEN", "events-token-01234567890")
+	t.Setenv("CORS_ORIGIN", "https://console.example.com")
+	t.Setenv("EVENTS_ALLOW_SUBNET", "false")
+
+	handler := setupAPIRoutes()
+	validEventBody := `{"type":"keepalived_state","state":"MASTER","hostname":"gw1","ts_ms":` + strconv.FormatInt(time.Now().UTC().UnixMilli(), 10) + `,"detail":"ok","sandbox_id":"team1"}`
+	adminHeader := "Bearer " + testAdminToken
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		auth       string
+		events     string
+		remoteAddr string
+		want       int
+	}{
+		{name: "health no auth", method: http.MethodGet, path: "/health", want: http.StatusOK},
+		{name: "status no auth", method: http.MethodGet, path: "/api/gateways/status", want: http.StatusUnauthorized},
+		{name: "status admin", method: http.MethodGet, path: "/api/gateways/status", auth: adminHeader, want: http.StatusOK},
+		{name: "status events token", method: http.MethodGet, path: "/api/gateways/status", events: "events-token-01234567890", want: http.StatusUnauthorized},
+		{name: "sync no auth", method: http.MethodPost, path: "/api/gateways/sync", body: `{}` , want: http.StatusUnauthorized},
+		{name: "sync admin", method: http.MethodPost, path: "/api/gateways/sync", body: `{}`, auth: adminHeader, want: http.StatusBadGateway},
+		{name: "events no auth", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, want: http.StatusUnauthorized},
+		{name: "events wrong token", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, events: "bad-token", want: http.StatusUnauthorized},
+		{name: "events valid token", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, events: "events-token-01234567890", want: http.StatusCreated},
+		{name: "events admin bearer", method: http.MethodPost, path: "/api/gateways/events", body: validEventBody, auth: adminHeader, want: http.StatusCreated},
+		{name: "sandbox no auth", method: http.MethodPost, path: "/api/sandboxes/provision", body: `{"team":"team1"}`, want: http.StatusUnauthorized},
+		{name: "sandbox admin", method: http.MethodPost, path: "/api/sandboxes/provision", body: `{"team":"team1"}`, auth: adminHeader, want: http.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			if tc.remoteAddr != "" {
+				req.RemoteAddr = tc.remoteAddr
+			}
+			if tc.auth != "" {
+				req.Header.Set("Authorization", tc.auth)
+			}
+			if tc.events != "" {
+				req.Header.Set("X-Events-Token", tc.events)
+			}
+			res := httptest.NewRecorder()
+			handler.ServeHTTP(res, req)
+			if res.Code != tc.want {
+				t.Fatalf("%s: got %d, want %d; body=%s", tc.name, res.Code, tc.want, res.Body.String())
+			}
+		})
+	}
+
+	t.Run("dashboard origin alone does not set ACAO", func(t *testing.T) {
+		t.Setenv("CORS_ORIGIN", "")
+		t.Setenv("DASHBOARD_ORIGIN", "https://dashboard.example.com")
+		preflight := httptest.NewRequest(http.MethodOptions, "/api/gateways/status", nil)
+		preflight.Header.Set("Origin", "https://dashboard.example.com")
+		preflight.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		preflight.Header.Set("Access-Control-Request-Headers", "Authorization")
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, preflight)
+		if got := res.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("unexpected ACAO=%q with DASHBOARD_ORIGIN only", got)
+		}
+	})
 }
