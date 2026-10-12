@@ -354,6 +354,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/api/leases/reclaim", logRequest(handleReclaim))
 	mux.HandleFunc("/api/sandboxes/provision", logRequest(handleProvision))
 	mux.HandleFunc("/api/sandboxes/extend", logRequest(handleExtendSandbox))
+	mux.HandleFunc("/api/sandboxes/custom-domain", logRequest(handleCustomDomain))
 	mux.HandleFunc("/api/sandboxes/", logRequest(handleSandboxTeardown))
 	mux.HandleFunc("/api/reconcile", logRequest(handleReconcile))
 	mux.HandleFunc("/api/reconcile/apply", logRequest(handleReconcileApply))
@@ -591,11 +592,39 @@ func gwSandboxesGet(w http.ResponseWriter, _ *http.Request) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`
+	var hasCustomDomain bool
+	infoRows, infoErr := db.Query("PRAGMA table_info(sandboxes)")
+	if infoErr == nil {
+		for infoRows.Next() {
+			var cid int
+			var name, typ string
+			var notNull int
+			var dflt any
+			var pk int
+			if err := infoRows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil {
+				if name == "custom_domain" {
+					hasCustomDomain = true
+				}
+			}
+		}
+		infoRows.Close()
+	}
+
+	query := `
 		SELECT id, sandbox_id, hostname, subnet_name,
 		       COALESCE(private_ip,'') AS private_ip,
 		       status, created_at, updated_at, expires_at
-		FROM sandboxes ORDER BY created_at`)
+		FROM sandboxes ORDER BY created_at`
+	if hasCustomDomain {
+		query = `
+		SELECT id, sandbox_id, hostname, subnet_name,
+		       COALESCE(private_ip,'') AS private_ip,
+		       status, created_at, updated_at, expires_at,
+		       COALESCE(custom_domain, '') AS custom_domain
+		FROM sandboxes ORDER BY created_at`
+	}
+
+	rows, err := db.Query(query)
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "query error", err.Error())
 		return
@@ -606,17 +635,25 @@ func gwSandboxesGet(w http.ResponseWriter, _ *http.Request) {
 	for rows.Next() {
 		var id int
 		var sandboxID, hostname, subnet, ip, status, createdAt, updatedAt string
+		var customDomain string
 		var expiresAt sql.NullInt64
-		if err := rows.Scan(&id, &sandboxID, &hostname, &subnet, &ip, &status, &createdAt, &updatedAt, &expiresAt); err == nil {
+		var scanErr error
+		if hasCustomDomain {
+			scanErr = rows.Scan(&id, &sandboxID, &hostname, &subnet, &ip, &status, &createdAt, &updatedAt, &expiresAt, &customDomain)
+		} else {
+			scanErr = rows.Scan(&id, &sandboxID, &hostname, &subnet, &ip, &status, &createdAt, &updatedAt, &expiresAt)
+		}
+		if scanErr == nil {
 			m := map[string]any{
-				"id":          id,
-				"sandbox_id":  sandboxID,
-				"hostname":    hostname,
-				"subnet_name": subnet,
-				"private_ip":  ip,
-				"status":      status,
-				"created_at":  createdAt,
-				"updated_at":  updatedAt,
+				"id":            id,
+				"sandbox_id":    sandboxID,
+				"hostname":      hostname,
+				"subnet_name":   subnet,
+				"private_ip":    ip,
+				"status":        status,
+				"created_at":    createdAt,
+				"updated_at":    updatedAt,
+				"custom_domain": customDomain,
 			}
 			if expiresAt.Valid {
 				now := time.Now().UTC().Unix()

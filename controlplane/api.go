@@ -1,10 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -316,6 +318,74 @@ func errorText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+type customDomainRequest struct {
+	SandboxID    string `json:"sandbox_id"`
+	CustomDomain string `json:"custom_domain"`
+}
+
+var domainNameRE = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+func handleCustomDomain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
+		return
+	}
+	var req customDomainRequest
+	if err := decodeStrictJSON(w, r, &req); err != nil {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request payload"})
+		return
+	}
+	if !dnsLabelRE.MatchString(req.SandboxID) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid sandbox_id format"})
+		return
+	}
+	req.CustomDomain = strings.TrimSpace(strings.ToLower(req.CustomDomain))
+	if req.CustomDomain != "" && !domainNameRE.MatchString(req.CustomDomain) {
+		sendJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid custom_domain: must be a valid FQDN (e.g. app.team1.example.com)"})
+		return
+	}
+
+	db, err := getDBConnection()
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Database error"})
+		return
+	}
+	defer db.Close()
+
+	var status string
+	err = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", req.SandboxID).Scan(&status)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			sendJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("Sandbox '%s' not found", req.SandboxID)})
+			return
+		}
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Query error"})
+		return
+	}
+
+	_, err = db.Exec("UPDATE sandboxes SET custom_domain = ?, updated_at = CURRENT_TIMESTAMP WHERE sandbox_id = ?", req.CustomDomain, req.SandboxID)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to update custom domain"})
+		return
+	}
+
+	eventType := "CUSTOM_DOMAIN_BOUND"
+	detail := fmt.Sprintf("domain=%s", req.CustomDomain)
+	if req.CustomDomain == "" {
+		eventType = "CUSTOM_DOMAIN_REMOVED"
+		detail = "cleared"
+	}
+	recordEventForSandbox(req.SandboxID, eventType, detail, 0)
+
+	_, _ = syncHAProxyDualGateways(false)
+
+	sendJSON(w, http.StatusOK, map[string]interface{}{
+		"success":       true,
+		"sandbox_id":    req.SandboxID,
+		"custom_domain": req.CustomDomain,
+	})
 }
 
 func runAPIServer(port int) {

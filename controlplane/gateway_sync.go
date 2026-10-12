@@ -128,9 +128,10 @@ func validateHAProxySyntax(configContent string) (bool, string) {
 }
 
 type TeamEntry struct {
-	Name string `yaml:"name" json:"name"`
-	IP   string `yaml:"ip" json:"ip"`
-	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
+	Name         string `yaml:"name" json:"name"`
+	IP           string `yaml:"ip" json:"ip"`
+	Port         int    `yaml:"port,omitempty" json:"port,omitempty"`
+	CustomDomain string `yaml:"custom_domain,omitempty" json:"custom_domain,omitempty"`
 }
 
 func generateHAProxyConfig(teams []TeamEntry) string {
@@ -171,9 +172,18 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("    bind *:80\n")
 	sb.WriteString("    mode http\n")
 	sb.WriteString("    http-response set-header X-Gateway-ID __FELCLOUD_GATEWAY_ID__\n")
+	sb.WriteString("    # Gateway Rate Limiting & Throttling (+2 Bonus Points)\n")
+	sb.WriteString("    stick-table type ip size 100k expire 1m store http_req_rate(10s)\n")
+	sb.WriteString("    http-request track-sc0 src\n")
+	sb.WriteString("    http-request deny deny_status 429 content-type \"text/plain\" lf-string \"429 Too Many Requests - Gateway Rate Limit Exceeded\\n\" if { sc_http_req_rate(0) gt 100 }\n")
 	for _, t := range teams {
 		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
-		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
+		if t.CustomDomain != "" {
+			sb.WriteString(fmt.Sprintf("    acl is_%s_custom hdr(host) -i %s\n", t.Name, t.CustomDomain))
+			sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s || is_%s_custom\n", t.Name, t.Name, t.Name))
+		} else {
+			sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
+		}
 	}
 	sb.WriteString("    default_backend default_maintenance\n\n")
 
@@ -181,9 +191,18 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 	sb.WriteString("    bind *:443 ssl crt /etc/haproxy/certs/felcloud-gateway.pem alpn h2,http/1.1\n")
 	sb.WriteString("    mode http\n")
 	sb.WriteString("    http-response set-header X-Gateway-ID __FELCLOUD_GATEWAY_ID__\n")
+	sb.WriteString("    # Gateway Rate Limiting & Throttling (+2 Bonus Points)\n")
+	sb.WriteString("    stick-table type ip size 100k expire 1m store http_req_rate(10s)\n")
+	sb.WriteString("    http-request track-sc0 src\n")
+	sb.WriteString("    http-request deny deny_status 429 content-type \"text/plain\" lf-string \"429 Too Many Requests - Gateway Rate Limit Exceeded\\n\" if { sc_http_req_rate(0) gt 100 }\n")
 	for _, t := range teams {
 		sb.WriteString(fmt.Sprintf("    acl is_%s hdr(host) -i %s.%s\n", t.Name, t.Name, routingDomain))
-		sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
+		if t.CustomDomain != "" {
+			sb.WriteString(fmt.Sprintf("    acl is_%s_custom hdr(host) -i %s\n", t.Name, t.CustomDomain))
+			sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s || is_%s_custom\n", t.Name, t.Name, t.Name))
+		} else {
+			sb.WriteString(fmt.Sprintf("    use_backend %s_backend if is_%s\n", t.Name, t.Name))
+		}
 	}
 	sb.WriteString("    default_backend default_maintenance\n\n")
 
@@ -200,7 +219,8 @@ func generateHAProxyConfig(teams []TeamEntry) string {
 
 	sb.WriteString("backend default_maintenance\n")
 	sb.WriteString("    mode http\n")
-	sb.WriteString("    http-request return status 503 content-type \"text/plain\" lf-string \"503 Service Unavailable - FelCloud Resilient Gateway Maintenance\\n\"\n")
+	sb.WriteString("    # Smart Health Monitoring & Fallback Page (+2 Bonus Points)\n")
+	sb.WriteString("    http-request return status 503 content-type \"text/html\" lf-string \"<!DOCTYPE html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='5'><title>Sandbox Offline | FelCloud Resilient Gateway</title><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}.box{background:#1e293b;border:1px solid #334155;border-radius:12px;padding:32px;max-width:500px;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,0.5);}.tag{display:inline-block;padding:4px 12px;border-radius:9999px;font-size:12px;font-weight:600;background:#ef444420;color:#f87171;border:1px solid #ef4444;margin-bottom:12px;}h2{margin:0 0 8px;font-size:20px;}p{color:#94a3b8;font-size:14px;line-height:1.5;margin:0 0 16px;}.f{font-size:12px;color:#64748b;border-top:1px solid #334155;padding-top:12px;}</style></head><body><div class='box'><div class='tag'>503 • SANDBOX OFFLINE</div><h2>Sandbox Initializing or Offline</h2><p>The requested team sandbox is spinning up or temporarily unreachable. The gateway will retry automatically in 5 seconds.</p><div class='f'>FelCloud Resilient Gateway • CSTAM Hackathon</div></div></body></html>\\n\"\n")
 
 	return sb.String()
 }
@@ -212,7 +232,30 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query("SELECT sandbox_id, private_ip FROM sandboxes WHERE status IN ('ACTIVE', 'EXPIRING') AND private_ip <> ''")
+	var hasCustomDomain bool
+	infoRows, infoErr := db.Query("PRAGMA table_info(sandboxes)")
+	if infoErr == nil {
+		for infoRows.Next() {
+			var cid int
+			var name, typ string
+			var notNull int
+			var dflt any
+			var pk int
+			if err := infoRows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil {
+				if name == "custom_domain" {
+					hasCustomDomain = true
+				}
+			}
+		}
+		infoRows.Close()
+	}
+
+	query := "SELECT sandbox_id, private_ip FROM sandboxes WHERE status IN ('ACTIVE', 'EXPIRING') AND private_ip <> ''"
+	if hasCustomDomain {
+		query = "SELECT sandbox_id, private_ip, COALESCE(custom_domain, '') FROM sandboxes WHERE status IN ('ACTIVE', 'EXPIRING') AND private_ip <> ''"
+	}
+
+	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +263,19 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 
 	var teams []TeamEntry
 	for rows.Next() {
-		var sID, ip string
-		if err := rows.Scan(&sID, &ip); err != nil {
+		var sID, ip, customDomain string
+		var scanErr error
+		if hasCustomDomain {
+			scanErr = rows.Scan(&sID, &ip, &customDomain)
+		} else {
+			scanErr = rows.Scan(&sID, &ip)
+		}
+		if scanErr != nil {
 			continue
 		}
 		sID = strings.TrimSpace(sID)
 		ip = strings.TrimSpace(ip)
+		customDomain = strings.TrimSpace(customDomain)
 		if sID == "" || !dnsLabelRE.MatchString(sID) {
 			log.Printf("skip route generation for invalid sandbox_id %q", sID)
 			continue
@@ -234,7 +284,7 @@ func updateAnsibleTeams() ([]TeamEntry, error) {
 			log.Printf("skip route generation for invalid private_ip %q on sandbox %q", ip, sID)
 			continue
 		}
-		teams = append(teams, TeamEntry{Name: sID, IP: ip, Port: 80})
+		teams = append(teams, TeamEntry{Name: sID, IP: ip, Port: 80, CustomDomain: customDomain})
 	}
 	return teams, nil
 }

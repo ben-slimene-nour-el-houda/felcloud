@@ -130,6 +130,7 @@ func initDB() error {
 				teardown_verified_gone_at INTEGER,
 				teardown_released_at INTEGER,
 				teardown_last_error TEXT,
+				custom_domain TEXT DEFAULT '',
 				FOREIGN KEY(subnet_name) REFERENCES subnets(name)
 			);
 		`)

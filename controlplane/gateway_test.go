@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -154,3 +156,77 @@ func TestValidateHAProxySyntaxRejectsMissingFrontendAndBackend(t *testing.T) {
 		t.Fatalf("validator accepted a config without frontend/backend definitions: %s", message)
 	}
 }
+
+func TestGatewayRateLimitingAndSmartFallbackConfig(t *testing.T) {
+	teams := []TeamEntry{
+		{Name: "team-test", IP: "10.20.30.50", Port: 80},
+	}
+	cfg := generateHAProxyConfig(teams)
+	if !strings.Contains(cfg, "stick-table type ip size 100k") {
+		t.Errorf("HAProxy config missing rate limiting stick-table")
+	}
+	if !strings.Contains(cfg, "http-request deny deny_status 429") {
+		t.Errorf("HAProxy config missing 429 rate limit denial")
+	}
+	if !strings.Contains(cfg, "503 • SANDBOX OFFLINE") || !strings.Contains(cfg, "default_maintenance") {
+		t.Errorf("HAProxy config missing smart maintenance/fallback page")
+	}
+}
+
+func TestCustomDomainBindingHAProxyRoutes(t *testing.T) {
+	teams := []TeamEntry{
+		{Name: "team-custom", IP: "10.20.30.51", Port: 80, CustomDomain: "app.team-custom.org"},
+		{Name: "team-default", IP: "10.20.30.52", Port: 80},
+	}
+	cfg := generateHAProxyConfig(teams)
+	if !strings.Contains(cfg, "acl is_team-custom_custom hdr(host) -i app.team-custom.org") {
+		t.Errorf("HAProxy config missing custom domain ACL")
+	}
+	if !strings.Contains(cfg, "use_backend team-custom_backend if is_team-custom || is_team-custom_custom") {
+		t.Errorf("HAProxy config missing custom domain backend routing rule")
+	}
+	if strings.Contains(cfg, "is_team-default_custom") {
+		t.Errorf("HAProxy config unexpectedly added custom ACL for team without custom domain")
+	}
+}
+
+func TestCustomDomainAPIHandler(t *testing.T) {
+	setupTestDB(t)
+	db, err := getDBConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`INSERT INTO sandboxes(sandbox_id, hostname, subnet_name, private_ip, status)
+		VALUES('team-domain-test', 'team-domain-test.cstam.felcloud.tn', 'sandbox', '10.20.30.60', 'ACTIVE')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Invalid custom domain format
+	badBody := `{"sandbox_id":"team-domain-test","custom_domain":"invalid domain!"}`
+	req := httptest.NewRequest("POST", "/api/sandboxes/custom-domain", strings.NewReader(badBody))
+	w := httptest.NewRecorder()
+	handleCustomDomain(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid domain, got %d", w.Code)
+	}
+
+	// 2. Valid custom domain
+	goodBody := `{"sandbox_id":"team-domain-test","custom_domain":"custom.team.example.com"}`
+	req = httptest.NewRequest("POST", "/api/sandboxes/custom-domain", strings.NewReader(goodBody))
+	w = httptest.NewRecorder()
+	handleCustomDomain(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid custom domain, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var customDomain string
+	if err := db.QueryRow("SELECT COALESCE(custom_domain,'') FROM sandboxes WHERE sandbox_id = 'team-domain-test'").Scan(&customDomain); err != nil {
+		t.Fatal(err)
+	}
+	if customDomain != "custom.team.example.com" {
+		t.Fatalf("expected custom_domain='custom.team.example.com', got %q", customDomain)
+	}
+}
+

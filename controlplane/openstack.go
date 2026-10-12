@@ -49,9 +49,10 @@ type SandboxPort struct {
 }
 
 type CreateReq struct {
-	SandboxID string `json:"sandbox_id,omitempty"`
-	Team      string `json:"team,omitempty"`
-	FixedIP   string `json:"-"`
+	SandboxID    string `json:"sandbox_id,omitempty"`
+	Team         string `json:"team,omitempty"`
+	FixedIP      string `json:"-"`
+	CustomDomain string `json:"custom_domain,omitempty"`
 }
 
 type SandboxResources struct {

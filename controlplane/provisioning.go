@@ -127,8 +127,13 @@ func ensureProvisionColumns(db *sql.DB) error {
 		rows.Close()
 		return err
 	}
-	rows.Close()
-	for name, decl := range map[string]string{"server_id": "TEXT", "port_id": "TEXT", "fixed_ip": "TEXT", "provisioned_at": "INTEGER"} {
+	for name, decl := range map[string]string{
+		"server_id":      "TEXT",
+		"port_id":        "TEXT",
+		"fixed_ip":       "TEXT",
+		"provisioned_at": "INTEGER",
+		"custom_domain":  "TEXT DEFAULT ''",
+	} {
 		if !cols[name] {
 			if _, err := db.Exec(`ALTER TABLE sandboxes ADD COLUMN ` + name + ` ` + decl); err != nil {
 				return err
@@ -632,6 +637,12 @@ serverActive:
 	if err := persistActive(team, resources, activeMs); err != nil {
 		fail(http.StatusBadGateway, "database", err)
 		return
+	}
+	if req.CustomDomain != "" {
+		if db, dbErr := getDBConnection(); dbErr == nil {
+			_, _ = db.Exec("UPDATE sandboxes SET custom_domain=? WHERE sandbox_id=?", req.CustomDomain, team)
+			db.Close()
+		}
 	}
 	syncStart := time.Now()
 	synced, syncMsg := runCoalescedProvisionSync(ctx)
