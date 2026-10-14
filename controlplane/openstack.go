@@ -14,6 +14,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	"github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/keypairs"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/extensions/security/groups"
@@ -53,6 +54,7 @@ type CreateReq struct {
 	Team         string `json:"team,omitempty"`
 	FixedIP      string `json:"-"`
 	CustomDomain string `json:"custom_domain,omitempty"`
+	TTL          int64  `json:"ttl,omitempty"`
 }
 
 type SandboxResources struct {
@@ -477,7 +479,26 @@ func newOpenStackProvisioner(ctx context.Context, cfg ProvisionConfig) (*OpenSta
 			return nil, fmt.Errorf("sandbox network %q not found", cfg.NetworkName)
 		}
 	}
+	_ = p.resolveFlavor(ctx)
 	return p, nil
+}
+
+func (p *OpenStackProvisioner) resolveFlavor(ctx context.Context) error {
+	pages, err := flavors.ListDetail(p.compute, flavors.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return err
+	}
+	flist, err := flavors.ExtractFlavors(pages)
+	if err != nil {
+		return err
+	}
+	for _, f := range flist {
+		if f.Name == p.cfg.Flavor {
+			p.cfg.Flavor = f.ID
+			return nil
+		}
+	}
+	return nil
 }
 
 func (p *OpenStackProvisioner) resolveSecurityGroup(ctx context.Context) (string, error) {

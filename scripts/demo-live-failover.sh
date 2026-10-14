@@ -13,7 +13,14 @@
 
 set -euo pipefail
 
-API_URL="${API_URL:-http://localhost:8081}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$ROOT_DIR/.env" ]]; then
+    set -a
+    source "$ROOT_DIR/.env"
+    set +a
+fi
+
+API_URL="${API_URL:-${CONTROL_PLANE_BASE_URL:-http://localhost:8081}}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 TEAM="jury-demo"
 
