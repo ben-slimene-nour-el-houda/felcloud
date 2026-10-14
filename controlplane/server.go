@@ -145,6 +145,10 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		if isMockGateways() {
+			writeJSON(w, http.StatusOK, getMockGatewayStatus())
+			return
+		}
 		if r.URL.Query().Get("refresh") == "true" || r.URL.Query().Get("refresh") == "1" {
 			gwCache.Invalidate()
 		}
@@ -213,6 +217,19 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 					limit = l
 				}
 			}
+		}
+
+		if isMockGateways() {
+			lines := generateMockGatewayLogs(gateway, source, limit)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"gateway": gateway,
+				"source":  source,
+				"since":   since,
+				"limit":   limit,
+				"count":   len(lines),
+				"entries": lines,
+			})
+			return
 		}
 
 		lines, err := FetchGatewayLogs(gateway, source, since, limit)
@@ -359,6 +376,8 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/api/reconcile", logRequest(handleReconcile))
 	mux.HandleFunc("/api/reconcile/apply", logRequest(handleReconcileApply))
 	mux.HandleFunc("/api/events", logRequest(handleEvents))
+	mux.HandleFunc("/api/config", logRequest(handleConfigAPI))
+	setupUIHandler(mux)
 
 	// ── Catch-all ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("/", logRequest(func(w http.ResponseWriter, r *http.Request) {

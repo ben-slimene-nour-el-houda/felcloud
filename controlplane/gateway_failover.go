@@ -367,8 +367,9 @@ func handleGatewayFailover(store *gatewayStore, w http.ResponseWriter, r *http.R
 		return
 	}
 	var body struct {
-		Confirm bool   `json:"confirm"`
-		Mode    string `json:"mode"`
+		Confirm       bool   `json:"confirm"`
+		Mode          string `json:"mode"`
+		TargetGateway string `json:"target_gateway"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.Confirm {
 		errJSON(w, http.StatusBadRequest, "confirm:true required")
@@ -384,6 +385,12 @@ func handleGatewayFailover(store *gatewayStore, w http.ResponseWriter, r *http.R
 		return
 	}
 	defer releaseGatewayOp("failover-manual")
+
+	if isMockGateways() {
+		handleMockFailover(w, body.TargetGateway, mode)
+		return
+	}
+
 	result, status := performGatewayFailover(store, mode)
 	writeJSON(w, status, result)
 }

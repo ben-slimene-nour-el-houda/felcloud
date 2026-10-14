@@ -722,6 +722,85 @@ planned (the architecture itself does not change):
 
 ---
 
+## 16. Administrator Dashboard (G1)
+
+The repository ships a **Vite + React + TypeScript + TailwindCSS** administrator dashboard served by the control plane at `/ui/` when the `DASHBOARD_DIR` environment variable is set.
+
+### Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | Vite 6 · React 19 · TypeScript · TailwindCSS v4 |
+| Tests | Vitest 3 · 23 unit tests (api client, DNS label, countdown) |
+| Build | `npm run build` → `dashboard/dist/` |
+| Serving | Go static file handler — SPA fallback, CSP headers, no CORS needed |
+| Auth | Login screen → `Authorization: Bearer <ADMIN_TOKEN>` on every API call |
+
+### Screens
+
+| # | Screen | Description |
+|---|---|---|
+| 1 | **Overview** | Stat cards (active sandboxes, VIP holder, gateways online), gateway health, recent events |
+| 2 | **Sandboxes** | Provision / teardown with live TTL countdown |
+| 3 | **Gateways** | Primary vs Standby indicator, manual failover / sync / rollback controls |
+| 4 | **Routes** | Subdomain → backend IP mapping table, traffic flow diagram |
+| 5 | **Traffic Logs** | Live HAProxy/Keepalived log viewer with 3s auto-refresh, color-coded by HTTP status |
+| 6 | **Events** | Timeline of all gateway lifecycle events |
+| 7 | **Leases** | IPAM lease table with status and remaining TTL |
+
+### Quick Start (Mock Mode)
+
+```bash
+# Build the dashboard
+cd dashboard && npm install && npm run build && cd ..
+
+# Start the control plane in mock mode pointing at the built assets
+PROVISIONER=mock MOCK_GATEWAYS=true \
+DASHBOARD_DIR=dashboard/dist \
+ADMIN_TOKEN=felcloud-test-token-cstam-2026 \
+./controlplane/controlplane
+
+# Seed 4 demo sandboxes
+./scripts/seed-demo.sh
+```
+
+Then open: **http://localhost:8081/ui/**
+
+### Quick Start (Development, hot-reload)
+
+```bash
+# Start the Go control plane
+PROVISIONER=mock MOCK_GATEWAYS=true ADMIN_TOKEN=... ./controlplane/controlplane
+
+# Start Vite dev server with proxy to backend
+cd dashboard && npm run dev
+# Opens http://localhost:5173/ui/
+```
+
+### Security
+
+- Token kept **in memory only** (optionally `sessionStorage`) — never localStorage, URL, or bundle.
+- CSP: `default-src 'self'; frame-ancestors 'none'` on all `/ui/` responses.
+- `X-Content-Type-Options: nosniff` on all `/ui/` responses.
+- Path traversal protection: `..` in any URL component returns 404.
+- `/api/config` and `/ui/` bypass bearer auth; all other `/api/` routes require it.
+
+### Tests
+
+```bash
+# Frontend unit tests (23 tests)
+cd dashboard && npm test
+
+# Backend Go tests
+cd controlplane && go test -run 'TestConfigAPI|TestUI|TestMock' -v ./...
+```
+
+### Evidence
+
+Screenshots and recordings are stored in `docs/evidence/dashboard/`.
+
+---
+
 <div align="center">
 
 *FelCloud Resilient IP Gateway · Built for High-Availability Multi-Tenant Routing.*

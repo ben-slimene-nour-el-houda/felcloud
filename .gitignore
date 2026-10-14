@@ -60,3 +60,8 @@ ipam/__pycache__/
 .env
 controlplane/controlplane
 controlplane/controlplane
+
+# Dashboard frontend
+dashboard/node_modules/
+# dashboard/dist is intentionally tracked so the Go server can serve it
+# without a separate build step on the demo machine.
