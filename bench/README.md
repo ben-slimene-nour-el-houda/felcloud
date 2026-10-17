@@ -25,6 +25,14 @@ export BENCH_SANDBOX_FLAVOR=your-sandbox-flavor
 
 Provide `ADMIN_TOKEN` through your secret manager or a private shell environment; do not copy a placeholder or the token itself into this document.
 
+Install the pinned tools and run the local mocked tests with:
+
+```bash
+python3 -m venv bench/.venv
+bench/.venv/bin/pip install -r bench/requirements.txt
+bench/.venv/bin/python -m pytest -q bench/unit_tests
+```
+
 The preflight reads the selected flavor's vCPU and RAM values from OpenStack before calculating quota headroom.
 
 The gateway host values are exact SSH destinations allowed for gateway operations. They have no defaults. The control plane and cloud credentials come from environment variables or the OpenStack CLI's normal `clouds.yaml` configuration. Do not put secrets in `config.yaml` or commit them.
@@ -36,18 +44,48 @@ The gateway host values are exact SSH destinations allowed for gateway operation
 Each test accepts `--smoke` (one iteration) and `--dry-run` (prints the planned actions and gates; no network, API, SSH, or OpenStack command is issued):
 
 ```bash
-python3 bench/tests/t1_provisioning_latency.py --smoke --dry-run
-python3 bench/tests/t2_concurrent_stress.py --smoke --dry-run
-python3 bench/tests/t3_gateway_failover.py --smoke --dry-run
-python3 bench/tests/t4_ip_recycling.py --smoke --dry-run
-python3 bench/tests/t5_lease_expiry_teardown.py --smoke --dry-run
-python3 bench/tests/t6_reload_rollback.py --smoke --dry-run
-python3 bench/tests/t7_isolation_security.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t1_provisioning_latency.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t2_concurrent_stress.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t3_gateway_failover.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t4_ip_recycling.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t5_lease_expiry_teardown.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t6_reload_rollback.py --smoke --dry-run
+bench/.venv/bin/python bench/tests/t7_isolation_security.py --smoke --dry-run
 ```
 
 Run one test without `--dry-run` only after reviewing the preflight output and the destructive operations it may require. T3 includes gateway service stops and therefore must only target the verified test gateway configured in the allow-list.
 
-Current implementation status: these entry points implement argument handling, dry-run descriptions, and fail-closed safety gates. **The live scenario bodies are not implemented yet.** A non-dry-run invocation records `NOT EXECUTED` and exits rather than implying that a benchmark ran.
+Current implementation status: T1 has a live scenario runner, while T2–T7 currently implement argument handling, dry-run descriptions, and fail-closed safety gates only. Invoking an unimplemented scenario records `NOT EXECUTED` and exits rather than implying that a benchmark ran.
+
+### T1 — provisioning latency
+
+After a passing preflight, run the 30 sequential samples with:
+
+```bash
+bench/.venv/bin/python bench/tests/t1_provisioning_latency.py
+```
+
+Run one sample with `--smoke`:
+
+```bash
+bench/.venv/bin/python bench/tests/t1_provisioning_latency.py --smoke
+```
+
+Each run provisions a unique `bench-t1-*` sandbox, records the API's `timings_ms`, performs a DNS lookup, polls the configured VIP with the sandbox hostname in `Host` until HTTP 200 or timeout, then deletes that sandbox in `finally` cleanup. CSV and summary JSON are written under `bench/results/raw/`; a stacked stage chart is written under `bench/results/charts/` when at least one run reaches HTTP 200. If no sample reaches HTTP 200, no chart is produced. The first ten and remaining twenty runs are marked as cold/warm **candidates**, but cache state is explicitly unverified because this suite does not flush or inspect image caches. The API currently returns stage durations rather than exact stage event timestamps, so those absolute event timestamp fields remain empty and the report states this limitation.
+
+**Scoring evidence:** T1 provides baseline latency and provisioning-path evidence, but it does not map directly to the named 15-point stress, 10-point teardown, or 5-point isolation criteria.
+
+Expected files from a run are `bench/results/raw/t1_provisioning_<UTC timestamp>.csv`, `bench/results/raw/t1_provisioning_<UTC timestamp>_summary.json`, and, when at least one run reaches HTTP 200, `bench/results/charts/t1_provisioning_stages_<UTC timestamp>.png`. A run that cannot start writes a NOT EXECUTED CSV and summary with its reason.
+
+## Scoring evidence by test
+
+- **T1:** Provisioning latency baseline; no direct named 15/10/5-point criterion.
+- **T2:** Concurrency, success rate, duplicate IP, and route isolation evidence for the 15-point stress criterion.
+- **T3:** Gateway HA failover behavior; no named 15/10/5-point criterion.
+- **T4:** IP reclamation/reuse evidence supporting the 10-point teardown criterion.
+- **T5:** Lease expiry and complete resource cleanup evidence for the 10-point teardown criterion.
+- **T6:** Reload/rollback reliability; no named 15/10/5-point criterion.
+- **T7:** Cross-sandbox and management-plane isolation evidence for the 5-point isolation criterion.
 
 Run the suite entry point in dry-run mode:
 

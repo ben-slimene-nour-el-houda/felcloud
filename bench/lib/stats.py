@@ -63,7 +63,7 @@ def save_raw_csv(filepath: Union[str, Path], rows: List[Dict[str, Any]], fieldna
     if not rows:
         return path
 
-    keys = fieldnames or list(rows[0].keys())
+    keys = fieldnames or list(dict.fromkeys(key for row in rows for key in row.keys()))
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=keys)
         writer.writeheader()

@@ -48,6 +48,10 @@ def load_gates():
         errors.append("Set SSH_KEY_PATH to the private key used for gateway SSH.")
     if not cfg["openstack"].get("sandbox_flavor"):
         errors.append("Set BENCH_SANDBOX_FLAVOR for quota headroom checks.")
+    if not cfg["network"].get("public_vip"):
+        errors.append("Set PUBLIC_VIP_IP to the test gateway VIP used for Host-header polling.")
+    if not cfg["network"].get("domain"):
+        errors.append("Set ROUTING_DOMAIN for the provisioned sandbox hostname.")
     return cfg, errors
 
 
@@ -110,7 +114,11 @@ def main(test_id=None):
     if errors:
         save_not_executed(test_id, ["Safety gates are incomplete. No test actions were attempted.", *errors])
         return 2
-    # Live scenario bodies are intentionally not enabled by this preparation
-    # task. Make that distinction explicit rather than treating preflight as a test.
-    save_not_executed(test_id, ["Scenario runner is not implemented in this checkout; no live test was attempted.", "Run python3 bench/preflight.py first, then implement/review the scenario runner before executing."])
+    if test_id == "t1":
+        import asyncio
+        from bench.lib.t1 import run_t1
+        summary = asyncio.run(run_t1(cfg, smoke=args.smoke))
+        return 0 if summary.get("status") == "EXECUTED" else 2
+    save_not_executed(test_id, ["Scenario runner is not implemented yet; no live test was attempted.",
+                                "Only T1 has been implemented. Run the remaining test after its scenario is implemented."])
     return 2

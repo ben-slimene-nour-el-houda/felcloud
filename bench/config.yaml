@@ -27,6 +27,7 @@ safety_gates:
 network:
   domain: "${ROUTING_DOMAIN:-}"
   public_vip: "${PUBLIC_VIP_IP:-}"
+  gateway_scheme: "${GATEWAY_SCHEME:-http}"
   pool_cidr: "${IP_POOL_CIDR:-}"
 
 benchmark:
