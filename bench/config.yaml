@@ -32,7 +32,8 @@ network:
 
 benchmark:
   seed: 42
-  planned_concurrency: 50
+  # Sandboxes required for quota headroom; BENCH_MAX_CONCURRENCY overrides default 20.
+  planned_concurrency: "${BENCH_MAX_CONCURRENCY:-20}"
   concurrency_levels: [10, 20, 30, 50]
   smoke_iterations: 1
   t1_runs: 30

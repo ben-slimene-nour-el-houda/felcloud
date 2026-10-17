@@ -68,6 +68,53 @@ def numbers(row):
     return val("limit", "value"), val("in use", "in_use", "used") or 0
 
 
+def absolute_limit_values(payload):
+    """Read Nova absolute-limit API fields from OpenStackClient JSON output."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    fields = {
+        "maxTotalInstances", "totalInstancesUsed",
+        "maxTotalCores", "totalCoresUsed",
+        "maxTotalRAMSize", "totalRAMUsed",
+    }
+    values = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if str(key) in fields:
+                values[str(key)] = value
+        for key in ("absolute", "limits", "data"):
+            nested = data.get(key)
+            if isinstance(nested, dict):
+                values.update({str(k): v for k, v in nested.items() if str(k) in fields})
+    elif isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("Name", row.get("name", row.get("Property", row.get("property"))))
+            if str(name) in fields:
+                values[str(name)] = row.get("Value", row.get("value"))
+    return values
+
+
+def quota_check(label, limit_value, used_value, needed):
+    def integer(value):
+        try:
+            return int(str(value).replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+
+    limit = integer(limit_value)
+    used = integer(used_value)
+    if limit is None or used is None:
+        return f"{label}: UNKNOWN (unreadable limit or usage; needed={needed}, limit={limit_value}, used={used_value})", False
+    available = limit - used
+    passed = needed <= available
+    return (f"{label}: {'PASS' if passed else 'FAIL'} "
+            f"(needed={needed}, available={available}, limit={limit}, used={used})"), passed
+
+
 def check_quota(label, data, resource, needed):
     row = data.get(resource.lower())
     if not row:
@@ -124,20 +171,26 @@ def main():
     if ssh_ok:
         for role in ("primary", "standby"):
             host = gates["allowed_gateway_hosts"][role]
-            command = ["ssh", "-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+            command = ["ssh", "-i", key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
                        "-o", "StrictHostKeyChecking=accept-new", "-J", f"{user}@{bastion}",
                        f"{user}@{host}", "printf 'SSH_OK\\n'; haproxy -v 2>&1 | head -1; keepalived --version 2>&1 | head -1; nproc; free -b"]
-            rc, out, err = run(command, timeout=20)
-            passed = rc == 0 and out.startswith("SSH_OK")
-            results.append((f"SSH via bastion to {role} gateway {host}", "PASS" if passed else f"FAIL ({scrub(err or out or f'exit={rc}')})"))
-            all_ok &= passed
-            if passed:
-                gateway_outputs[role] = out
+            role_ok = False
+            for attempt in range(1, 5):  # initial attempt plus up to three retries
+                rc, out, err = run(command, timeout=40)
+                passed = rc == 0 and out.startswith("SSH_OK")
+                results.append((f"SSH via bastion to {role} gateway {host}, attempt {attempt}/4",
+                                "PASS" if passed else f"FAIL ({scrub(err or out or f'exit={rc}')})"))
+                if passed:
+                    role_ok = True
+                    gateway_outputs[role] = out
+                    break
+            all_ok &= role_ok
     else:
         results.append(("SSH to both gateways", "FAIL (set BENCH_SSH_USER, BENCH_BASTION_HOST, SSH_KEY_PATH, BENCH_PRIMARY_HOST, BENCH_STANDBY_HOST)"))
         all_ok = False
 
     planned = int(cfg["benchmark"]["planned_concurrency"])
+    results.append(("Planned max concurrency", f"{planned} sandboxes (needed={planned})"))
     flavor = ssh_cfg.get("sandbox_flavor", "")
     vcpus = ram_mb = 0
     if flavor:
@@ -154,22 +207,35 @@ def main():
     else:
         results.append(("Sandbox flavor", "FAIL (set BENCH_SANDBOX_FLAVOR; vCPU/RAM are read from OpenStack)"))
         all_ok = False
-    rc_c, out_c, err_c = run(["openstack", "--os-cloud", cloud, "quota", "show", "--compute", "-f", "json"])
+    rc_c, out_c, err_c = run(["openstack", "--os-cloud", cloud, "limits", "show", "--absolute", "-f", "json"])
     rc_n, out_n, err_n = run(["openstack", "--os-cloud", cloud, "quota", "show", "--network", "-f", "json"])
-    compute, network = quota_rows(out_c) if rc_c == 0 else {}, quota_rows(out_n) if rc_n == 0 else {}
+    nova_limits = absolute_limit_values(out_c) if rc_c == 0 else {}
+    network = quota_rows(out_n) if rc_n == 0 else {}
+    if rc_c == 0:
+        raw_usage = ", ".join(f"{key}={nova_limits.get(key, 'MISSING')}" for key in (
+            "totalInstancesUsed", "totalCoresUsed", "totalRAMUsed"))
+        results.append(("Nova limits API raw usage", raw_usage))
     quota_checks = []
-    for label, data, resource, needed in (
-        ("Nova instances", compute, "instances", planned),
-        ("Nova vCPU cores", compute, "cores", planned * vcpus),
-        ("Nova RAM MB", compute, "ram", planned * ram_mb),
-        ("Neutron ports", network, "ports", planned),
-    ):
-        message, passed = check_quota(label, data, resource, needed)
-        quota_checks.append(message)
-        results.append((f"Quota headroom: {label}", message))
-        all_ok &= passed
-    if rc_c != 0:
-        results.append(("Nova quota query", f"FAIL ({scrub(err_c or out_c)})")); all_ok = False
+    if rc_c == 0:
+        nova_quota_checks = (
+            ("Nova instances", "maxTotalInstances", "totalInstancesUsed", planned),
+            ("Nova vCPU cores", "maxTotalCores", "totalCoresUsed", planned * vcpus),
+            ("Nova RAM MB", "maxTotalRAMSize", "totalRAMUsed", planned * ram_mb),
+        )
+        for label, limit_key, used_key, needed in nova_quota_checks:
+            message, passed = quota_check(label, nova_limits.get(limit_key), nova_limits.get(used_key), needed)
+            quota_checks.append(message)
+            results.append((f"Quota headroom: {label}", message))
+            all_ok &= passed
+    else:
+        results.append(("Nova limits API query", f"FAIL ({scrub(err_c or out_c)})"))
+        all_ok = False
+        for label in ("Nova instances", "Nova vCPU cores", "Nova RAM MB"):
+            quota_checks.append(f"{label}: NOT AVAILABLE (Nova limits API query failed)")
+    message, passed = check_quota("Neutron ports", network, "ports", planned)
+    quota_checks.append(message)
+    results.append(("Quota headroom: Neutron ports", message))
+    all_ok &= passed
     if rc_n != 0:
         results.append(("Neutron quota query", f"FAIL ({scrub(err_n or out_n)})")); all_ok = False
 
