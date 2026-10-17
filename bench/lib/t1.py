@@ -1,11 +1,13 @@
 """T1 sequential sandbox provisioning latency benchmark."""
 import asyncio
+import json
 import os
 import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 
 import matplotlib
 matplotlib.use("Agg")
@@ -23,6 +25,42 @@ def _utc():
 
 def _resolved_ips(info):
     return sorted({item[4][0] for item in info})
+
+
+def _response_body(data, limit=2000):
+    """Serialize and truncate an API response body without retaining secrets."""
+    token = os.environ.get("ADMIN_TOKEN", "")
+
+    def redact(value):
+        if isinstance(value, dict):
+            return {key: ("[REDACTED]" if any(word in str(key).lower()
+                                                for word in ("token", "password", "secret"))
+                          else redact(item)) for key, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, str) and token:
+            return value.replace(token, "[REDACTED]")
+        return value
+
+    body = json.dumps(redact(data), ensure_ascii=False, sort_keys=True, default=str)
+    return body if len(body) <= limit else body[:limit] + "…[truncated]"
+
+
+def _failure_diagnostics(row):
+    phase_names = ("provision_api", "dns_lookup", "gateway_poll", "total")
+    elapsed = {name: row.get(f"phase_{name}_elapsed_ms", "NOT ATTEMPTED") for name in phase_names}
+    error = row.get("poll_error") or row.get("dns_error") or row.get("error") or "No HTTP 200 was received"
+    reason = (
+        f"provision_http_status={row.get('provision_http_status')}; "
+        f"provision_response_body={row.get('provision_response_body_truncated', 'NOT RECEIVED')}; "
+        f"last_probe_status_code={row.get('last_probe_status_code', 'NOT ATTEMPTED')}; "
+        f"probe_url={row.get('probe_url', 'NOT CONFIGURED')}; "
+        f"probe_scheme={row.get('probe_url_scheme', 'NOT CONFIGURED')}; "
+        f"probe_host={row.get('probe_url_host', 'NOT CONFIGURED')}; "
+        f"Host={row.get('probe_host_header', 'NOT CONFIGURED')}; "
+        f"error={error}; elapsed_ms_by_phase={json.dumps(elapsed, sort_keys=True)}"
+    )
+    return reason, elapsed
 
 
 async def _resolve(hostname):
@@ -109,6 +147,10 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
     ttl = int(bench_cfg.get("t1_lease_ttl_seconds", 3600))
     poll_timeout = float(bench_cfg.get("t1_poll_timeout_seconds", 60))
     poll_interval = float(bench_cfg.get("t1_poll_interval_seconds", 0.5))
+    scheme = str(network.get("gateway_scheme", "http")).strip() or "http"
+    target_vip = vip if "://" in vip else f"{scheme}://{vip}"
+    probe_url = target_vip.rstrip("/") + "/"
+    probe_parts = urlsplit(probe_url)
     rows: List[Dict[str, Any]] = []
     created_names: List[str] = []
     client = AsyncControlPlaneClient(cp["base_url"], token,
@@ -142,16 +184,32 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
                 "success": False, "status": "NOT STARTED", "error": "",
                 "benchmark_started_utc": _utc(),
                 "stage_timing_source": "API timings_ms duration fields; exact stage UTC timestamps are not returned by the API",
+                "provision_http_status": "NOT RECEIVED",
+                "provision_response_body_truncated": "NOT RECEIVED",
+                "last_probe_status_code": "NOT ATTEMPTED",
+                "probe_url": probe_url,
+                "probe_url_scheme": probe_parts.scheme,
+                "probe_url_host": probe_parts.netloc,
+                "probe_host_header": hostname,
+                "probe_error": "NOT ATTEMPTED",
+                "phase_dns_lookup_elapsed_ms": "NOT ATTEMPTED",
+                "phase_gateway_poll_elapsed_ms": "NOT ATTEMPTED",
             }
             created_names.append(team)
             start_perf = time.perf_counter()
+            api_start_perf = start_perf
+            dns_start = None
+            poll_start = None
             try:
                 api_response = await client.provision_sandbox(team, ttl=ttl)
                 api_elapsed = api_response.elapsed_seconds
+                row["phase_provision_api_elapsed_ms"] = api_elapsed * 1000.0
                 row["api_request_started_utc"] = api_response.started_utc
                 row["api_response_utc"] = api_response.finished_utc
                 row["api_elapsed_ms"] = api_elapsed * 1000.0
                 row["api_status"] = api_response.status_code
+                row["provision_http_status"] = api_response.status_code
+                row["provision_response_body_truncated"] = _response_body(api_response.data)
                 row["api_response_state"] = api_response.data.get("state", "")
                 timings = api_response.data.get("timings_ms", {})
                 stages = _stages(timings if isinstance(timings, dict) else {})
@@ -185,11 +243,11 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
                     dns_end = time.perf_counter()
                     row["dns_lookup_finished_utc"] = _utc()
                     row["dns_elapsed_ms"] = (dns_end - dns_start) * 1000.0
+                    row["phase_dns_lookup_elapsed_ms"] = row["dns_elapsed_ms"]
 
-                scheme = str(network.get("gateway_scheme", "http")).strip() or "http"
-                target_vip = vip if "://" in vip else f"{scheme}://{vip}"
+                poll_start = time.perf_counter()
                 poll_result: PollResult = await wait_until_http_200(
-                    target_vip.rstrip("/") + "/", hostname,
+                    probe_url, hostname,
                     timeout=poll_timeout, interval=poll_interval,
                     request_timeout=float(bench_cfg.get("t1_http_timeout_seconds", 3)),
                 )
@@ -198,8 +256,11 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
                 row["first_http_200_perf_counter"] = poll_result.first_200_perf_counter
                 row["poll_attempts"] = poll_result.attempts
                 row["poll_status"] = poll_result.status_code
+                row["last_probe_status_code"] = (poll_result.status_code if poll_result.status_code else "NO HTTP RESPONSE")
                 row["gateway_wait_ms"] = poll_result.elapsed_seconds * 1000.0
+                row["phase_gateway_poll_elapsed_ms"] = row["gateway_wait_ms"]
                 row["poll_error"] = poll_result.error
+                row["probe_error"] = poll_result.error or ("" if poll_result.success else "No HTTP 200 response")
                 row["success"] = poll_result.success
                 row["status"] = "SUCCESS" if poll_result.success else "ROUTE_TIMEOUT"
                 row["total_latency_ms"] = (time.perf_counter() - start_perf) * 1000.0
@@ -212,7 +273,22 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
                 row["status"] = "ERROR"
                 row["error"] = f"{type(exc).__name__}: {exc}"
                 row["total_latency_ms"] = (time.perf_counter() - start_perf) * 1000.0
+                if "phase_provision_api_elapsed_ms" not in row:
+                    row["phase_provision_api_elapsed_ms"] = (time.perf_counter() - api_start_perf) * 1000.0
+                if dns_start is not None and "phase_dns_lookup_elapsed_ms" not in row:
+                    row["phase_dns_lookup_elapsed_ms"] = (time.perf_counter() - dns_start) * 1000.0
+                if poll_start is not None and "phase_gateway_poll_elapsed_ms" not in row:
+                    row["phase_gateway_poll_elapsed_ms"] = (time.perf_counter() - poll_start) * 1000.0
+                if poll_start is not None and row.get("last_probe_status_code") == "NOT ATTEMPTED":
+                    row["last_probe_status_code"] = "NO HTTP RESPONSE"
+                    row["probe_error"] = row["error"]
             finally:
+                row["phase_total_elapsed_ms"] = (time.perf_counter() - start_perf) * 1000.0
+                if not row.get("success"):
+                    failure_reason, elapsed_by_phase = _failure_diagnostics(row)
+                    row["failure_reason"] = failure_reason
+                    row["elapsed_ms_by_phase"] = elapsed_by_phase
+                    print(f"T1 run {run_index} did not reach HTTP 200: {failure_reason}")
                 rows.append(row)
                 # Cleanup is scoped to the unique name generated in this test.
                 outcomes = await cleanup_created_sandboxes(client, [team], verbose=False)
@@ -234,6 +310,22 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
             "timestamp_utc": _utc(), "planned_runs": count, "n": len(rows),
             "successful_runs": len(successful), "failed_runs": len(rows) - len(successful),
             "success_rate": (len(successful) / len(rows)) if rows else None,
+            "failure_reasons": [
+                {
+                    "run_index": row["run_index"], "team": row["team"],
+                    "reason": row["failure_reason"],
+                    "provision_http_status": row["provision_http_status"],
+                    "provision_response_body_truncated": row["provision_response_body_truncated"],
+                    "last_probe_status_code": row["last_probe_status_code"],
+                    "probe_url": row["probe_url"],
+                    "probe_url_scheme": row["probe_url_scheme"],
+                    "probe_url_host": row["probe_url_host"],
+                    "probe_host_header": row["probe_host_header"],
+                    "probe_error": row["probe_error"],
+                    "elapsed_ms_by_phase": row["elapsed_ms_by_phase"],
+                }
+                for row in rows if not row.get("success")
+            ],
             "metrics_ms": {
                 "api_elapsed": stats_or_reason([r["api_elapsed_ms"] for r in rows if "api_elapsed_ms" in r], "no API responses were received"),
                 "client_post_to_first_http_200": stats_or_reason([r["client_post_to_first_http_200_ms"] for r in successful if r.get("client_post_to_first_http_200_ms") is not None], "no sandbox reached HTTP 200 through the VIP"),

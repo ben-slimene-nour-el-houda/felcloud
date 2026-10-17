@@ -79,22 +79,35 @@ def absolute_limit_values(payload):
         "maxTotalCores", "totalCoresUsed",
         "maxTotalRAMSize", "totalRAMUsed",
     }
+    aliases = {
+        "max_total_instances": "maxTotalInstances",
+        "total_instances_used": "totalInstancesUsed",
+        "max_total_cores": "maxTotalCores",
+        "total_cores_used": "totalCoresUsed",
+        "max_total_ram_size": "maxTotalRAMSize",
+        "total_ram_used": "totalRAMUsed",
+    }
     values = {}
     if isinstance(data, dict):
         for key, value in data.items():
-            if str(key) in fields:
-                values[str(key)] = value
+            canonical = aliases.get(str(key), str(key))
+            if canonical in fields:
+                values[canonical] = value
         for key in ("absolute", "limits", "data"):
             nested = data.get(key)
             if isinstance(nested, dict):
-                values.update({str(k): v for k, v in nested.items() if str(k) in fields})
+                for nested_key, value in nested.items():
+                    canonical = aliases.get(str(nested_key), str(nested_key))
+                    if canonical in fields:
+                        values[canonical] = value
     elif isinstance(data, list):
         for row in data:
             if not isinstance(row, dict):
                 continue
             name = row.get("Name", row.get("name", row.get("Property", row.get("property"))))
-            if str(name) in fields:
-                values[str(name)] = row.get("Value", row.get("value"))
+            canonical = aliases.get(str(name), str(name))
+            if canonical in fields:
+                values[canonical] = row.get("Value", row.get("value"))
     return values
 
 
@@ -212,8 +225,10 @@ def main():
     nova_limits = absolute_limit_values(out_c) if rc_c == 0 else {}
     network = quota_rows(out_n) if rc_n == 0 else {}
     if rc_c == 0:
-        raw_usage = ", ".join(f"{key}={nova_limits.get(key, 'MISSING')}" for key in (
-            "totalInstancesUsed", "totalCoresUsed", "totalRAMUsed"))
+        raw_usage = ", ".join(f"{raw_key}={nova_limits.get(key, 'MISSING')}" for raw_key, key in (
+            ("total_instances_used", "totalInstancesUsed"),
+            ("total_cores_used", "totalCoresUsed"),
+            ("total_ram_used", "totalRAMUsed")))
         results.append(("Nova limits API raw usage", raw_usage))
     quota_checks = []
     if rc_c == 0:
@@ -278,7 +293,8 @@ def main():
 
     print("Benchmark preflight:")
     for label, result in results:
-        print(f"[{('PASS' if 'PASS' in result else 'FAIL')}] {label}: {result}")
+        level = "INFO" if label == "Planned max concurrency" else ("PASS" if "PASS" in result else "FAIL")
+        print(f"[{level}] {label}: {result}")
     print(f"ENVIRONMENT.md regenerated from this preflight run: {ROOT / 'ENVIRONMENT.md'}")
     if not all_ok:
         print("Preflight failed. Resolve the FAIL checks before running tests.")
