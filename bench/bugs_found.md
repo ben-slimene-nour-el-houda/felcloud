@@ -1,5 +1,7 @@
 # Bugs & Anomalies Found During Benchmarking
 
+> **Verification status:** The entries below predated this benchmark run. They were not reproduced in this session and must not be treated as benchmark findings or measured failures. The cloud/API access needed to validate them was unavailable. No application logic was changed.
+
 This log records bugs, architectural mismatches, and anomalies discovered during the execution of the CSTAM 3.0 benchmark suite.
 In adherence to Absolute Rule 2: **No application logic has been modified to artificially mask these issues.**
 

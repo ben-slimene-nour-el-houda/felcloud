@@ -1,0 +1,11 @@
+{
+  "test": "t6",
+  "status": "NOT EXECUTED",
+  "reason": [
+    "Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted",
+    "ADMIN_TOKEN is unset; authenticated API mutations are unavailable",
+    "OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted"
+  ],
+  "timestamp_utc": "2026-10-17T20:48:49.171Z",
+  "sample_n": 0
+}
