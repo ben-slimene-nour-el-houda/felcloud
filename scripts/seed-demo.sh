@@ -20,7 +20,7 @@ for TEAM in "${TEAMS[@]}"; do
     -X POST "$BASE_URL/api/sandboxes/provision" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
-    -d "{\"team\":\"$TEAM\",\"ttl_seconds\":7200}")
+    -d "{\"team\":\"$TEAM\",\"ttl\":7200}")
   
   if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
     IP=$(jq -r '.ip_address // .ip // "?"' /tmp/fc_seed_resp.json 2>/dev/null || echo "?")

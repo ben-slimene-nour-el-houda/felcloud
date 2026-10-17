@@ -758,7 +758,7 @@ cd dashboard && npm install && npm run build && cd ..
 PROVISIONER=mock MOCK_GATEWAYS=true \
 DASHBOARD_DIR=dashboard/dist \
 ADMIN_TOKEN=felcloud-test-token-cstam-2026 \
-./controlplane/controlplane
+./controlplane/controlplane serve
 
 # Seed 4 demo sandboxes
 ./scripts/seed-demo.sh
@@ -770,7 +770,7 @@ Then open: **http://localhost:8081/ui/**
 
 ```bash
 # Start the Go control plane
-PROVISIONER=mock MOCK_GATEWAYS=true ADMIN_TOKEN=... ./controlplane/controlplane
+PROVISIONER=mock MOCK_GATEWAYS=true ADMIN_TOKEN=... ./controlplane/controlplane serve
 
 # Start Vite dev server with proxy to backend
 cd dashboard && npm run dev
