@@ -7,9 +7,8 @@ Never touches team1, team2, bastion, or gateways.
 import time
 from typing import Dict, Any, List
 from bench.lib.api_client import ControlPlaneClient
-from bench.lib.openstack_client import OpenStackClient, RESOURCE_PREFIX
+from bench.lib.openstack_client import OpenStackClient, RESOURCE_PREFIX, PROTECTED_NAMES, is_benchmark_resource
 
-PROTECTED_NAMES = {"team1", "team2", "felcloud-bastion", "felcloud-gw1", "felcloud-gw2"}
 
 def cleanup_all_benchmark_resources(api_client: ControlPlaneClient, os_client: OpenStackClient, verbose: bool = True) -> Dict[str, Any]:
     """
@@ -32,7 +31,7 @@ def cleanup_all_benchmark_resources(api_client: ControlPlaneClient, os_client: O
         sandboxes = data.get("sandboxes", [])
         for s in sandboxes:
             name = s.get("team", s.get("name", s.get("sandbox_id", "")))
-            if name.startswith(RESOURCE_PREFIX) and name not in PROTECTED_NAMES:
+            if is_benchmark_resource(name):
                 if verbose:
                     print(f"    Deleting benchmark sandbox via API: {name}")
                 api_client.delete_sandbox(name)
@@ -43,7 +42,7 @@ def cleanup_all_benchmark_resources(api_client: ControlPlaneClient, os_client: O
     for srv in bench_servers:
         s_id = srv.get("ID")
         s_name = srv.get("Name", "")
-        if s_name.startswith(RESOURCE_PREFIX) and s_name not in PROTECTED_NAMES:
+        if is_benchmark_resource(s_name):
             if verbose:
                 print(f"    Deleting orphan benchmark VM: {s_name} ({s_id})")
             os_client.delete_server_safe(s_id, s_name)
@@ -54,7 +53,7 @@ def cleanup_all_benchmark_resources(api_client: ControlPlaneClient, os_client: O
     for p in bench_ports:
         p_id = p.get("ID")
         p_name = p.get("Name", "")
-        if p_name.startswith(RESOURCE_PREFIX) and p_name not in PROTECTED_NAMES:
+        if is_benchmark_resource(p_name):
             if verbose:
                 print(f"    Deleting orphan benchmark port: {p_name} ({p_id})")
             os_client.delete_port_safe(p_id, p_name)

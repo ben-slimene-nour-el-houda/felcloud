@@ -8,6 +8,12 @@ import subprocess
 from typing import Any, Dict, List, Optional
 
 RESOURCE_PREFIX = "bench-"
+PROTECTED_NAMES = {"team1", "team2", "felcloud-bastion", "felcloud-gw1", "felcloud-gw2"}
+
+
+def is_benchmark_resource(name: str, prefix: str = RESOURCE_PREFIX, protected_names=None) -> bool:
+    protected = PROTECTED_NAMES if protected_names is None else set(protected_names)
+    return bool(name) and name.startswith(prefix) and name not in protected
 
 class OpenStackClient:
     def __init__(self, cloud: str = "felcloud"):
@@ -51,7 +57,7 @@ class OpenStackClient:
             return []
         try:
             servers = json.loads(res.stdout)
-            return [s for s in servers if str(s.get("Name", "")).startswith(RESOURCE_PREFIX)]
+            return [s for s in servers if is_benchmark_resource(str(s.get("Name", "")))]
         except Exception:
             return []
 
@@ -62,7 +68,7 @@ class OpenStackClient:
             return []
         try:
             ports = json.loads(res.stdout)
-            return [p for p in ports if str(p.get("Name", "")).startswith(RESOURCE_PREFIX)]
+            return [p for p in ports if is_benchmark_resource(str(p.get("Name", "")))]
         except Exception:
             return []
 
@@ -78,14 +84,14 @@ class OpenStackClient:
 
     def delete_server_safe(self, server_id: str, server_name: str) -> bool:
         """Safely delete server only if name starts with 'bench-'."""
-        if not server_name.startswith(RESOURCE_PREFIX):
+        if not is_benchmark_resource(server_name):
             raise ValueError(f"CRITICAL SAFETY VIOLATION: Attempted to delete non-benchmark server: {server_name}")
         res = self._run_cmd(["server", "delete", server_id])
         return res.returncode == 0
 
     def delete_port_safe(self, port_id: str, port_name: str) -> bool:
         """Safely delete port only if name starts with 'bench-'."""
-        if not port_name.startswith(RESOURCE_PREFIX):
+        if not is_benchmark_resource(port_name):
             raise ValueError(f"CRITICAL SAFETY VIOLATION: Attempted to delete non-benchmark port: {port_name}")
         res = self._run_cmd(["port", "delete", port_id])
         return res.returncode == 0

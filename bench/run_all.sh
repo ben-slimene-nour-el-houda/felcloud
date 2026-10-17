@@ -4,6 +4,13 @@ cd "$(dirname "$0")/.."
 python=bench/.venv/bin/python
 if [[ ! -x "$python" ]]; then python=python3; fi
 
+for arg in "$@"; do
+  case "$arg" in
+    --smoke|--dry-run) ;;
+    *) echo "Unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
 # Ordered as requested; each test records preflight failures without mutations.
 status=0
 for test in \
@@ -14,8 +21,10 @@ for test in \
   bench/tests/t6_reload_rollback.py \
   bench/tests/t7_isolation_security.py \
   bench/tests/t3_gateway_failover.py; do
-  "$python" "$test" || status=1
+  "$python" "$test" "$@" || status=1
 done
 
-"$python" bench/report/generate_report.py
+if [[ " $* " != *" --dry-run "* ]]; then
+  "$python" bench/report/generate_report.py
+fi
 exit "$status"

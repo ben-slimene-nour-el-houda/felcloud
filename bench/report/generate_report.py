@@ -31,6 +31,8 @@ def generate():
         rec = latest_summary(test)
         status = rec["status"] if rec else "NOT EXECUTED"
         reason = "; ".join(rec.get("reason", [])) if rec else "No run record exists."
+        if "Operation not permitted" in reason:
+            reason = "The historical preflight was blocked by the agent sandbox's network policy; current API and cloud status remain undetermined."
         lines.append(f"- **{test.upper()} — {NAMES[test]}:** {status}. {reason}")
     lines += ["", "## 4. Results summary", "",
         "| Metric | Target | Measured (min / mean / p95 / max) | Pass/Fail | n |",
@@ -54,7 +56,7 @@ def generate():
     lines += ["## 6. Bugs and anomalies", "",
         "See [bugs_found.md](../bugs_found.md). Existing entries must be treated as unverified unless reproduced by this benchmark; no live benchmark bug was reproduced.", "",
         "## 7. Limitations and threats to validity", "",
-        "The API was unavailable on localhost and OpenStack inventory/auth was denied by the execution environment. No cloud resources, gateway state, DNS, actual pool size, or live package versions could be verified. The requested cold/warm distinction also requires a controllable image-cache mechanism, which was not established.", "",
+        "The earlier preflight ran inside a restricted agent sandbox; its `Operation not permitted` network errors do not establish API health or OpenStack authentication status. No cloud resources, gateway state, DNS, actual pool size, or live package versions were verified. `ENVIRONMENT.md` is regenerated only by `bench/preflight.py` and awaits a network-enabled run. The requested cold/warm distinction also requires a controllable image-cache mechanism, which has not been established.", "",
         "## 8. Reproduction", "",
         "Install pinned dependencies with `python3 -m pip install -r bench/requirements.txt`, provide `ADMIN_TOKEN` and valid OpenStack auth, then run an individual file under `bench/tests/` or `bash bench/run_all.sh`. Scripts fail closed pending verified isolated-target gates.", "",
         "## 9. Challenge scoring mapping", "",

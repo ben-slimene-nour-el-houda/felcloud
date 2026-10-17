@@ -1,96 +1,116 @@
-"""Safe benchmark entry points and evidence recording.
-
-The cloud mutation suite is intentionally blocked unless the control plane is
-healthy and authenticated cloud discovery succeeds. A blocked run is recorded
-as NOT EXECUTED; it is never converted into a zero-valued measurement.
-"""
+"""CLI and safety gates shared by individual benchmark entry points."""
+import argparse
 import csv
 import json
 import os
-import socket
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT.parent
 RAW = ROOT / "results" / "raw"
 TESTS = {
-    "t1": "Provisioning latency",
-    "t2": "Concurrent provisioning stress and pool exhaustion",
-    "t3": "Gateway failover (destructive) and manual failover",
-    "t4": "IP recycling",
-    "t5": "Lease expiry and teardown worker recovery",
-    "t6": "Config reload and rollback",
-    "t7": "Network isolation and access safeguards",
+    "t1": ("Provisioning latency", ["POST bench-t1-* sandbox provision", "poll Nova ACTIVE and IPAM lease", "poll each gateway route until HTTP 200", "DELETE each bench-t1-* sandbox in finally cleanup"]),
+    "t2": ("Concurrent provisioning stress", ["probe three pre-existing sandboxes", "barrier-start bench-t2-* provisions at configured concurrency", "cross-check IPAM addresses against Neutron ports", "verify host routing returns each sandbox identity", "collect gateway CPU and memory", "teardown every bench-t2-* sandbox"]),
+    "t3": ("Gateway failover", ["probe a bench- sandbox through the VIP", "STOP HAProxy or Keepalived on the configured primary gateway", "measure VIP/route recovery and failback", "START the stopped service in finally cleanup"]),
+    "t4": ("IP recycling", ["create and delete bench-t4-* sandboxes", "measure IPAM release, Neutron port deletion, and address reuse", "reconcile pool state after cleanup"]),
+    "t5": ("Lease expiry and teardown", ["create short-lease bench-t5-* sandboxes", "observe lease expiry and automated cleanup", "restart cleanup worker only on configured test control plane", "verify VM, port, IPAM, route, and DNS cleanup"]),
+    "t6": ("Reload and rollback", ["probe bench- routes during config changes", "apply valid candidate config through test control plane", "submit invalid candidates and measure rollback", "verify last-known-good config hash", "restore initial config in finally cleanup"]),
+    "t7": ("Network isolation", ["create bench-t7-a, bench-t7-b, bench-t7-c sandboxes", "test prohibited peer and management-plane paths", "verify permitted gateway-to-sandbox service path", "save security-group and host-rule evidence", "teardown every bench-t7-* sandbox"]),
 }
 
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+def timestamp():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def preflight():
-    reasons = []
-    base = os.environ.get("CONTROL_PLANE_URL", "http://127.0.0.1:8081")
-    # Non-mutating reachability check only.
-    try:
-        import httpx
-        response = httpx.get(base.rstrip("/") + "/health", timeout=3.0)
-        if response.status_code != 200:
-            reasons.append(f"Control plane health returned HTTP {response.status_code}")
-    except Exception as exc:
-        reasons.append(f"Control plane unavailable at {base}: {type(exc).__name__}: {exc}")
+def load_gates():
+    from bench.lib.config import load_config
+    cfg = load_config(ROOT / "config.yaml")
+    gates = cfg.get("safety_gates", {})
+    errors = []
+    hosts = gates.get("allowed_gateway_hosts", {})
+    if not hosts.get("primary") or not hosts.get("standby"):
+        errors.append("Set BENCH_PRIMARY_HOST and BENCH_STANDBY_HOST to the exact permitted gateway SSH destinations.")
+    if hosts.get("primary") and hosts.get("primary") == hosts.get("standby"):
+        errors.append("Primary and standby gateway destinations must be different.")
+    if gates.get("resource_prefix") != "bench-" or gates.get("cleanup_name_prefix") != "bench-":
+        errors.append("safety_gates resource_prefix and cleanup_name_prefix must both be exactly 'bench-'.")
+    protected = set(gates.get("protected_names", []))
+    if not {"team1", "team2"}.issubset(protected):
+        errors.append("safety_gates.protected_names must include team1 and team2.")
     if not os.environ.get("ADMIN_TOKEN"):
-        reasons.append("ADMIN_TOKEN is unset; authenticated API mutations are unavailable")
-    cloud = os.environ.get("OS_CLOUD", "felcloud")
-    try:
-        result = subprocess.run(
-            ["openstack", "--os-cloud", cloud, "token", "issue", "-f", "value", "-c", "expires_at"],
-            capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode:
-            msg = (result.stderr or result.stdout).strip().splitlines()
-            reasons.append(f"OpenStack read-only auth failed for cloud {cloud}: " + (msg[-1] if msg else "unknown error"))
-    except Exception as exc:
-        reasons.append(f"OpenStack CLI preflight failed: {type(exc).__name__}: {exc}")
-    return reasons
+        errors.append("Set ADMIN_TOKEN in the environment; its value is never printed or written to results.")
+    if not cfg["openstack"].get("bastion_host"):
+        errors.append("Set BENCH_BASTION_HOST to the SSH bastion host.")
+    if not cfg["openstack"].get("ssh_key_path"):
+        errors.append("Set SSH_KEY_PATH to the private key used for gateway SSH.")
+    if not cfg["openstack"].get("sandbox_flavor"):
+        errors.append("Set BENCH_SANDBOX_FLAVOR for quota headroom checks.")
+    return cfg, errors
 
 
-def record(test_id, status, reasons):
+def dry_run(test_id, smoke):
+    name, actions = TESTS[test_id]
+    cfg, gate_errors = load_gates()
+    iters = 1 if smoke else cfg["benchmark"].get(f"{test_id}_runs", "configured repetitions")
+    print(f"DRY RUN: {test_id.upper()} — {name}")
+    print(f"Iterations: {iters} (smoke={str(smoke).lower()})")
+    print("No network, API, SSH, or OpenStack command will be issued.")
+    print("Planned actions:")
+    for i, action in enumerate(actions, 1):
+        if test_id == "t3":
+            host = cfg.get("safety_gates", {}).get("allowed_gateway_hosts", {}).get("primary") or "<BENCH_PRIMARY_HOST unset>"
+            action = action.replace("configured primary gateway", f"configured primary gateway {host}")
+        print(f"  {i}. {action}")
+    print("Safety gates:")
+    print("  resource name prefix: bench-")
+    print("  protected cleanup names: team1, team2")
+    print(f"  allowed primary gateway: {cfg.get('safety_gates', {}).get('allowed_gateway_hosts', {}).get('primary') or '<unset>'}")
+    print(f"  allowed standby gateway: {cfg.get('safety_gates', {}).get('allowed_gateway_hosts', {}).get('standby') or '<unset>'}")
+    if gate_errors:
+        print("  MISSING GATES (execution will fail closed):")
+        for item in gate_errors:
+            print(f"    - {item}")
+    return 0
+
+
+def save_not_executed(test_id, reasons):
     RAW.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base = RAW / f"{test_id}_{stamp}"
-    row = {"timestamp_utc": utc_now(), "test": test_id, "status": status,
-           "reason": "; ".join(reasons), "sample_n": 0}
-    with base.with_suffix(".csv").open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=row.keys())
+    row = {"timestamp_utc": timestamp(), "test": test_id, "status": "NOT EXECUTED", "reason": "; ".join(reasons), "sample_n": 0}
+    path = RAW / f"{test_id}_{stamp}.csv"
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row))
         writer.writeheader()
         writer.writerow(row)
-    base.with_name(base.name + "_summary.json").write_text(
-        json.dumps({"test": test_id, "status": status, "reason": reasons,
-                    "timestamp_utc": row["timestamp_utc"], "sample_n": 0}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(f"{test_id}: {status}")
+    (RAW / f"{test_id}_{stamp}_summary.json").write_text(json.dumps({**row, "reasons": reasons}, indent=2) + "\n", encoding="utf-8")
+    print(f"{test_id.upper()}: NOT EXECUTED")
     for reason in reasons:
         print(f"  - {reason}")
 
 
-def run_test(test_id):
-    reasons = preflight()
-    if reasons:
-        record(test_id, "NOT EXECUTED", reasons)
-        return 2
-    # Current checkout does not contain a fully implemented/tested harness for
-    # the live mutation scenarios. Fail closed instead of issuing unsafe ops.
-    reason = "Live scenario implementation is gated pending isolated bench environment target verification."
-    record(test_id, "NOT EXECUTED", [reason])
-    return 2
-
-
-def main():
-    test_id = sys.argv[1]
+def main(test_id=None):
+    if test_id is None:
+        test_id = sys.argv[1]
+        argv = sys.argv[2:]
+    else:
+        argv = sys.argv[1:]
     if test_id not in TESTS:
-        raise SystemExit(f"unknown test id: {test_id}")
-    raise SystemExit(run_test(test_id))
+        raise SystemExit(f"Unknown test id: {test_id}")
+    parser = argparse.ArgumentParser(description=TESTS[test_id][0])
+    parser.add_argument("--smoke", action="store_true", help="limit this test to one iteration and bench- resources")
+    parser.add_argument("--dry-run", action="store_true", help="print planned actions without network or system calls")
+    args = parser.parse_args(argv)
+    if args.dry_run:
+        return dry_run(test_id, args.smoke)
+
+    cfg, errors = load_gates()
+    if errors:
+        save_not_executed(test_id, ["Safety gates are incomplete. No test actions were attempted.", *errors])
+        return 2
+    # Live scenario bodies are intentionally not enabled by this preparation
+    # task. Make that distinction explicit rather than treating preflight as a test.
+    save_not_executed(test_id, ["Scenario runner is not implemented in this checkout; no live test was attempted.", "Run python3 bench/preflight.py first, then implement/review the scenario runner before executing."])
+    return 2

@@ -12,13 +12,13 @@ See [ENVIRONMENT.md](../ENVIRONMENT.md). The control plane was not listening at 
 
 Timing is to use monotonic `time.perf_counter` deltas, with UTC event timestamps and individual CSV samples. Since the live scenarios were not executed, no latency or success-rate metric is reported.
 
-- **T1 — Provisioning latency:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T2 — Concurrent provisioning stress:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T3 — Gateway failover:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T4 — IP recycling:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T5 — Lease expiry and teardown:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T6 — Reload and rollback:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
-- **T7 — Network isolation:** NOT EXECUTED. Control plane unavailable at http://127.0.0.1:8081: ConnectError: [Errno 1] Operation not permitted; ADMIN_TOKEN is unset; authenticated API mutations are unavailable; OpenStack read-only auth failed for cloud felcloud: [Errno 1] Operation not permitted
+- **T1 — Provisioning latency:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T2 — Concurrent provisioning stress:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T3 — Gateway failover:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T4 — IP recycling:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T5 — Lease expiry and teardown:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T6 — Reload and rollback:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
+- **T7 — Network isolation:** NOT EXECUTED. Historical preflight network checks were blocked by the agent sandbox; current API and cloud status are undetermined.
 
 ## 4. Results summary
 
@@ -84,7 +84,7 @@ See [bugs_found.md](../bugs_found.md). Existing entries must be treated as unver
 
 ## 7. Limitations and threats to validity
 
-The API was unavailable on localhost and OpenStack inventory/auth was denied by the execution environment. No cloud resources, gateway state, DNS, actual pool size, or live package versions could be verified. The requested cold/warm distinction also requires a controllable image-cache mechanism, which was not established.
+The earlier preflight was run inside a restricted agent sandbox; its `Operation not permitted` network errors do not establish API health or OpenStack authentication status. No cloud resources, gateway state, DNS, actual pool size, or live package versions were verified. `ENVIRONMENT.md` is now regenerated only by `bench/preflight.py` and awaits a network-enabled run. The requested cold/warm distinction also requires a controllable image-cache mechanism, which has not been established.
 
 ## 8. Reproduction
 
