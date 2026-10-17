@@ -2,7 +2,7 @@
 import asyncio
 import csv
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,16 +28,12 @@ class PollResult:
 
 
 async def wait_until_http_200(target_url: str, host_header: str, *, timeout: float = 60.0,
-                              interval: float = 0.5, request_timeout: float = 3.0,
-                              transport: Optional[httpx.AsyncBaseTransport] = None,
-                              client: Optional[httpx.AsyncClient] = None) -> PollResult:
+                              interval: float = 0.5, request_timeout: float = 3.0) -> PollResult:
     """Poll a gateway/VIP URL, preserving Host routing, until HTTP 200 or timeout."""
     start = time.perf_counter()
     start_utc = utc_iso_now()
     attempts, last_status, last_error = 0, 0, ""
-    owns_client = client is None
-    http = client or httpx.AsyncClient(timeout=request_timeout, transport=transport,
-                                       follow_redirects=False)
+    http = httpx.AsyncClient(timeout=request_timeout, follow_redirects=False)
     try:
         while True:
             attempts += 1
@@ -58,15 +54,13 @@ async def wait_until_http_200(target_url: str, host_header: str, *, timeout: flo
                                   elapsed, last_error or "poll timeout")
             await asyncio.sleep(min(interval, max(0.0, timeout - elapsed)))
     finally:
-        if owns_client:
-            await http.aclose()
+        await http.aclose()
 
 
 class BackgroundProber:
     """Periodic asynchronous HTTP prober. `stop()` writes every sample to CSV."""
     def __init__(self, target_url: str, host_header: str, *, interval_seconds: float = 0.1,
-                 timeout_seconds: float = 1.0, output_csv=None,
-                 transport: Optional[httpx.AsyncBaseTransport] = None):
+                 timeout_seconds: float = 1.0, output_csv=None):
         if interval_seconds <= 0 or timeout_seconds <= 0:
             raise ValueError("probe interval and timeout must be positive")
         self.target_url = target_url
@@ -74,7 +68,6 @@ class BackgroundProber:
         self.interval = interval_seconds
         self.timeout = timeout_seconds
         self.output_csv = Path(output_csv) if output_csv else None
-        self.transport = transport
         self.samples: List[Dict[str, Any]] = []
         self._stop = asyncio.Event()
         self._task = None
@@ -85,8 +78,7 @@ class BackgroundProber:
             raise RuntimeError("prober already started")
         self.samples.clear()
         self._stop = asyncio.Event()
-        self._client = httpx.AsyncClient(timeout=self.timeout, transport=self.transport,
-                                         follow_redirects=False)
+        self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
         self._task = asyncio.create_task(self._run())
         return self
 

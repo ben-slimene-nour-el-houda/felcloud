@@ -5,9 +5,8 @@ import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import httpx
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -33,7 +32,6 @@ async def _resolve(hostname):
 
 def _stages(timings):
     # The API returns stage durations in timings_ms, not wall-clock event times.
-    # Preserve those reported durations and leave absolute stage timestamps null.
     source_map = {"ipam_allocate": "allocate", "neutron_port": "port",
                   "nova_active": "server_active", "health_probe": "health",
                   "gateway_rule": "sync"}
@@ -41,21 +39,27 @@ def _stages(timings):
 
 
 def _save_chart(rows, path):
-    good = [row for row in rows if row.get("success")]
+    stage_keys = ["ipam_allocate", "neutron_port", "nova_active", "health_probe", "gateway_rule"]
+    good = [row for row in rows if row.get("success") and
+            all(row.get(f"stage_{key}_ms") is not None for key in stage_keys) and
+            row.get("api_elapsed_ms") is not None and row.get("dns_elapsed_ms") is not None and
+            row.get("gateway_wait_ms") is not None]
     if not good:
         return False
     names = [f"R{row['run_index']}" for row in good]
-    stage_keys = ["ipam_allocate", "neutron_port", "nova_active", "health_probe", "gateway_rule"]
     stage_labels = ["IPAM allocate", "Neutron port", "Nova ACTIVE", "Health probe", "Gateway rule sync"]
     bottoms = [0.0] * len(good)
     fig, ax = plt.subplots(figsize=(12, 6))
     for key, label in zip(stage_keys, stage_labels):
-        vals = [float(row.get(f"stage_{key}_ms") or 0) / 1000.0 for row in good]
+        vals = [float(row[f"stage_{key}_ms"]) / 1000.0 for row in good]
         ax.bar(names, vals, bottom=bottoms, label=label)
         bottoms = [b + v for b, v in zip(bottoms, vals)]
     residual = [float(row["api_residual_ms"]) / 1000.0 for row in good]
     ax.bar(names, residual, bottom=bottoms, label="API elapsed minus reported stages")
     bottoms = [b + v for b, v in zip(bottoms, residual)]
+    dns = [float(row["dns_elapsed_ms"]) / 1000.0 for row in good]
+    ax.bar(names, dns, bottom=bottoms, label="DNS lookup")
+    bottoms = [b + v for b, v in zip(bottoms, dns)]
     wait = [float(row["gateway_wait_ms"]) / 1000.0 for row in good]
     ax.bar(names, wait, bottom=bottoms, label="Post-response gateway wait")
     ax.set_xlabel("Sequential run")
@@ -70,14 +74,11 @@ def _save_chart(rows, path):
     return True
 
 
-async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
-                 transport: Optional[httpx.AsyncBaseTransport] = None,
-                 poller=wait_until_http_200, resolver=_resolve,
-                 output_root: Optional[Path] = None) -> Dict[str, Any]:
+async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False) -> Dict[str, Any]:
     cp = cfg["control_plane"]
     network = cfg["network"]
     bench_cfg = cfg["benchmark"]
-    base_dir = Path(output_root) if output_root else Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[1]
     raw_dir = base_dir / "results" / "raw"
     chart_dir = base_dir / "results" / "charts"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -105,15 +106,13 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
         return summary
 
     count = 1 if smoke else int(bench_cfg.get("t1_runs", 30))
-    cold_candidates = int(bench_cfg.get("t1_cold_runs", 10))
     ttl = int(bench_cfg.get("t1_lease_ttl_seconds", 3600))
     poll_timeout = float(bench_cfg.get("t1_poll_timeout_seconds", 60))
     poll_interval = float(bench_cfg.get("t1_poll_interval_seconds", 0.5))
     rows: List[Dict[str, Any]] = []
     created_names: List[str] = []
     client = AsyncControlPlaneClient(cp["base_url"], token,
-                                     timeout=float(cp.get("request_timeout_seconds", 180)),
-                                     transport=transport)
+                                     timeout=float(cp.get("request_timeout_seconds", 180)))
     try:
         try:
             health = await client.health()
@@ -138,13 +137,8 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
         for run_index in range(1, count + 1):
             team = f"bench-t1-{run_prefix.lower()}-{run_index:02d}"
             hostname = f"{team}.{domain}"
-            cache_candidate = ("cold_candidate" if run_index <= cold_candidates else
-                               "warm_candidate") if not smoke else "unclassified_smoke"
             row: Dict[str, Any] = {
                 "run_index": run_index, "team": team, "subdomain": hostname,
-                "requested_cache_group": cache_candidate,
-                "cache_state_verified": False,
-                "cache_state_note": "Image cache state was not controllably measured.",
                 "success": False, "status": "NOT STARTED", "error": "",
                 "benchmark_started_utc": _utc(),
                 "stage_timing_source": "API timings_ms duration fields; exact stage UTC timestamps are not returned by the API",
@@ -164,7 +158,6 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
                 row["api_reported_total_ms"] = timings.get("total") if isinstance(timings, dict) else None
                 for stage, value in stages.items():
                     row[f"stage_{stage}_ms"] = value
-                    row[f"stage_{stage}_timestamp_utc"] = None
 
                 if api_response.status_code not in (200, 201):
                     row["status"] = "PROVISION_FAILED"
@@ -180,7 +173,7 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
                 try:
                     dns_start = time.perf_counter()
                     row["dns_lookup_started_utc"] = _utc()
-                    dns_info = await resolver(hostname)
+                    dns_info = await _resolve(hostname)
                     row["dns_resolved"] = True
                     row["dns_addresses"] = ";".join(_resolved_ips(dns_info))
                     row["dns_error"] = ""
@@ -193,14 +186,12 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
                     row["dns_lookup_finished_utc"] = _utc()
                     row["dns_elapsed_ms"] = (dns_end - dns_start) * 1000.0
 
-                poll_start = time.perf_counter()
                 scheme = str(network.get("gateway_scheme", "http")).strip() or "http"
                 target_vip = vip if "://" in vip else f"{scheme}://{vip}"
-                poll_result: PollResult = await poller(
+                poll_result: PollResult = await wait_until_http_200(
                     target_vip.rstrip("/") + "/", hostname,
                     timeout=poll_timeout, interval=poll_interval,
                     request_timeout=float(bench_cfg.get("t1_http_timeout_seconds", 3)),
-                    transport=transport,
                 )
                 row["poll_started_utc"] = poll_result.started_utc
                 row["first_http_200_utc"] = poll_result.first_200_utc
@@ -212,8 +203,8 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
                 row["success"] = poll_result.success
                 row["status"] = "SUCCESS" if poll_result.success else "ROUTE_TIMEOUT"
                 row["total_latency_ms"] = (time.perf_counter() - start_perf) * 1000.0
-                row["first_http_200_from_provision_start_ms"] = (
-                    (poll_result.first_200_perf_counter - start_perf) * 1000.0
+                row["client_post_to_first_http_200_ms"] = (
+                    (poll_result.first_200_perf_counter - api_response.started_perf_counter) * 1000.0
                     if poll_result.first_200_perf_counter is not None else None)
                 numeric_stages = [float(x) for x in stages.values() if x is not None]
                 row["api_residual_ms"] = api_elapsed * 1000.0 - sum(numeric_stages)
@@ -235,21 +226,23 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
         for stage in ("ipam_allocate", "neutron_port", "nova_active", "health_probe", "gateway_rule"):
             values = [r[f"stage_{stage}_ms"] for r in rows
                       if r.get(f"stage_{stage}_ms") is not None]
-            stage_stats[stage] = compute_stats(values)
+            stage_stats[stage] = compute_stats(values) if values else "NOT EXECUTED: API supplied no samples for this stage"
+        def stats_or_reason(values, reason):
+            return compute_stats(values) if values else f"NOT EXECUTED: {reason}"
         summary = {
             "test": "T1_provisioning_latency", "status": "EXECUTED",
             "timestamp_utc": _utc(), "planned_runs": count, "n": len(rows),
             "successful_runs": len(successful), "failed_runs": len(rows) - len(successful),
             "success_rate": (len(successful) / len(rows)) if rows else None,
             "metrics_ms": {
-                "api_elapsed": compute_stats([r["api_elapsed_ms"] for r in rows if "api_elapsed_ms" in r]),
-                "first_http_200_from_provision_start": compute_stats([r["first_http_200_from_provision_start_ms"] for r in successful if r.get("first_http_200_from_provision_start_ms") is not None]),
-                "total_latency_to_first_http_200": compute_stats([r["total_latency_ms"] for r in successful if "total_latency_ms" in r]),
-                "dns_lookup": compute_stats([r["dns_elapsed_ms"] for r in rows if "dns_elapsed_ms" in r]),
+                "api_elapsed": stats_or_reason([r["api_elapsed_ms"] for r in rows if "api_elapsed_ms" in r], "no API responses were received"),
+                "client_post_to_first_http_200": stats_or_reason([r["client_post_to_first_http_200_ms"] for r in successful if r.get("client_post_to_first_http_200_ms") is not None], "no sandbox reached HTTP 200 through the VIP"),
+                "total_latency_to_first_http_200": stats_or_reason([r["total_latency_ms"] for r in successful if "total_latency_ms" in r], "no sandbox reached HTTP 200 through the VIP"),
+                "dns_lookup": stats_or_reason([r["dns_elapsed_ms"] for r in rows if "dns_elapsed_ms" in r], "no DNS lookup completed"),
                 **stage_stats,
             },
             "stage_absolute_timestamps": "Unavailable: API returns stage durations in timings_ms, not stage event timestamps.",
-            "cold_warm_status": "Not verified; cache group labels are candidates only.",
+            "cold_warm_status": "NOT EXECUTED: image cache state cannot be controlled or verified by this harness.",
             "raw_csv": str(raw_path), "chart_png": str(chart_path),
         }
         save_raw_csv(raw_path, rows)
@@ -257,6 +250,7 @@ async def run_t1(cfg: Dict[str, Any], *, smoke: bool = False,
         summary["chart_generated"] = chart_made
         if not chart_made:
             summary["chart_png"] = None
+            summary["chart_reason"] = "NOT GENERATED: no successful samples had complete API stage durations and gateway wait measurements"
         save_summary_json(summary_path, summary)
         print(f"T1 EXECUTED: {len(successful)}/{len(rows)} reached HTTP 200")
         print(f"Raw CSV: {raw_path}")

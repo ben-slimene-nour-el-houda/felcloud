@@ -6,7 +6,7 @@ import httpx
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 from urllib.parse import quote
 
 
@@ -26,16 +26,15 @@ class TimedResponse:
 
 
 class AsyncControlPlaneClient:
-    """Async httpx client. Accepts an httpx transport for network-free tests."""
-    def __init__(self, base_url: str, admin_token: str, timeout: float = 180.0,
-                 transport: Optional[httpx.AsyncBaseTransport] = None):
+    """Async httpx client for the configured live control plane."""
+    def __init__(self, base_url: str, admin_token: str, timeout: float = 180.0):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         headers = {"Content-Type": "application/json", "User-Agent": "FelCloud-Benchmark/1.0"}
         if admin_token:
             headers["Authorization"] = f"Bearer {admin_token}"
         self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers,
-                                         timeout=timeout, transport=transport)
+                                         timeout=timeout)
 
     async def close(self) -> None:
         await self._client.aclose()
