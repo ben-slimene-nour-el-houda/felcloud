@@ -1,0 +1,62 @@
+# FelCloud Resilient IP Optimizer — Benchmark Suite Configuration
+# All paths relative to repository root or configurable via environment variables
+
+control_plane:
+  base_url: "http://127.0.0.1:8081"
+  admin_token: "${ADMIN_TOKEN:-felcloud_super_secret_admin_token_2026_benchmark}"
+  request_timeout_seconds: 30
+
+network:
+  domain: "cstam.felcloud.tn"
+  edge_vip_internal: "10.20.20.246"
+  edge_vip_public: "${PUBLIC_VIP_IP:-197.5.133.119}"
+  pool_cidr: "10.20.30.0/24"
+  pool_start_ip: "10.20.30.10"
+  pool_end_ip: "10.20.30.240"
+  quarantine_seconds: 5
+  default_quarantine_seconds: 300
+
+gateways:
+  gw1:
+    mgmt_ip: "10.20.10.24"
+    edge_ip: "10.20.20.82"
+    sandbox_ip: "10.20.30.86"
+    role: "MASTER"
+    priority: 150
+  gw2:
+    mgmt_ip: "10.20.10.164"
+    edge_ip: "10.20.20.190"
+    sandbox_ip: "10.20.30.224"
+    role: "BACKUP"
+    priority: 100
+  dpa_port: 5555
+  dpa_user: "${DPA_USER:-admin}"
+  dpa_pass: "${DPA_PASS:-felDPASecret123}"
+  keepalived_advert_int: 1
+  keepalived_weight_drop: -60
+
+openstack:
+  cloud: "${OS_CLOUD:-felcloud}"
+  sandbox_network: "felcloud-sandbox"
+  sandbox_subnet: "felcloud-sandbox-subnet"
+  sandbox_security_group: "sg-sandbox"
+  sandbox_flavor: "G0.basic.1c1g"
+  sandbox_image: "a049a501-f812-4e6c-9c07-61aa3b08bb50"
+  sandbox_keypair: "felcloud-resilient-v2"
+  bastion_ip: "${BASTION_IP:-197.5.133.77}"
+  bastion_user: "ansible"
+  ssh_key_path: "ansible/.ssh/id_rsa_felcloud"
+
+benchmark:
+  seed: 42
+  resource_prefix: "bench-"
+  t1_runs: 30
+  t2_concurrency_levels: [10, 20, 30, 50]
+  t2_repetitions_per_level: 5
+  t3_repetitions_per_mode: 20
+  t3_manual_failover_runs: 10
+  t4_recycle_cycles: 100
+  t4_rapid_cycles: 20
+  t5_lease_samples: 20
+  t6_valid_runs: 30
+  t6_invalid_runs: 30
