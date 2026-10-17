@@ -157,7 +157,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		vip := envOr("VIP_ADDRESS", "10.20.20.246")
 		gwOut := make(map[string]any, len(pr.Gateways))
 		for name, p := range pr.Gateways {
-			gwOut[name] = map[string]any{
+			entry := map[string]any{
 				"reachable":        p.Reachable,
 				"haproxy":          p.HAProxy,
 				"keepalived":       p.Keepalived,
@@ -165,6 +165,16 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 				"probed_at":        p.ProbedAt,
 				"error":            p.Error,
 			}
+			// Enrich with DPA info when credentials are available.
+			if _, _, dpaErr := dpaCredentials(); dpaErr == nil {
+				dpaInfo := ProbeDPAGateway(name)
+				entry["dpa"] = map[string]any{
+					"ready":   dpaInfo.Ready,
+					"version": dpaInfo.Version,
+					"error":   dpaInfo.Error,
+				}
+			}
+			gwOut[name] = entry
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -173,6 +183,24 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 			"vip_holder":        pr.VIPHolder,
 			"latest_generation": pr.LatestGenID,
 			"fetched_at_ms":     pr.FetchedAtUnix,
+			"deploy_method":     "dpa",
+		})
+	}))
+
+	// ── GET /api/gateways/dpa ──────────────────────────────────────────────────
+	mux.HandleFunc("/api/gateways/dpa", logRequest(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		results := make(map[string]any, len(gatewayHosts))
+		for _, host := range gatewayHosts {
+			results[host] = ProbeDPAGateway(host)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"dpa_port":      dpaPort(),
+			"gateways":      results,
+			"deploy_method": "dpa",
 		})
 	}))
 
@@ -744,6 +772,7 @@ func gwLeasesGet(w http.ResponseWriter, _ *http.Request) {
 // ── HTTP server entry point ────────────────────────────────────────────────────
 
 func runServer(ctx context.Context, port int) (runErr error) {
+	loadDotEnv()
 	if _, err := loadAPISecurityConfig(); err != nil {
 		return fmt.Errorf("API security configuration: %w", err)
 	}

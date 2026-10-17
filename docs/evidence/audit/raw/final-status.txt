@@ -1,8 +1,0 @@
-Audit Git status:
-?? docs/evidence/
-
-Tracked diff check:
-
-Tracked staged diff check:
-
-Tracked changes: none (untracked audit evidence only).

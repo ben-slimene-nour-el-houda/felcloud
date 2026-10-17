@@ -1,5 +1,0 @@
-results.json parses
-REPORT local links valid: 136
-terminal summary is exactly 15 lines
-all audit listeners stopped
-tracked changes: none

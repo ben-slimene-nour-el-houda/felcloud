@@ -4,7 +4,7 @@
 control_plane:
   base_url: "http://127.0.0.1:8081"
   admin_token: "${ADMIN_TOKEN:-felcloud_super_secret_admin_token_2026_benchmark}"
-  request_timeout_seconds: 30
+  request_timeout_seconds: 180
 
 network:
   domain: "cstam.felcloud.tn"

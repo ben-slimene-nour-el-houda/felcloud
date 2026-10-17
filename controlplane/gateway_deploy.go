@@ -31,7 +31,12 @@ type gatewayDeployment struct {
 	RestoreMS  int64
 }
 
-var gatewayDeploymentRunner = runTransactionalGatewayDeploy
+// gatewayDeploymentRunner is the active config-push implementation.
+// Default: DPA REST API (no Ansible/SSH required for config changes).
+// Set to runTransactionalGatewayDeploy to fall back to Ansible-based push.
+var gatewayDeploymentRunner = func(genID, snapshot, active, standby string) (gatewayDeployment, error) {
+	return runDPAGatewayDeploy(genID, snapshot, active, standby)
+}
 var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
 var gatewayStoreFactory = newGatewayStore
@@ -48,7 +53,7 @@ func sshCommonArgs(connectTimeout int) string {
 		return fmt.Sprintf("-o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s -o ConnectTimeout=%d -o BatchMode=yes", knownHosts, connectTimeout)
 	}
 	log.Printf("ANSIBLE_KNOWN_HOSTS=%q missing; falling back to accept-new for SSH trust", knownHosts)
-	return fmt.Sprintf("-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=%d -o BatchMode=yes", connectTimeout)
+	return fmt.Sprintf("-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=%d -o BatchMode=yes -o IPQoS=none", connectTimeout)
 }
 
 // Compatibility shims retained for legacy tests and earlier gateway-config flows.
@@ -207,10 +212,10 @@ func runTransactionalGatewayDeploy(genID, snapshot, active, standby string) (gat
 	}
 
 	started := time.Now()
-	inventory := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")
-	playbook := envOr("HAPROXY_TRANSACTION_PLAYBOOK", "../ansible/haproxy-transaction.yml")
-	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
-	bastion := envOr("BASTION_IP", "203.0.113.119")
+	inventory := resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml")
+	playbook := resolveRepoFilePath("HAPROXY_TRANSACTION_PLAYBOOK", "ansible/haproxy-transaction.yml")
+	vault := resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass")
+	bastion := envOr("BASTION_IP", "197.5.133.77")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(gatewayDeployTimeoutSeconds())*time.Second)
 	defer cancel()
 	args := []string{"-i", inventory, playbook, "--vault-password-file", vault, "-e", "@" + varsPath,
@@ -261,12 +266,61 @@ func liveGatewayHealthCheck(ctx context.Context, store *gatewayStore) (gatewayHe
 	return gatewayHealthSnapshot{Probes: probes, VIPStatus: vip.Status, Backends: backends}, nil
 }
 
+// readGatewayBackendStates queries DPA /v3/services/haproxy/stats on each gateway
+// and returns a map of "host/backend/server" → status strings.
+// Falls back to the Ansible socket probe when DPA_PASS is not set.
 func readGatewayBackendStates(ctx context.Context) (map[string]string, error) {
+	_, _, dpaErr := dpaCredentials()
+	if dpaErr != nil {
+		// DPA not configured — fall back to Ansible stats socket probe.
+		return readGatewayBackendStatesViaAnsible(ctx)
+	}
+	return readGatewayBackendStatesViaDPA(ctx)
+}
+
+// readGatewayBackendStatesViaDPA queries the HAProxy Data Plane API /stats endpoint.
+func readGatewayBackendStatesViaDPA(ctx context.Context) (map[string]string, error) {
+	user, pass, _ := dpaCredentials()
+	states := map[string]string{}
+	for _, host := range gatewayHosts {
+		base := dpaBaseURL(host)
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		body, status, err := dpaRequest(probeCtx, "GET", base+"/services/haproxy/stats", nil, user, pass, "")
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("DPA stats %s: %w", host, err)
+		}
+		if status != 200 {
+			return nil, fmt.Errorf("DPA stats %s: HTTP %d: %s", host, status, truncate(string(body), 200))
+		}
+		// DPA returns a JSON array of stat objects.
+		var entries []struct {
+			BackendName string `json:"backend_name"`
+			Name        string `json:"name"`
+			Type        string `json:"type"` // "server", "backend", "frontend"
+			Stats       struct {
+				Status string `json:"status"`
+			} `json:"stats"`
+		}
+		if err := json.Unmarshal(body, &entries); err != nil {
+			return nil, fmt.Errorf("DPA stats %s: parse: %w", host, err)
+		}
+		for _, e := range entries {
+			if e.Type == "server" && e.Name != "" && e.BackendName != "" {
+				states[host+"/"+e.BackendName+"/"+e.Name] = e.Stats.Status
+			}
+		}
+	}
+	return states, nil
+}
+
+// readGatewayBackendStatesViaAnsible is the legacy fallback (Ansible → UNIX socket).
+func readGatewayBackendStatesViaAnsible(ctx context.Context) (map[string]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	bastion := envOr("BASTION_IP", "203.0.113.119")
+	bastion := envOr("BASTION_IP", "197.5.133.77")
 	statsCommand := `python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect("/run/haproxy/admin.sock"); s.sendall(b"show stat\n"); s.shutdown(socket.SHUT_WR); print(s.recv(1048576).decode())'`
-	args := []string{"-i", envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml"), "gateways", "-m", "shell", "-a", statsCommand, "-b", "--vault-password-file", envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass"), "-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes'", bastion)}
+	args := []string{"-i", resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml"), "gateways", "-m", "shell", "-a", statsCommand, "-b", "--vault-password-file", resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass"), "-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o IPQoS=none'", bastion)}
 	cmd := exec.CommandContext(ctx, "ansible", args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out

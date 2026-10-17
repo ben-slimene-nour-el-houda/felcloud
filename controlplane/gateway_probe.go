@@ -7,7 +7,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,9 +108,9 @@ func runGatewayProbes(store *gatewayStore) ProbeResult {
 	if vip == "" || net.ParseIP(vip) == nil {
 		vip = "10.20.20.246"
 	}
-	inv := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")
-	bastion := envOr("BASTION_IP", "203.0.113.119")
-	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
+	inv := resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml")
+	bastion := envOr("BASTION_IP", "197.5.133.77")
+	vault := resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass")
 
 	type namedResult struct {
 		host  string
@@ -153,12 +155,17 @@ func runGatewayProbes(store *gatewayStore) ProbeResult {
 	}
 }
 
-// ── Single-host probe: 2 s hard timeout ───────────────────────────────────────
-
-const probeCmdTimeout = 2 * time.Second
+func gatewayProbeTimeout() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("GATEWAY_PROBE_TIMEOUT_SECONDS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 8 * time.Second
+}
 
 func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
-	// ConnectTimeout=2 on the SSH side; we also wrap the whole exec in a 2 s ctx.
+	// Wrap probe in configurable context timeout (default 8s for live jump host).
 	script := fmt.Sprintf(
 		"echo haproxy=$(systemctl is-active haproxy 2>/dev/null || echo inactive);"+
 			"echo keepalived=$(cat /run/keepalived/state 2>/dev/null | tr -d '[:space:]' || echo UNKNOWN);"+
@@ -166,7 +173,8 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 		vip,
 	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeCmdTimeout)
+	timeout := gatewayProbeTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	args := []string{
@@ -177,7 +185,7 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 		"-b",
 		"--vault-password-file", vault,
 		"-e", fmt.Sprintf(
-			"ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o BatchMode=yes'",
+			"ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o IPQoS=none'",
 			bastion,
 		),
 	}
@@ -191,7 +199,7 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 	if err := cmd.Run(); err != nil {
 		reason := "unreachable"
 		if ctx.Err() == context.DeadlineExceeded {
-			reason = "probe timeout (2s)"
+			reason = fmt.Sprintf("probe timeout (%s)", timeout)
 		}
 		return GWProbe{
 			Reachable:  false,
@@ -273,9 +281,9 @@ func FetchGatewayLogs(gateway, source, since string, limit int) ([]string, error
 		shellCmd = fmt.Sprintf("journalctl -u haproxy --no-pager%s -n %d 2>/dev/null || tail -n %d /var/log/haproxy.log 2>/dev/null || echo 'no haproxy log'", sinceArg, limit, limit)
 	}
 
-	inv := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")
-	bastion := envOr("BASTION_IP", "203.0.113.119")
-	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
+	inv := resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml")
+	bastion := envOr("BASTION_IP", "197.5.133.77")
+	vault := resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass")
 
 	ctx, cancel := context.WithTimeout(context.Background(), logFetchTimeout)
 	defer cancel()
@@ -288,7 +296,7 @@ func FetchGatewayLogs(gateway, source, since string, limit int) ([]string, error
 		"-b",
 		"--vault-password-file", vault,
 		"-e", fmt.Sprintf(
-			"ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 -o BatchMode=yes'",
+			"ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o IPQoS=none'",
 			bastion,
 		),
 	}
@@ -317,6 +325,25 @@ func FetchGatewayLogs(gateway, source, since string, limit int) ([]string, error
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+func resolveRepoFilePath(envKey, relPath string) string {
+	if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+		if _, err := os.Stat(val); err == nil {
+			return val
+		}
+	}
+	candidates := []string{
+		relPath,
+		filepath.Join("..", relPath),
+		filepath.Join(".", relPath),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return relPath
+}
 
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {

@@ -13,7 +13,6 @@ set -euo pipefail
 ZONE_NAME="${DNS_ZONE:-cstam.felcloud.tn.}"
 VIP_IP="${VIP_ADDRESS:-10.20.20.246}"
 TTL="${DNS_TTL:-300}"
-MOCK_MODE="${MOCK_MODE:-false}"
 
 # Ensure trailing dot in zone
 if [[ "${ZONE_NAME}" != *.*. && "${ZONE_NAME}" != *. ]]; then
@@ -25,19 +24,11 @@ echo " FelCloud OpenStack Designate DNS Engine"
 echo " Zone:        ${ZONE_NAME}"
 echo " Edge VIP:    ${VIP_IP}"
 echo " Default TTL: ${TTL}s"
-echo " Mock Mode:   ${MOCK_MODE}"
 echo "============================================================"
 
-if [[ "${MOCK_MODE}" == "true" ]] || ! command -v openstack >/dev/null 2>&1; then
-    echo "ℹ️  Running in Designate Simulation Mode."
-    echo "--> [1/3] Checking DNS Zone ${ZONE_NAME}..."
-    echo "    ✓ Zone ${ZONE_NAME} exists (ID: sim-zone-cstam-001, status: ACTIVE)"
-    echo "--> [2/3] Registering Wildcard A-Record *.${ZONE_NAME} -> ${VIP_IP}..."
-    echo "    ✓ Recordset *.${ZONE_NAME} provisioned (type: A, records: [${VIP_IP}], TTL: ${TTL})"
-    echo "--> [3/3] Synchronizing Active Team Subdomains..."
-    echo "    ✓ All tenant routing records verified."
-    echo "✓ OpenStack Designate DNS Synchronization Succeeded!"
-    exit 0
+if ! command -v openstack >/dev/null 2>&1; then
+    echo "ERROR: 'openstack' CLI not found. OpenStack client credentials and CLI are required." >&2
+    exit 1
 fi
 
 # Live OpenStack Designate execution

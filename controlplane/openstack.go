@@ -280,10 +280,35 @@ func mockFailureMatches(team, step string) bool {
 
 func loadProvisionConfig() (ProvisionConfig, error) {
 	get := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
-	cfg := ProvisionConfig{NetworkID: get("SANDBOX_NETWORK_ID"), NetworkName: get("SANDBOX_NETWORK_NAME"), SubnetID: get("SANDBOX_SUBNET_ID"), SecurityGroup: get("SANDBOX_SG_NAME"), Image: get("SANDBOX_IMAGE"), Flavor: get("SANDBOX_FLAVOR"), Keypair: get("SANDBOX_KEYPAIR"), Timeout: 180 * time.Second, MaxConcurrent: 8}
-	if cfg.SecurityGroup == "" {
-		cfg.SecurityGroup = "sg-sandbox"
+	netID := get("SANDBOX_NETWORK_ID")
+	if netID == "" {
+		netID = "7d1b48ee-0b28-449b-aba4-869364e72623"
 	}
+	netName := get("SANDBOX_NETWORK_NAME")
+	if netName == "" {
+		netName = "felcloud-sandbox"
+	}
+	subID := get("SANDBOX_SUBNET_ID")
+	if subID == "" {
+		subID = "e23529ba-f4f1-44ce-a2a2-3c9b788b9fbd"
+	}
+	sgName := get("SANDBOX_SG_NAME")
+	if sgName == "" {
+		sgName = "sg-sandbox"
+	}
+	img := get("SANDBOX_IMAGE")
+	if img == "" {
+		img = "a049a501-f812-4e6c-9c07-61aa3b08bb50"
+	}
+	flv := get("SANDBOX_FLAVOR")
+	if flv == "" {
+		flv = "1001"
+	}
+	kp := get("SANDBOX_KEYPAIR")
+	if kp == "" {
+		kp = "felcloud-resilient-v2"
+	}
+	cfg := ProvisionConfig{NetworkID: netID, NetworkName: netName, SubnetID: subID, SecurityGroup: sgName, Image: img, Flavor: flv, Keypair: kp, Timeout: 180 * time.Second, MaxConcurrent: 8}
 	if v := get("PROVISION_TIMEOUT_SECONDS"); v != "" {
 		n, e := strconv.Atoi(v)
 		if e != nil || n < 1 || int64(n) > int64(^uint64(0)>>1)/int64(time.Second) {
@@ -384,7 +409,7 @@ func authFromEnvironment() (gophercloud.AuthOptions, string, error) {
 	}
 	cloudName := os.Getenv("OS_CLOUD")
 	if cloudName == "" {
-		return gophercloud.AuthOptions{}, "", errors.New("OpenStack auth missing: set OS_* variables or OS_CLOUD")
+		cloudName = "felcloud"
 	}
 	paths := []string{filepath.Join(os.Getenv("HOME"), ".config/openstack/clouds.yaml"), "/etc/openstack/clouds.yaml"}
 	if p := os.Getenv("OS_CLIENT_CONFIG_FILE"); p != "" {

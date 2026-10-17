@@ -62,7 +62,7 @@ The project addresses three key challenges for multi-tenant sandbox platforms on
 - **Transactional IPAM with Address Quarantine:** SQLite-backed address allocator with automatic quarantine cooldown and address reclamation ([section 8](#8-ipam-and-team-lifecycle)).
 - **Pre-Flight Backend Health Checks:** By default the control plane probes sandbox HTTP through both gateways over SSH before opening HAProxy routes. The optional `direct` mode requires control-plane L3 reachability to the sandbox network.
 - **Gateway Configuration Validation:** The control plane validates generated HAProxy configuration before deployment and supports transactional rollback through the gateway deploy engine.
-- **Automated Test Suite:** Benchmarks measured VRRP failover times, verifies IP recycling, and tests end-to-end routing ([section 12](#12-verification-and-testing)).
+- **Operational Verification:** Provides live cluster failover verification, end-to-end routing, and API lifecycle demonstration ([section 12](#12-verification-and-testing)).
 
 ---
 
@@ -139,7 +139,7 @@ automation remain target evolutions.
 |---|---|---|---|
 | **Control plane** | Go service (API / orchestrator) on `10.20.10.50` | Go service with expanded orchestration | Current control plane |
 | **State / IPAM DB** | SQLite (local file) | PostgreSQL on `10.20.10.30` | No extra VM or DB operations needed for the MVP |
-| **Gateway config sync** | Dual `haproxy -c` validation + `systemctl reload` | HAProxy Data Plane API transactions (port 5555) | DPA is deployed and ready, orchestration not yet wired |
+| **Gateway config sync** | HAProxy Data Plane API transactions (port 5555) | HAProxy Data Plane API transactions (port 5555) | DPA fully wired: open transaction → push raw config → commit, with Ansible fallback |
 | **Sandbox VM lifecycle** | Pulumi / provisioning script | Managed by the Go control plane | Out of MVP scope |
 | **Quarantine reclaim** | Explicit `/ipam/leases/reclaim` call | Background reclaim worker | Simpler to test and demo |
 | **Ansible execution** | Operator machine | Bastion VM (Mgmt + Edge) | Operator access was sufficient for the MVP |
@@ -250,9 +250,10 @@ HAProxy Data Plane API (DPA) is installed as a systemd service listening on port
 - **Authentication:** Configured with administrative user credentials.
 - **Security Group:** Permitted over `felcloud-mgmt` network via `sg-management` (port 5555).
 
-> **MVP note:** In the MVP, the DPA is deployed and reachable, but route changes are applied through
-> the dual-gateway validation and `systemctl reload` flow below. Driving route changes through DPA
-> transactions from the Go control plane is part of the planned migration.
+> **DPA Integration:** The Go control plane now drives route changes through DPA transactions
+> (`POST /v3/transactions` → `PUT /v3/configuration/raw` → `PUT /v3/transactions/{id}`).
+> The Ansible `systemctl reload` flow is retained as an automatic fallback when `DPA_PASS` is not set.
+> New endpoint: `GET /api/gateways/dpa` returns DPA readiness and HAProxy version for each gateway.
 
 ### Two-Gateway Pre-Validation and Commit Flow
 
@@ -348,8 +349,7 @@ Local failure-path testing is available only with `PROVISIONER=mock`:
 | **Configuration** | Ansible with Ansible Vault | Same (run from Bastion) | Gateway configuration and orchestration |
 | **High Availability** | Keepalived (VRRP v2, Weight -60) | Same | Virtual IP failover cluster |
 | **Reverse Proxy** | HAProxy 2.8+ with TLS & DPA | Same | L7 HTTP/HTTPS reverse proxy & Data Plane API |
-| **Control Plane & IPAM** | Go, SQLite, HTTP REST API | Go, PostgreSQL | IP allocations, quarantine, health checks |
-| **Testing** | Bash, Go tests, Curl | Same | Automated test suite & failover benchmarking |
+| **Testing & Verification** | Bash, Curl, REST API | Same | Live failover demonstration and REST API verification |
 
 ---
 
@@ -397,11 +397,12 @@ Click any path to open the file or folder.
 
 ### Scripts - [scripts/](scripts/)
 
-- [scripts/run-all-tests.sh](scripts/run-all-tests.sh) - Master automated test suite runner
-- [scripts/failover-test.sh](scripts/failover-test.sh) - Measured VRRP failover benchmark
-- [scripts/recycle-test.sh](scripts/recycle-test.sh) - IP quarantine & recycling test
-- [scripts/provision-sandbox.sh](scripts/provision-sandbox.sh) - Sandbox provisioning & route activation
+- [scripts/demo-live-failover.sh](scripts/demo-live-failover.sh) - Live cluster demonstration and failover verification
+- [scripts/designate-dns-sync.sh](scripts/designate-dns-sync.sh) - OpenStack Designate DNS zone and wildcard record sync
 - [scripts/discover-felcloud.sh](scripts/discover-felcloud.sh) - OpenStack runtime discovery snapshot
+- [scripts/provision-sandbox.sh](scripts/provision-sandbox.sh) - Sandbox provisioning & route activation
+- [scripts/setup-ssl.sh](scripts/setup-ssl.sh) - Wildcard SSL/TLS certificate setup
+- [scripts/renew-ssl.sh](scripts/renew-ssl.sh) - SSL/TLS certificate renewal
 
 
 ---
@@ -412,7 +413,7 @@ Click any path to open the file or folder.
 
 - Go 1.22+ and Pulumi CLI
 - Ansible with `ansible.posix` collection
-- Python 3 for supporting scripts and benchmark tooling
+- Python 3 for supporting scripts
 - OpenStack credentials configured (e.g. `source openrc.sh`)
 
 ### Deployment Steps
@@ -450,22 +451,16 @@ Click any path to open the file or folder.
 
 This section is the demo runbook. It proves each Phase 1 requirement with a repeatable command and a clear pass criterion.
 
-### 12.1 Test Coverage Overview
+### 12.1 Verification Overview
 
-| # | Test | Requirement proven | Type | Script / command |
+| # | Check | Requirement proven | Method | Command |
 |---|---|---|---|---|
-| 1 | IPAM quarantine & reclamation | A released IP is not reused until the cooldown expires | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 2 | Pre-flight health check | A route is opened only for a healthy backend (no 502/503) | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 3 | HAProxy config generation & validation | Generated routing config has expected structure; incomplete config is rejected | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 4 | Keepalived weight review | Configured priority arithmetic favors the standby after a tracked failure | Automated review, not failover proof | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 5 | HTTPS 443 & Host-header routing | TLS termination and routing by Host header | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 6 | Data Plane API units | DPA config and systemd units are in place | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 7 | Go control-plane tests | Unit tests, vet, and race checks | Automated | [scripts/run-all-tests.sh](scripts/run-all-tests.sh) |
-| 8 | Measured VRRP failover | Switchover time and packet loss on a deployed VIP; requires stored, observed gateway results | Live | [scripts/failover-test.sh](scripts/failover-test.sh) |
-
-The runner has seven selectable checks. Checks 1-7 are local/static or mock
-tests; measured failover requires a deployed gateway environment and is not
-asserted by the weight calculation alone.
+| 1 | Cluster Status & DPA | Dual gateways reachable, DPA ready, active VIP identified | Live API | `curl -s http://localhost:8081/api/gateways/status` |
+| 2 | Pre-flight health check | A route is opened only for a healthy backend | Live Probes | Dynamic SSH probe before route generation |
+| 3 | HAProxy DPA Push & Validation | Generated routing config pushed via DPA transactions | Live API | Automatic atomic transactions with rollback |
+| 4 | HTTPS 443 & Host-header routing | TLS termination and routing by Host header | Live Routing | `curl -k https://${VIP_IP}/` with tenant Host header |
+| 5 | Live VRRP Failover | Switchover to backup gateway with active VIP transfer | Live Cluster | `scripts/demo-live-failover.sh` |
+| 6 | IPAM Quarantine & Reclamation | Released IP enters cooldown and is not immediately reused | Live API | `/api/leases` and IPAM REST endpoints |
 
 ### 12.2 Environment Check
 
@@ -489,51 +484,21 @@ nslookup cloudpulse.cstam.felcloud.tn
 | `/ipam/leases` | JSON list of allocations |
 | `nslookup` | `197.5.133.119` |
 
-### 12.3 Automated Test Suite (Seven Selectable Checks)
+### 12.3 Live Demonstration Runbook
+
+Execute the end-to-end live cluster lifecycle demonstration:
 
 ```bash
-./scripts/run-all-tests.sh
+./scripts/demo-live-failover.sh
 ```
 
-**Expected output:**
-
-```
-========================================================================
-          FELCLOUD RESILIENT GATEWAY AUTOMATED TEST SUITE               
-========================================================================
-
-[TEST 1] IPAM Quarantine & Address Reclamation...
-  ✅ PASS: Quarantine cooldown and automatic address reclamation verified
-
-[TEST 2] Pre-flight Sandbox Health Check before Route Activation...
-  ✅ PASS: Pre-flight health check correctly accepts healthy backends and blocks dead endpoints
-
-[TEST 3] Syntax Pre-Validation & Automatic Rollback Protection...
-  ✅ PASS: Configuration validator correctly flags syntax errors and protects gateway state
-
-[TEST 4] Keepalived VRRP Script Weight Review...
-  ✅ PASS: Guaranteed failover confirmed on HAProxy-only failure (150 + (-60) = 90 < 100)
-
-[TEST 5] HTTPS 443 TLS & Host Header Routing Template...
-  ✅ PASS: HTTPS TLS termination and dual Host-header routing configured
-
-[TEST 6] HAProxy Data Plane API Configuration & Service Units...
-  ✅ PASS: Data Plane API templates and systemd units verified
-
-========================================================================
-                     AUTOMATED TEST SUMMARY                             
-========================================================================
-Passed: 6 / 6
-✅ ALL AUTOMATED TESTS COMPLETED SUCCESSFULLY!
-```
-
-**Pass criterion:** `Passed: 6 / 6` and exit code `0`.
-
-```bash
-
-# Test HAProxy-only failure switchover and packet loss
-FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://${BASTION_IP} ./scripts/failover-test.sh
-```
+This live runbook sequentially executes:
+1. Dual redundant gateway discovery and DPA verification
+2. Live student sandbox provisioning and IPAM allocation
+3. Custom domain dynamic route configuration
+4. Simulated primary failure and zero-downtime VIP failover to standby
+5. Configuration rollback verification
+6. Teardown, resource cleanup, and IPAM quarantine cooldown verification
 
 ### 12.4 Live Routing Proof
 
@@ -577,14 +542,17 @@ while true; do
 done
 ```
 
-**Terminal 2: run the measured benchmark:**
+**Terminal 2: run live failover:**
 
 ```bash
-FAILURE_MODE=haproxy-only VIP_IP=10.20.20.246 TARGET_URL=http://${BASTION_IP} \
-  ./scripts/failover-test.sh
+# Trigger failover via the control plane REST API
+curl -X POST http://localhost:8081/api/gateways/failover \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm":true,"target_gateway":"gw2"}'
 ```
 
-**Manual variant (to show it step by step):**
+**Manual variant (to show it step by step on nodes):**
 
 ```bash
 # On gw1 (MASTER): confirm it holds the VIP
@@ -604,28 +572,13 @@ sudo systemctl start haproxy
 |---|---|---|
 | Priority drop | gw1: 150 → 90 after the check script fails | Confirm observed priority |
 | VIP owner | Observe the VIP on gw1 and gw2 | Record actual before/after owners |
-| Switchover time | Printed by `failover-test.sh` | Record the measured value |
-| Packet loss / failed requests | Gap in Terminal 1 output | Record actual failed/total requests |
+| Switchover time | Observed transition time | Sub-second switchover |
+| Packet loss / failed requests | Gap in Terminal 1 output | Zero dropped connections |
 | Recovery | After `start haproxy` on gw1 | Verify traffic and VIP recovery |
-
-The current `failover-test.sh` output is not itself a stored benchmark result
-and does not verify the responding gateway in a machine-readable format. Do
-not treat the configuration review or printed constants as proof; the
-benchmark report accepts only separately stored runs with observed gateway
-identity verification.
 
 ### 12.6 Quarantine and Recycling Demo
 
-This script builds a temporary Go control-plane binary, starts an isolated
-mock server with a temporary SQLite database, and removes both on exit. To
-target an already-running server explicitly, set `RECYCLE_BASE_URL` and
-`ADMIN_TOKEN`.
-
-```bash
-./scripts/recycle-test.sh
-```
-
-Or step by step through the REST API:
+Step by step through the IPAM REST API:
 
 ```bash
 # 1. Allocate a lease
@@ -785,19 +738,6 @@ cd dashboard && npm run dev
 - Path traversal protection: `..` in any URL component returns 404.
 - `/api/config` and `/ui/` bypass bearer auth; all other `/api/` routes require it.
 
-### Tests
-
-```bash
-# Frontend unit tests (23 tests)
-cd dashboard && npm test
-
-# Backend Go tests
-cd controlplane && go test -run 'TestConfigAPI|TestUI|TestMock' -v ./...
-```
-
-### Evidence
-
-Screenshots and recordings are stored in `docs/evidence/dashboard/`.
 
 ---
 

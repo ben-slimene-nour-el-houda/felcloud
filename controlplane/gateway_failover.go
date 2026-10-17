@@ -146,14 +146,14 @@ func runServiceCommand(gateway, service, action string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	inventory := envOr("ANSIBLE_INVENTORY", "../ansible/inventory/hosts.yml")
-	vault := envOr("ANSIBLE_VAULT_PASS", "../ansible/.vault_pass")
-	bastion := envOr("BASTION_IP", "203.0.113.119")
+	inventory := resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml")
+	vault := resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass")
+	bastion := envOr("BASTION_IP", "197.5.133.77")
 	cmd := exec.CommandContext(ctx, "ansible",
 		"-i", inventory, gateway,
 		"-m", "command", "-a", "systemctl "+action+" "+service, "-b",
 		"--vault-password-file", vault,
-		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -o BatchMode=yes'", bastion),
+		"-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o IPQoS=none'", bastion),
 	)
 	var output bytes.Buffer
 	cmd.Stdout = &output
