@@ -3,7 +3,81 @@ bench.lib.api_client — Synchronous and Asynchronous HTTP client for the FelClo
 """
 
 import httpx
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
+from urllib.parse import quote
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+@dataclass
+class TimedResponse:
+    status_code: int
+    data: Dict[str, Any]
+    elapsed_seconds: float
+    started_utc: str
+    finished_utc: str
+    started_perf_counter: float
+    finished_perf_counter: float
+
+
+class AsyncControlPlaneClient:
+    """Async httpx client. Accepts an httpx transport for network-free tests."""
+    def __init__(self, base_url: str, admin_token: str, timeout: float = 180.0,
+                 transport: Optional[httpx.AsyncBaseTransport] = None):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        headers = {"Content-Type": "application/json", "User-Agent": "FelCloud-Benchmark/1.0"}
+        if admin_token:
+            headers["Authorization"] = f"Bearer {admin_token}"
+        self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers,
+                                         timeout=timeout, transport=transport)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        await self.close()
+
+    async def request(self, method: str, path: str, *, json_body=None, params=None) -> TimedResponse:
+        started_perf = time.perf_counter()
+        started_utc = _utc_iso()
+        response = await self._client.request(method, path, json=json_body, params=params)
+        finished_perf = time.perf_counter()
+        finished_utc = _utc_iso()
+        try:
+            payload = response.json()
+            data = payload if isinstance(payload, dict) else {"data": payload}
+        except (ValueError, UnicodeDecodeError):
+            data = {"raw": response.text}
+        return TimedResponse(response.status_code, data, finished_perf - started_perf,
+                             started_utc, finished_utc, started_perf, finished_perf)
+
+    async def health(self) -> TimedResponse:
+        return await self.request("GET", "/health")
+
+    async def provision_sandbox(self, team: str, ttl: int = 3600,
+                                custom_domain: str = "") -> TimedResponse:
+        payload = {"team": team, "ttl": ttl}
+        if custom_domain:
+            payload["custom_domain"] = custom_domain
+        return await self.request("POST", "/api/sandboxes/provision", json_body=payload)
+
+    async def delete_sandbox(self, team: str) -> TimedResponse:
+        from bench.lib.openstack_client import is_benchmark_resource
+        if not is_benchmark_resource(team):
+            raise ValueError("Refusing to delete a sandbox without the bench- prefix")
+        return await self.request("DELETE", f"/api/sandboxes/{quote(team, safe='')}")
+
+    async def list_sandboxes(self) -> TimedResponse:
+        return await self.request("GET", "/api/sandboxes")
 
 class ControlPlaneClient:
     def __init__(self, base_url: str = "http://127.0.0.1:8081", admin_token: str = "", timeout: float = 180.0):

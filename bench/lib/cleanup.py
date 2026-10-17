@@ -5,9 +5,32 @@ Never touches team1, team2, bastion, or gateways.
 """
 
 import time
+from typing import Sequence
 from typing import Dict, Any, List
 from bench.lib.api_client import ControlPlaneClient
 from bench.lib.openstack_client import OpenStackClient, RESOURCE_PREFIX, PROTECTED_NAMES, is_benchmark_resource
+
+
+async def cleanup_created_sandboxes(api_client, sandbox_names: Sequence[str], *, verbose: bool = True):
+    """Delete only explicitly supplied benchmark sandboxes, refusing unsafe names."""
+    outcomes = []
+    for name in dict.fromkeys(sandbox_names):
+        if not is_benchmark_resource(name):
+            outcomes.append({"sandbox": name, "deleted": False,
+                             "error": "refused: name is not a permitted bench- resource"})
+            continue
+        try:
+            response = await api_client.delete_sandbox(name)
+            ok = response.status_code in (200, 202, 204, 404)
+            outcomes.append({"sandbox": name, "deleted": ok,
+                             "status_code": response.status_code,
+                             "error": "" if ok else str(response.data.get("error", response.data))})
+            if verbose:
+                print(f"cleanup {name}: HTTP {response.status_code}")
+        except Exception as exc:
+            outcomes.append({"sandbox": name, "deleted": False,
+                             "error": f"{type(exc).__name__}: {exc}"})
+    return outcomes
 
 
 def cleanup_all_benchmark_resources(api_client: ControlPlaneClient, os_client: OpenStackClient, verbose: bool = True) -> Dict[str, Any]:
