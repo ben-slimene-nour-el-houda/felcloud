@@ -373,6 +373,7 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
               "exhaustion_error": "", "error": "",
               "released_all_allocated_leases": False, "ipam_signature_before": None,
               "ipam_signature_after": None, "ipam_signature_matches": False,
+              "allocated_set_matches": False, "unexpected_changes": [],
               "release_results": []}
     go = shutil.which("go")
     if not go:
@@ -441,12 +442,29 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
                     raise RuntimeError(f"isolated starting lease read returned HTTP {code}: {error_text(data)}")
                 starting_leases = data.get("leases", [])
                 before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
+                quarantine_count = sum(1 for _ip, state, _owner in signature_before_rows if state == "QUARANTINED")
+                drain_deadline = time.monotonic() + 90
+                while quarantine_count and time.monotonic() < drain_deadline:
+                    await asyncio.sleep(min(5, max(0, drain_deadline - time.monotonic())))
+                    if time.monotonic() >= drain_deadline:
+                        break
+                    code, data = await pool_request_with_retry(client, gate, "GET", "/api/leases", counter=read_counter)
+                    if code != 200:
+                        raise RuntimeError(f"isolated starting lease read returned HTTP {code}: {error_text(data)}")
+                    starting_leases = data.get("leases", [])
+                    before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
+                    quarantine_count = sum(1 for _ip, state, _owner in signature_before_rows if state == "QUARANTINED")
+                if quarantine_count:
+                    result["starting_ipam_counts"] = {
+                        state: sum(1 for _ip, row_state, _owner in signature_before_rows if row_state == state)
+                        for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
+                    operation_error = "starting quarantine did not drain"
                 result["ipam_signature_before"] = before_hash
                 result["starting_ipam_counts"] = {
                     state: sum(1 for _ip, row_state, _owner in signature_before_rows if row_state == state)
                     for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
                 safety_bound = pool_capacity + 5
-                for index in range(1, safety_bound + 1):
+                for index in range(1, (safety_bound if not operation_error else 0) + 1):
                     sandbox_id = f"bench-t2-pool-{stamp.lower()}-{index:03d}"
                     try:
                         code, data = await pool_request_with_retry(client, gate, "POST", "/api/leases/allocate",
@@ -467,7 +485,8 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
                         operation_error = f"{type(exc).__name__}: {exc}"
                         break
                 else:
-                    operation_error = f"pool exhaustion was not observed within safety bound pool_size + 5 ({safety_bound})"
+                    if not operation_error:
+                        operation_error = f"pool exhaustion was not observed within safety bound pool_size + 5 ({safety_bound})"
 
                 result["allocated_count"] = len(allocated)
                 result["allocation_safety_bound"] = safety_bound
@@ -515,6 +534,16 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
                                 state: sum(1 for _ip, row_state, _owner in after_rows if row_state == state)
                                 for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
                             result["ipam_signature_matches"] = after_hash == before_hash
+                            before_by_ip = {ip: (state, owner) for ip, state, owner in signature_before_rows}
+                            after_by_ip = {ip: (state, owner) for ip, state, owner in after_rows}
+                            before_allocated = {(ip, owner) for ip, (state, owner) in before_by_ip.items()
+                                                if state == "ALLOCATED"}
+                            after_allocated = {(ip, owner) for ip, (state, owner) in after_by_ip.items()
+                                               if state == "ALLOCATED"}
+                            result["allocated_set_matches"] = before_allocated == after_allocated
+                            result["unexpected_changes"] = sorted(
+                                ip for ip in before_by_ip.keys() | after_by_ip.keys()
+                                if before_by_ip.get(ip, ("FREE", ""))[0] != after_by_ip.get(ip, ("FREE", ""))[0])
                         elif not result["error"]:
                             result["error"] = f"isolated ending lease read returned HTTP {end_code}: {error_text(end_data)}"
                     except Exception as exc:
@@ -523,7 +552,9 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
                 if not exhausted_response and not result["error"]:
                     result["error"] = f"No pool exhaustion response within safety bound pool_size + 5 ({safety_bound})"
                 result["status"] = ("PASSED" if exhausted_response and result["released_all_allocated_leases"]
-                                    and result["ipam_signature_matches"] and not result["error"] else "FAILED")
+                                    and result["allocated_set_matches"]
+                                    and result.get("ending_ipam_counts", {}).get("QUARANTINED") == 0
+                                    and not result["error"] else "FAILED")
                 result["exhaustion_error"] = exhausted_response.get("error", "") if exhausted_response else ""
                 result["source_db_backup"] = source_path
                 result["isolated_db_path"] = copy_path
