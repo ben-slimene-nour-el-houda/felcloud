@@ -1,0 +1,48 @@
+{
+  "test": "T1_provisioning_latency",
+  "status": "EXECUTED",
+  "timestamp_utc": "2026-10-18T13:19:33.542Z",
+  "planned_runs": 1,
+  "n": 1,
+  "successful_runs": 0,
+  "failed_runs": 1,
+  "success_rate": 0.0,
+  "failure_reasons": [
+    {
+      "run_index": 1,
+      "team": "bench-t1-20261018t131633z-01",
+      "reason": "provision_http_status=NOT RECEIVED; provision_response_body=NOT RECEIVED; last_probe_status_code=NOT ATTEMPTED; probe_url=http://197.5.133.119/; probe_scheme=http; probe_host=197.5.133.119; Host=bench-t1-20261018t131633z-01.cloudpulse.cstam.felcloud.tn; error=ReadTimeout: ; elapsed_ms_by_phase={\"dns_lookup\": \"NOT ATTEMPTED\", \"gateway_poll\": \"NOT ATTEMPTED\", \"provision_api\": 180102.90743699807, \"total\": 180102.91409099955}",
+      "provision_http_status": "NOT RECEIVED",
+      "provision_response_body_truncated": "NOT RECEIVED",
+      "last_probe_status_code": "NOT ATTEMPTED",
+      "probe_url": "http://197.5.133.119/",
+      "probe_url_scheme": "http",
+      "probe_url_host": "197.5.133.119",
+      "probe_host_header": "bench-t1-20261018t131633z-01.cloudpulse.cstam.felcloud.tn",
+      "probe_error": "NOT ATTEMPTED",
+      "elapsed_ms_by_phase": {
+        "provision_api": 180102.90743699807,
+        "dns_lookup": "NOT ATTEMPTED",
+        "gateway_poll": "NOT ATTEMPTED",
+        "total": 180102.91409099955
+      }
+    }
+  ],
+  "metrics_ms": {
+    "api_elapsed": "NOT EXECUTED: no API responses were received",
+    "client_post_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "total_latency_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "dns_lookup": "NOT EXECUTED: no DNS lookup completed",
+    "ipam_allocate": "NOT EXECUTED: API supplied no samples for this stage",
+    "neutron_port": "NOT EXECUTED: API supplied no samples for this stage",
+    "nova_active": "NOT EXECUTED: API supplied no samples for this stage",
+    "health_probe": "NOT EXECUTED: API supplied no samples for this stage",
+    "gateway_rule": "NOT EXECUTED: API supplied no samples for this stage"
+  },
+  "stage_absolute_timestamps": "Unavailable: API returns stage durations in timings_ms, not stage event timestamps.",
+  "cold_warm_status": "NOT EXECUTED: image cache state cannot be controlled or verified by this harness.",
+  "raw_csv": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/raw/t1_provisioning_20261018T131633Z.csv",
+  "chart_png": null,
+  "chart_generated": false,
+  "chart_reason": "NOT GENERATED: no successful samples had complete API stage durations and gateway wait measurements"
+}

@@ -1,0 +1,87 @@
+{
+  "test": "T1_provisioning_latency",
+  "status": "EXECUTED",
+  "timestamp_utc": "2026-10-17T21:43:51.320Z",
+  "planned_runs": 1,
+  "n": 1,
+  "successful_runs": 0,
+  "failed_runs": 1,
+  "success_rate": 0.0,
+  "metrics_ms": {
+    "api_elapsed": {
+      "n": 1,
+      "min": 118793.6079,
+      "mean": 118793.6079,
+      "std": 0.0,
+      "p50": 118793.6079,
+      "p90": 118793.6079,
+      "p95": 118793.6079,
+      "p99": 118793.6079,
+      "max": 118793.6079
+    },
+    "client_post_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "total_latency_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "dns_lookup": "NOT EXECUTED: no DNS lookup completed",
+    "ipam_allocate": {
+      "n": 1,
+      "min": 285,
+      "mean": 285.0,
+      "std": 0.0,
+      "p50": 285,
+      "p90": 285,
+      "p95": 285,
+      "p99": 285,
+      "max": 285
+    },
+    "neutron_port": {
+      "n": 1,
+      "min": 746,
+      "mean": 746.0,
+      "std": 0.0,
+      "p50": 746,
+      "p90": 746,
+      "p95": 746,
+      "p99": 746,
+      "max": 746
+    },
+    "nova_active": {
+      "n": 1,
+      "min": 19969,
+      "mean": 19969.0,
+      "std": 0.0,
+      "p50": 19969,
+      "p90": 19969,
+      "p95": 19969,
+      "p99": 19969,
+      "max": 19969
+    },
+    "health_probe": {
+      "n": 1,
+      "min": 90444,
+      "mean": 90444.0,
+      "std": 0.0,
+      "p50": 90444,
+      "p90": 90444,
+      "p95": 90444,
+      "p99": 90444,
+      "max": 90444
+    },
+    "gateway_rule": {
+      "n": 1,
+      "min": 0,
+      "mean": 0.0,
+      "std": 0.0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0
+    }
+  },
+  "stage_absolute_timestamps": "Unavailable: API returns stage durations in timings_ms, not stage event timestamps.",
+  "cold_warm_status": "NOT EXECUTED: image cache state cannot be controlled or verified by this harness.",
+  "raw_csv": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/raw/t1_provisioning_20261017T214147Z.csv",
+  "chart_png": null,
+  "chart_generated": false,
+  "chart_reason": "NOT GENERATED: no successful samples had complete API stage durations and gateway wait measurements"
+}

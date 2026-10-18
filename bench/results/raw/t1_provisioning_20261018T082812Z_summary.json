@@ -1,0 +1,108 @@
+{
+  "test": "T1_provisioning_latency",
+  "status": "EXECUTED",
+  "timestamp_utc": "2026-10-18T08:31:45.436Z",
+  "planned_runs": 1,
+  "n": 1,
+  "successful_runs": 0,
+  "failed_runs": 1,
+  "success_rate": 0.0,
+  "failure_reasons": [
+    {
+      "run_index": 1,
+      "team": "bench-t1-20261018t082812z-01",
+      "reason": "provision_http_status=502; provision_response_body={\"error\": \"backend health check failed: gateway SSH health probe failed: gw1: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.; gw2: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.\\nroute cleanup sync: context deadline exceeded\", \"health_probe_mode\": \"gateway-ssh\", \"last_probe_result\": \"gateway SSH health probe failed: gw1: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.; gw2: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.\", \"sandbox_id\": \"bench-t1-20261018t082812z-01\", \"step\": \"health\", \"timings_ms\": {\"allocate\": 266, \"health\": 90546, \"port\": 652, \"server_active\": 20124, \"sync\": 0, \"total\": 111654}}; last_probe_status_code=NOT ATTEMPTED; probe_url=http://197.5.133.119/; probe_scheme=http; probe_host=197.5.133.119; Host=bench-t1-20261018t082812z-01.cloudpulse.cstam.felcloud.tn; error=backend health check failed: gateway SSH health probe failed: gw1: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.; gw2: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.\nroute cleanup sync: context deadline exceeded; elapsed_ms_by_phase={\"dns_lookup\": \"NOT ATTEMPTED\", \"gateway_poll\": \"NOT ATTEMPTED\", \"provision_api\": 123058.06577600015, \"total\": 123058.46418199962}",
+      "provision_http_status": 502,
+      "provision_response_body_truncated": "{\"error\": \"backend health check failed: gateway SSH health probe failed: gw1: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.; gw2: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.\\nroute cleanup sync: context deadline exceeded\", \"health_probe_mode\": \"gateway-ssh\", \"last_probe_result\": \"gateway SSH health probe failed: gw1: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.; gw2: Warning: Permanently added '197.5.133.77' (ED25519) to the list of known hosts.\", \"sandbox_id\": \"bench-t1-20261018t082812z-01\", \"step\": \"health\", \"timings_ms\": {\"allocate\": 266, \"health\": 90546, \"port\": 652, \"server_active\": 20124, \"sync\": 0, \"total\": 111654}}",
+      "last_probe_status_code": "NOT ATTEMPTED",
+      "probe_url": "http://197.5.133.119/",
+      "probe_url_scheme": "http",
+      "probe_url_host": "197.5.133.119",
+      "probe_host_header": "bench-t1-20261018t082812z-01.cloudpulse.cstam.felcloud.tn",
+      "probe_error": "NOT ATTEMPTED",
+      "elapsed_ms_by_phase": {
+        "provision_api": 123058.06577600015,
+        "dns_lookup": "NOT ATTEMPTED",
+        "gateway_poll": "NOT ATTEMPTED",
+        "total": 123058.46418199962
+      }
+    }
+  ],
+  "metrics_ms": {
+    "api_elapsed": {
+      "n": 1,
+      "min": 123058.0658,
+      "mean": 123058.0658,
+      "std": 0.0,
+      "p50": 123058.0658,
+      "p90": 123058.0658,
+      "p95": 123058.0658,
+      "p99": 123058.0658,
+      "max": 123058.0658
+    },
+    "client_post_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "total_latency_to_first_http_200": "NOT EXECUTED: no sandbox reached HTTP 200 through the VIP",
+    "dns_lookup": "NOT EXECUTED: no DNS lookup completed",
+    "ipam_allocate": {
+      "n": 1,
+      "min": 266,
+      "mean": 266.0,
+      "std": 0.0,
+      "p50": 266,
+      "p90": 266,
+      "p95": 266,
+      "p99": 266,
+      "max": 266
+    },
+    "neutron_port": {
+      "n": 1,
+      "min": 652,
+      "mean": 652.0,
+      "std": 0.0,
+      "p50": 652,
+      "p90": 652,
+      "p95": 652,
+      "p99": 652,
+      "max": 652
+    },
+    "nova_active": {
+      "n": 1,
+      "min": 20124,
+      "mean": 20124.0,
+      "std": 0.0,
+      "p50": 20124,
+      "p90": 20124,
+      "p95": 20124,
+      "p99": 20124,
+      "max": 20124
+    },
+    "health_probe": {
+      "n": 1,
+      "min": 90546,
+      "mean": 90546.0,
+      "std": 0.0,
+      "p50": 90546,
+      "p90": 90546,
+      "p95": 90546,
+      "p99": 90546,
+      "max": 90546
+    },
+    "gateway_rule": {
+      "n": 1,
+      "min": 0,
+      "mean": 0.0,
+      "std": 0.0,
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0,
+      "max": 0
+    }
+  },
+  "stage_absolute_timestamps": "Unavailable: API returns stage durations in timings_ms, not stage event timestamps.",
+  "cold_warm_status": "NOT EXECUTED: image cache state cannot be controlled or verified by this harness.",
+  "raw_csv": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/raw/t1_provisioning_20261018T082812Z.csv",
+  "chart_png": null,
+  "chart_generated": false,
+  "chart_reason": "NOT GENERATED: no successful samples had complete API stage durations and gateway wait measurements"
+}

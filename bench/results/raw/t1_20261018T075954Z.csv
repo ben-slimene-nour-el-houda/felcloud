@@ -1,0 +1,2 @@
+timestamp_utc,test,status,reason,sample_n
+2026-10-18T07:59:54Z,t1,NOT EXECUTED,Safety gates are incomplete. No test actions were attempted.; Set BENCH_PRIMARY_HOST and BENCH_STANDBY_HOST to the exact permitted gateway SSH destinations.; Set BENCH_BASTION_HOST to the SSH bastion host.; Set BENCH_SANDBOX_FLAVOR for quota headroom checks.; Set PUBLIC_VIP_IP to the test gateway VIP used for Host-header polling.; Set ROUTING_DOMAIN for the provisioned sandbox hostname.,0
