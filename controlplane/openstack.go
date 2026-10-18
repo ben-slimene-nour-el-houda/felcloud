@@ -555,8 +555,6 @@ func cloudInitHTTP() []byte {
 	// systemd unit survives reboots; no package install (sandbox network has no internet).
 	script := `#cloud-config
 write_files:
-  - path: /var/www/sandbox/index.html
-    content: "FelCloud sandbox ready\n"
   - path: /etc/systemd/system/sandbox-http.service
     content: |
       [Unit]
@@ -568,6 +566,15 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
+  - |
+    mkdir -p /var/www/sandbox
+    ip=""
+    for i in $(seq 1 30); do
+      ip=$(hostname -I | awk '{print $1}')
+      [ -n "$ip" ] && break
+      sleep 1
+    done
+    echo "FelCloud sandbox ready ($ip)" > /var/www/sandbox/index.html
   - [systemctl, daemon-reload]
   - [systemctl, enable, --now, sandbox-http.service]
 `
