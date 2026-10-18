@@ -217,8 +217,29 @@ func dpaDeleteTransaction(ctx context.Context, baseURL, txID, user, pass string)
 
 // ── Per-gateway push ───────────────────────────────────────────────────────────
 
-// dpaPushConfigToGateway pushes a complete haproxy.cfg to a single gateway
-// atomically via a DPA transaction. Returns an error if any step fails.
+// dpaPostRawConfig sends a full haproxy.cfg to DPA's raw endpoint.
+// With onlyValidate=true DPA checks the config without applying it.
+func dpaPostRawConfig(ctx context.Context, baseURL, cfgContent, user, pass string, onlyValidate bool) (int, error) {
+	version, err := dpaConfigVersion(ctx, baseURL, user, pass)
+	if err != nil {
+		return 0, err
+	}
+	url := baseURL + "/services/haproxy/configuration/raw?version=" + version
+	if onlyValidate {
+		url += "&only_validate=true"
+	}
+	body, status, err := dpaRequest(ctx, http.MethodPost, url, []byte(cfgContent), user, pass, "text/plain")
+	if err != nil {
+		return 0, err
+	}
+	if status < 200 || status > 299 {
+		return status, fmt.Errorf("raw config: HTTP %d: %s", status, truncate(string(body), 300))
+	}
+	return status, nil
+}
+
+// dpaPushConfigToGateway validates, then applies, a complete haproxy.cfg.
+// A version conflict (409) is retried once with a fresh version.
 func dpaPushConfigToGateway(host, cfgContent string) error {
 	user, pass, err := dpaCredentials()
 	if err != nil {
@@ -228,19 +249,15 @@ func dpaPushConfigToGateway(host, cfgContent string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dpaTimeout()*3)
 	defer cancel()
 
-	txID, err := dpaOpenTransaction(ctx, base, user, pass)
+	if _, err := dpaPostRawConfig(ctx, base, cfgContent, user, pass, true); err != nil {
+		return fmt.Errorf("gateway %s: validate: %w", host, err)
+	}
+	status, err := dpaPostRawConfig(ctx, base, cfgContent, user, pass, false)
+	if status == http.StatusConflict {
+		_, err = dpaPostRawConfig(ctx, base, cfgContent, user, pass, false)
+	}
 	if err != nil {
-		return fmt.Errorf("gateway %s: %w", host, err)
-	}
-
-	if err := dpaPushRawConfig(ctx, base, txID, cfgContent, user, pass); err != nil {
-		dpaDeleteTransaction(ctx, base, txID, user, pass)
-		return fmt.Errorf("gateway %s: %w", host, err)
-	}
-
-	if err := dpaCommitTransaction(ctx, base, txID, user, pass); err != nil {
-		dpaDeleteTransaction(ctx, base, txID, user, pass)
-		return fmt.Errorf("gateway %s: %w", host, err)
+		return fmt.Errorf("gateway %s: apply: %w", host, err)
 	}
 	return nil
 }
