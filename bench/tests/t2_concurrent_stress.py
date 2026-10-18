@@ -3,15 +3,21 @@
 import argparse
 import asyncio
 import csv
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
+from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import httpx
 import matplotlib
@@ -29,6 +35,8 @@ LEVELS = [3, 5, 10, 15]
 PROTECTED = {"team1", "team2", "jury-demo", "gateways", "bastion"}
 TIMEOUT = 420.0
 WINDOW = "5"
+BASELINE_BACKENDS = {"team1_backend", "team2_backend", "jury-demo_backend"}
+POOL_CONTROL_PLANE_URL = "http://127.0.0.1:8082"
 
 
 def utc():
@@ -111,6 +119,122 @@ def neutron_port_ips(ports, sandbox_ids):
     return result
 
 
+def baseline_backend_guard(configs):
+    names = {gateway: sorted(backend_names(content)) for gateway, content in configs.items()}
+    route_names = {gateway: set(found) - {"default_maintenance"} for gateway, found in names.items()}
+    valid = set(configs) == {"gw1", "gw2"} and all(found == BASELINE_BACKENDS for found in route_names.values())
+    return valid, names
+
+
+def sync_failure_events(events):
+    failures = []
+    for event in events:
+        kind = str(event.get("type", "")).upper()
+        detail = str(event.get("detail", ""))
+        if kind in {"SYNC", "FAILED"} and "gateway_sync" in detail.lower():
+            if kind == "FAILED" or re.search(r"error|fail|busy|down|409", detail, re.I):
+                failures.append({"sandbox_id": event.get("sandbox_id", ""), "type": event.get("type", ""),
+                                 "error_text": detail})
+    return failures
+
+
+def provision_sync_failures(rows):
+    failures = []
+    for row in rows:
+        if row.get("status") != "PROVISION_FAILED":
+            continue
+        data = row.get("provision_response", {})
+        message = error_text(data) if data else "; ".join(row.get("errors", []))
+        failures.append({"sandbox_id": row.get("sandbox_id", ""), "status": row.get("status"),
+                         "step": data.get("step", "") if isinstance(data, dict) else "",
+                         "error_text": message})
+    return failures
+
+
+def is_pool_exhaustion(status, data):
+    if status == 429:
+        return False
+    message = error_text(data)
+    return bool(re.search(r"pool.{0,40}exhaust|exhaust.{0,40}pool|all\s+ips?|no\s+(?:free|available)\s+ips?", message, re.I))
+
+
+def retry_after_seconds(headers):
+    value = headers.get("Retry-After", "") if headers else ""
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        if value:
+            try:
+                return max(0.0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return 0.2
+
+
+def ipam_signature(leases, cidr):
+    network = ipaddress.ip_network(cidr, strict=False)
+    first = int(network.network_address) + 2
+    last = int(network.broadcast_address) - 2
+    rows_by_ip = {str(row.get("ip_address")): row for row in leases}
+    signature = []
+    for value in range(first, last + 1):
+        address = str(ipaddress.ip_address(value))
+        row = rows_by_ip.get(address, {})
+        status = str(row.get("status", "FREE")).upper()
+        if status not in {"ALLOCATED", "QUARANTINED", "RESERVED"}:
+            status = "FREE"
+        owner = str(row.get("entity_name", "")) if status != "FREE" else ""
+        signature.append((address, status, owner))
+    serialized = json.dumps(signature, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest(), signature
+
+
+def process_environment_values():
+    return {key: os.environ.get(key, "unset") for key in
+            ("HEALTH_REGRESSION_WINDOW_SECONDS", "GATEWAY_PROBE_TIMEOUT_SECONDS", "RATE_LIMIT_PER_MIN")}
+
+
+PROCESS_ENVIRONMENT = process_environment_values()
+
+
+def resolve_live_db_path():
+    """Resolve only the DB file used by the process listening on localhost:8081."""
+    inodes = set()
+    for proc_file in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = proc_file.read_text(encoding="ascii").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) > 9 and fields[1].endswith(":1F91") and fields[3] == "0A":
+                inodes.add(fields[9])
+    process_dirs = sorted(Path("/proc").glob("[0-9]*"), key=lambda p: int(p.name))
+    for process_dir in process_dirs:
+        try:
+            fd_dir = process_dir / "fd"
+            if not any(re.fullmatch(r"socket:\[(\d+)\]", os.readlink(fd)) and
+                       re.fullmatch(r"socket:\[(\d+)\]", os.readlink(fd)).group(1) in inodes
+                       for fd in fd_dir.iterdir()):
+                continue
+            environ = (process_dir / "environ").read_bytes().split(b"\0")
+            db_value = next((entry.split(b"=", 1)[1].decode() for entry in environ
+                             if entry.startswith(b"IPAM_DB_PATH=")), "")
+            if db_value:
+                if db_value.startswith("file:"):
+                    path = Path(unquote(urlsplit(db_value).path)).expanduser().resolve()
+                else:
+                    path = Path(db_value.split("?", 1)[0]).expanduser().resolve()
+            else:
+                cwd = Path(os.readlink(process_dir / "cwd"))
+                path = cwd / "ipam.db" if (cwd / "ipam.db").is_file() else cwd / "ipam" / "ipam.db"
+            if path.is_file():
+                return str(path.resolve())
+        except (OSError, PermissionError, StopIteration, UnicodeDecodeError):
+            continue
+    raise RuntimeError("cannot resolve the live control-plane DB file from the process listening on 127.0.0.1:8081")
+
+
 async def background_probe(client, gate, url, stop, samples):
     target = f"team1.{os.environ.get('ROUTING_DOMAIN', 'cloudpulse.cstam.felcloud.tn')}"
     while not stop.is_set():
@@ -137,9 +261,8 @@ def backend_names(config):
 
 def read_pool_size():
     """Read the live subnet CIDR from the control-plane SQLite DB without writes."""
-    candidates = [os.environ.get("IPAM_DB_PATH", ""),
-                  str(Path(__file__).resolve().parents[2] / "controlplane" / "ipam" / "ipam.db"),
-                  str(Path(__file__).resolve().parents[2] / "controlplane" / "ipam.db")]
+    live_path = resolve_live_db_path()
+    candidates = [live_path]
     errors = []
     for candidate in candidates:
         if not candidate or not Path(candidate).is_file():
@@ -192,7 +315,240 @@ async def openstack_json(cloud, *args):
     return json.loads(p.stdout)
 
 
+async def pool_request_with_retry(client, gate, method, path, *, json_body=None, counter=None, max_429=None):
+    retries = 0
+    while True:
+        await gate.wait()
+        response = await client.request(method, path, json=json_body)
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": response.text}
+        if response.status_code != 429:
+            return response.status_code, data
+        retries += 1
+        if counter is not None:
+            counter[0] += 1
+        if max_429 is not None and retries >= max_429:
+            raise RuntimeError(f"HTTP 429 retry limit reached for {path}: {error_text(data)}")
+        await asyncio.sleep(retry_after_seconds(response.headers))
+
+
+def sqlite_backup(source, destination):
+    sqlite = shutil.which("sqlite3")
+    if not sqlite:
+        raise RuntimeError("sqlite3 executable not found; cannot create isolated control-plane DB copy")
+    source_path = str(Path(source).resolve())
+    destination_path = str(Path(destination).resolve())
+    if source_path == destination_path:
+        raise RuntimeError("refusing to use the live control-plane DB as the isolated copy")
+    proc = subprocess.run([sqlite, "-readonly", source_path], input=f".backup {destination_path}\n.quit\n",
+                          capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0 or not Path(destination_path).is_file() or Path(destination_path).stat().st_size == 0:
+        message = (proc.stderr or proc.stdout).strip() or f"sqlite3 exited with status {proc.returncode}"
+        raise RuntimeError(f"sqlite3 .backup failed: {message}")
+    return source_path, destination_path
+
+
+def redact_process_error(message):
+    for secret_name in ("ADMIN_TOKEN", "DPA_PASS"):
+        secret = os.environ.get(secret_name, "")
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message
+
+
+async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db_path, stamp):
+    result = {"status": "NOT EXECUTED", "health_regression_window_seconds": WINDOW,
+              "pool_size": pool_capacity, "pool_cidr": pool_cidr,
+              "allocated_count": 0, "allocate_429_count": 0, "release_429_count": 0,
+              "reclaim_429_count": 0, "read_429_count": 0, "total_429_count": 0,
+              "exhaustion_error": "", "error": "",
+              "released_all_allocated_leases": False, "ipam_signature_before": None,
+              "ipam_signature_after": None, "ipam_signature_matches": False,
+              "release_results": []}
+    go = shutil.which("go")
+    if not go:
+        result["error"] = "go executable not found; cannot start isolated control plane"
+        result["temporary_db_deleted"] = True
+        result["live_db_written"] = False
+        return result
+
+    with tempfile.TemporaryDirectory(prefix="felcloud-t2-pool-", dir="/tmp") as tmp:
+        copy_path = str(Path(tmp) / "ipam-copy.db")
+        log_path = Path(tmp) / "controlplane.log"
+        proc = None
+        log_file = None
+        started = False
+        allocated = []
+        release_counter = [0]
+        reclaim_counter = [0]
+        allocate_counter = [0]
+        read_counter = [0]
+        signature_before = None
+        signature_before_rows = []
+        operation_error = ""
+        exhausted_response = None
+        try:
+            source_path, copy_path = sqlite_backup(live_db_path, copy_path)
+            env = os.environ.copy()
+            env.update({"IPAM_DB_PATH": copy_path, "PORT": "8082", "LISTEN_ADDR": "127.0.0.1",
+                        "REAPER_INTERVAL_SECONDS": str(2_000_000_000),
+                        "GOCACHE": "/tmp/felcloud-t2-go-cache"})
+            if str(Path(env["IPAM_DB_PATH"]).resolve()) != str(Path(copy_path).resolve()):
+                raise RuntimeError("isolated control plane DB path did not resolve to the temporary copy")
+            log_file = log_path.open("w", encoding="utf-8")
+            proc = subprocess.Popen([go, "run", ".", "serve", "--port", "8082"],
+                                    cwd=Path(__file__).resolve().parents[2] / "controlplane",
+                                    env=env, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+            deadline = time.monotonic() + 180
+            last_health_error = "no HTTP health response received"
+            async with httpx.AsyncClient(base_url=POOL_CONTROL_PLANE_URL,
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                             "User-Agent": "FelCloud-T2-Isolated-Pool"}, timeout=10) as client:
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        raise RuntimeError(f"isolated control plane exited with status {proc.returncode}: {log_path.read_text(encoding='utf-8', errors='replace').strip()}")
+                    server_log = log_path.read_text(encoding="utf-8", errors="replace")
+                    if "control-plane gateway API listening on 127.0.0.1:8082" not in server_log:
+                        await asyncio.sleep(0.25)
+                        continue
+                    try:
+                        health = await client.get("/health")
+                        if health.status_code == 200:
+                            started = True
+                            break
+                        last_health_error = f"HTTP {health.status_code}: {health.text[:1000]}"
+                    except httpx.HTTPError as exc:
+                        last_health_error = f"{type(exc).__name__}: {exc}"
+                    await asyncio.sleep(0.25)
+                if not started:
+                    raise RuntimeError(f"isolated control plane did not become healthy within 180 seconds; last result: {last_health_error}; log: {log_path.read_text(encoding='utf-8', errors='replace').strip()}")
+
+                gate = RateGate()
+                code, data = await pool_request_with_retry(client, gate, "POST", "/api/leases/reclaim", json_body={}, counter=reclaim_counter)
+                if code != 200:
+                    raise RuntimeError(f"initial isolated lease reclaim returned HTTP {code}: {error_text(data)}")
+                code, data = await pool_request_with_retry(client, gate, "GET", "/api/leases", counter=read_counter)
+                if code != 200:
+                    raise RuntimeError(f"isolated starting lease read returned HTTP {code}: {error_text(data)}")
+                starting_leases = data.get("leases", [])
+                before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
+                result["ipam_signature_before"] = before_hash
+                result["starting_ipam_counts"] = {
+                    state: sum(1 for _ip, row_state, _owner in signature_before_rows if row_state == state)
+                    for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
+                safety_bound = pool_capacity + 5
+                for index in range(1, safety_bound + 1):
+                    sandbox_id = f"bench-t2-pool-{stamp.lower()}-{index:03d}"
+                    try:
+                        code, data = await pool_request_with_retry(client, gate, "POST", "/api/leases/allocate",
+                            json_body={"sandbox_id": sandbox_id, "ttl": 3600}, counter=allocate_counter)
+                        if code in (200, 201):
+                            ip = str(data.get("ip_address", data.get("fixed_ip", "")))
+                            allocated.append((sandbox_id, ip))
+                            if not ip:
+                                operation_error = f"successful allocation for {sandbox_id} omitted ip_address: {data}"
+                                break
+                            continue
+                        if is_pool_exhaustion(code, data):
+                            exhausted_response = {"http_status": code, "error": error_text(data), "response": data}
+                        else:
+                            operation_error = f"allocation returned non-exhaustion HTTP {code}: {error_text(data)}"
+                        break
+                    except Exception as exc:
+                        operation_error = f"{type(exc).__name__}: {exc}"
+                        break
+                else:
+                    operation_error = f"pool exhaustion was not observed within safety bound pool_size + 5 ({safety_bound})"
+
+                result["allocated_count"] = len(allocated)
+                result["allocation_safety_bound"] = safety_bound
+                result["allocate_429_count"] = allocate_counter[0]
+                result["read_429_count"] = read_counter[0]
+                result["exhaustion_response"] = exhausted_response or "NOT EXECUTED"
+                if operation_error:
+                    result["error"] = operation_error
+
+                # Release every successful allocation in finally, including if a later operation fails.
+                try:
+                    for sandbox_id, ip in allocated:
+                        entry = {"sandbox_id": sandbox_id, "ip_address": ip}
+                        try:
+                            release_code, release_data = await pool_request_with_retry(client, gate, "POST",
+                                "/api/leases/release", json_body={"sandbox_id": sandbox_id,
+                                    "ip_address": ip, "cooldown_seconds": 1}, counter=release_counter,
+                                max_429=None)
+                            entry.update({"http_status": release_code,
+                                          "error": "" if release_code == 200 else error_text(release_data)})
+                        except Exception as exc:
+                            entry["error"] = f"{type(exc).__name__}: {exc}"
+                        result["release_results"].append(entry)
+                finally:
+                    result["released_all_allocated_leases"] = (
+                        len(result["release_results"]) == len(allocated) and
+                        all(not entry.get("error") for entry in result["release_results"]))
+                    result["release_429_count"] = release_counter[0]
+                    await asyncio.sleep(2)
+                    try:
+                        reclaim_code, reclaim_data = await pool_request_with_retry(client, gate, "POST",
+                            "/api/leases/reclaim", json_body={}, counter=reclaim_counter)
+                        if reclaim_code != 200 and not result["error"]:
+                            result["error"] = f"isolated lease reclaim returned HTTP {reclaim_code}: {error_text(reclaim_data)}"
+                    except Exception as exc:
+                        if not result["error"]:
+                            result["error"] = f"isolated lease reclaim failed: {type(exc).__name__}: {exc}"
+                    result["reclaim_429_count"] = reclaim_counter[0]
+                    try:
+                        end_code, end_data = await pool_request_with_retry(client, gate, "GET", "/api/leases", counter=read_counter)
+                        if end_code == 200:
+                            after_hash, after_rows = ipam_signature(end_data.get("leases", []), pool_cidr)
+                            result["ipam_signature_after"] = after_hash
+                            result["ending_ipam_counts"] = {
+                                state: sum(1 for _ip, row_state, _owner in after_rows if row_state == state)
+                                for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
+                            result["ipam_signature_matches"] = after_hash == before_hash
+                        elif not result["error"]:
+                            result["error"] = f"isolated ending lease read returned HTTP {end_code}: {error_text(end_data)}"
+                    except Exception as exc:
+                        if not result["error"]:
+                            result["error"] = f"isolated ending lease read failed: {type(exc).__name__}: {exc}"
+                if not exhausted_response and not result["error"]:
+                    result["error"] = f"No pool exhaustion response within safety bound pool_size + 5 ({safety_bound})"
+                result["status"] = ("PASSED" if exhausted_response and result["released_all_allocated_leases"]
+                                    and result["ipam_signature_matches"] and not result["error"] else "FAILED")
+                result["exhaustion_error"] = exhausted_response.get("error", "") if exhausted_response else ""
+                result["source_db_backup"] = source_path
+                result["isolated_db_path"] = copy_path
+        except Exception as exc:
+            detail = redact_process_error(f"{type(exc).__name__}: {exc}")
+            result["error"] = detail
+            result["status"] = "FAILED" if started else "NOT EXECUTED"
+            if not started:
+                result["startup_error"] = detail
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    await asyncio.to_thread(proc.wait, 10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    await asyncio.to_thread(proc.wait)
+            if log_file is not None:
+                log_file.close()
+        result["allocate_429_count"] = allocate_counter[0]
+        result["release_429_count"] = release_counter[0]
+        result["reclaim_429_count"] = reclaim_counter[0]
+        result["read_429_count"] = read_counter[0]
+        result["total_429_count"] = sum((allocate_counter[0], release_counter[0], reclaim_counter[0], read_counter[0]))
+    # TemporaryDirectory removes the copied database only after the server exits.
+    result["temporary_db_deleted"] = not Path(copy_path).exists()
+    result["live_db_written"] = False
+    return result
+
+
 async def run(cfg, smoke=False):
+    env_snapshot = dict(PROCESS_ENVIRONMENT)
     cp = cfg["control_plane"]
     net = cfg["network"]
     token = os.environ.get("ADMIN_TOKEN", "")
@@ -230,6 +586,8 @@ async def run(cfg, smoke=False):
     RAW.mkdir(parents=True, exist_ok=True); CHARTS.mkdir(parents=True, exist_ok=True)
     result = {"test": "T2_concurrent_stress", "status": "EXECUTED", "timestamp_utc": utc(),
               "health_regression_window_seconds": WINDOW, "max_concurrency": cap,
+              "process_environment": env_snapshot,
+              **env_snapshot,
               "probe_rate_limit_per_second": 5, "bursts": [], "pool_exhaustion": {},
               "final_sanity": {}}
     all_rows = []
@@ -251,6 +609,24 @@ async def run(cfg, smoke=False):
             gen_before = None
             gen_after = None
             burst_start_ms = int(time.time()*1000)
+            baseline_configs = {}
+            baseline_errors = {}
+            for label, host in (("gw1", "127.0.0.11"), ("gw2", "127.0.0.12")):
+                try:
+                    baseline_configs[label] = await fetch_dpa_raw(host, os.environ["DPA_PASS"])
+                except Exception as exc:
+                    baseline_errors[label] = f"{type(exc).__name__}: {exc}"
+            baseline_ok, baseline_names = baseline_backend_guard(baseline_configs)
+            if not baseline_ok:
+                result["status"] = "NOT EXECUTED" if not result["bursts"] else "PARTIAL"
+                result["aborted_before_burst"] = {"burst_size": burst_n,
+                    "status": "NOT EXECUTED", "backend_names_found": baseline_names,
+                    "gateway_errors": baseline_errors,
+                    "error": "both gateways must have exactly the 3 baseline backends before a burst"}
+                all_rows.append({"timestamp_utc": utc(), "burst_size": burst_n,
+                    "status": "NOT EXECUTED", "error": result["aborted_before_burst"]["error"],
+                    "backend_names_found": baseline_names, "gateway_errors": baseline_errors})
+                break
             try:
                 try:
                     gen_before = read_generation_count(pool_db)
@@ -334,8 +710,8 @@ async def run(cfg, smoke=False):
                 # Events are the control plane's gateway sync error log when available.
                 ev_status, ev_data = await api_json(api, "GET", f"/api/gateways/events?since={burst_start_ms}&limit=500")
                 events = ev_data.get("events", []) if ev_status == 200 else []
-                sync_events = [e for e in events if e.get("type") == "sync"]
-                sync_failures = [e for e in sync_events if re.search(r"fail|error|409|busy|DOWN", str(e.get("detail", "")), re.I)]
+                sync_failures = sync_failure_events(events)
+                provision_failures = provision_sync_failures(list(rows.values()))
                 try:
                     gen_after = read_generation_count(pool_db)
                 except Exception as exc:
@@ -375,7 +751,9 @@ async def run(cfg, smoke=False):
                                      "duplicate_ip_addresses_in_neutron_ports": duplicate_port_ips,
                                      "team1_team2_drift_excluded": True},
                     "gateway_sync": {"events_status": ev_status, "failures": sync_failures,
-                                     "failure_count": len(sync_failures), "config_generations_count_before": gen_before,
+                                     "provision_failed_rows": provision_failures,
+                                     "failure_count": len(sync_failures) + len(provision_failures),
+                                     "config_generations_count_before": gen_before,
                                      "config_generations_count_after": gen_after,
                                      "push_count_delta": (gen_after-gen_before if isinstance(gen_before, int) and isinstance(gen_after, int) else "NOT EXECUTED")},
                     "team1_prober": {"samples": team_samples, "non_200_count": sum(x["status"] not in (200, 429) for x in team_samples),
@@ -405,71 +783,44 @@ async def run(cfg, smoke=False):
                     "error": f"{type(exc).__name__}: {exc}", "cleanup": cleanup_errors,
                     "sandbox_rows": list(rows.values()), "team1_prober": {"status": "NOT EXECUTED"}})
 
-        # Pool exhaustion uses API leases only, with unique bench names, then releases every obtained lease.
-        start_s, start_data = await api_json(api, "GET", "/api/leases")
-        start_leases = start_data.get("leases", []) if start_s == 200 else []
-        start_sig = sorted((x.get("ip_address"), x.get("status"), x.get("entity_name")) for x in start_leases
-                           if x.get("status") in ("ALLOCATED", "QUARANTINED"))
-        allocated = []
-        exhausted = None
-        pool_start = time.monotonic()
-        for index in range(1, pool_capacity + 2):
-            name = f"bench-t2-pool-{stamp.lower()}-{index:03d}"
-            s, data = await api_json(api, "POST", "/api/leases/allocate", json_body={"sandbox_id": name, "ttl": 3600})
-            if s not in (200, 201):
-                exhausted = {"http_status": s, "error": error_text(data), "response": data}
-                break
-            lease = data.get("lease", data)
-            ip = lease.get("ip_address", lease.get("fixed_ip", ""))
-            if not ip:
-                exhausted = {"http_status": s, "error": "allocation response omitted IP address", "response": data}
-                break
-            allocated.append((name, ip))
-        releases = []
-        for name, ip in allocated:
-            s, data = await api_json(api, "POST", "/api/leases/release", json_body={"sandbox_id": name, "ip_address": ip, "cooldown_seconds": 1})
-            releases.append({"sandbox_id": name, "ip_address": ip, "http_status": s, "error": "" if s in (200, 204) else error_text(data)})
-        await asyncio.sleep(2)
-        await api_json(api, "POST", "/api/leases/reclaim")
-        end_s, end_data = await api_json(api, "GET", "/api/leases")
-        end_leases = end_data.get("leases", []) if end_s == 200 else []
-        end_sig = sorted((x.get("ip_address"), x.get("status"), x.get("entity_name")) for x in end_leases
-                         if x.get("status") in ("ALLOCATED", "QUARANTINED"))
-        result["pool_exhaustion"] = {"pool_size_from_control_plane_db": pool_capacity, "pool_cidr": pool_cidr,
-            "database_path": pool_db, "allocations_until_exhausted": len(allocated),
-            "elapsed_seconds": time.monotonic()-pool_start, "exhaustion_response": exhausted or "NOT EXECUTED: no exhaustion response before safety bound 299",
-            "released_all_allocated_leases": len(releases) == len(allocated) and all(not x["error"] for x in releases),
-            "release_results": releases, "starting_ipam_signature": start_sig, "ending_ipam_signature": end_sig,
-            "ipam_restored_to_starting_state": start_s == end_s == 200 and start_sig == end_sig}
+        if "aborted_before_burst" in result:
+            result["pool_exhaustion"] = {"status": "NOT EXECUTED",
+                "error": "test stopped by the baseline-backend guard before provisioning"}
+            result["final_sanity"] = {"status": "NOT EXECUTED",
+                "error": "test stopped by the baseline-backend guard before provisioning"}
+        else:
+            # Pool exhaustion runs only on a separate process and SQLite backup copy.
+            result["pool_exhaustion"] = await isolated_pool_exhaustion(
+                cfg, token, pool_capacity, pool_cidr, pool_db, stamp)
 
-        # Final checks use real OpenStack/API/SSH observations. Each failed observation records its exact error.
-        final = result["final_sanity"]
-        try:
-            servers = await openstack_json(cfg["openstack"]["cloud"], "server", "list")
-            final["openstack_server_list"] = {"status": "READ", "count": len(servers), "servers": servers,
-                                              "only_five_permanent_vms": len(servers) == 5 and not any(str(x.get("Name", "")).startswith("bench-") for x in servers)}
-        except Exception as exc:
-            final["openstack_server_list"] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
-        try:
-            ports = await openstack_json(cfg["openstack"]["cloud"], "port", "list")
-            final["bench_ports"] = [x for x in ports if str(x.get("Name", "")).startswith("bench-")]
-        except Exception as exc:
-            final["bench_ports"] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
-        ss, sd = await api_json(api, "GET", "/api/sandboxes")
-        final["active_bench_sandboxes"] = ([x for x in sd.get("sandboxes", []) if str(x.get("sandbox_id", x.get("team", x.get("name", "")))).startswith("bench-") and x.get("status", x.get("state")) in ("ACTIVE", "PROVISIONING", "TEARING_DOWN")] if ss == 200 else {"status": "NOT EXECUTED", "http_status": ss, "error": sd})
-        for label, host in (("gw1", "127.0.0.11"), ("gw2", "127.0.0.12")):
+            # Final checks use real OpenStack/API/SSH observations.
+            final = result["final_sanity"]
             try:
-                command = ("sudo haproxy -c -f /etc/haproxy/haproxy.cfg && "
-                           "printf 'BASELINE_BACKENDS=' && "
-                           "grep -Ec '^backend (team1|team2|jury-demo)_backend$' /etc/haproxy/haproxy.cfg")
-                observed = await ssh_remote(cfg, cfg["safety_gates"]["allowed_gateway_hosts"]["primary" if label == "gw1" else "standby"], command)
-                match = re.search(r"BASELINE_BACKENDS=(\d+)", observed)
-                final.setdefault("gateway_validation", {})[label] = {"output": observed.strip(),
-                    "haproxy_config_valid": "Configuration file is valid" in observed,
-                    "baseline_backend_count": int(match.group(1)) if match else None,
-                    "three_baseline_backends": bool(match and int(match.group(1)) == 3)}
+                servers = await openstack_json(cfg["openstack"]["cloud"], "server", "list")
+                final["openstack_server_list"] = {"status": "READ", "count": len(servers), "servers": servers,
+                                                  "only_five_permanent_vms": len(servers) == 5 and not any(str(x.get("Name", "")).startswith("bench-") for x in servers)}
             except Exception as exc:
-                final.setdefault("gateway_validation", {})[label] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
+                final["openstack_server_list"] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                ports = await openstack_json(cfg["openstack"]["cloud"], "port", "list")
+                final["bench_ports"] = [x for x in ports if str(x.get("Name", "")).startswith("bench-")]
+            except Exception as exc:
+                final["bench_ports"] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
+            ss, sd = await api_json(api, "GET", "/api/sandboxes")
+            final["active_bench_sandboxes"] = ([x for x in sd.get("sandboxes", []) if str(x.get("sandbox_id", x.get("team", x.get("name", "")))).startswith("bench-") and x.get("status", x.get("state")) in ("ACTIVE", "PROVISIONING", "TEARING_DOWN")] if ss == 200 else {"status": "NOT EXECUTED", "http_status": ss, "error": sd})
+            for label, host in (("gw1", "127.0.0.11"), ("gw2", "127.0.0.12")):
+                try:
+                    command = ("sudo haproxy -c -f /etc/haproxy/haproxy.cfg && "
+                               "printf 'BASELINE_BACKENDS=' && "
+                               "grep -Ec '^backend (team1|team2|jury-demo)_backend$' /etc/haproxy/haproxy.cfg")
+                    observed = await ssh_remote(cfg, cfg["safety_gates"]["allowed_gateway_hosts"]["primary" if label == "gw1" else "standby"], command)
+                    match = re.search(r"BASELINE_BACKENDS=(\d+)", observed)
+                    final.setdefault("gateway_validation", {})[label] = {"output": observed.strip(),
+                        "haproxy_config_valid": "Configuration file is valid" in observed,
+                        "baseline_backend_count": int(match.group(1)) if match else None,
+                        "three_baseline_backends": bool(match and int(match.group(1)) == 3)}
+                except Exception as exc:
+                    final.setdefault("gateway_validation", {})[label] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
 
     raw_path = RAW / f"t2_concurrent_{stamp}.csv"
     fields = sorted({k for row in all_rows for k in row})
@@ -490,7 +841,12 @@ async def run(cfg, smoke=False):
     result["artifacts"] = {"raw_csv": str(raw_path), "summary_json": str(summary_path), "chart": str(chart_path)}
     summary_path.write_text(json.dumps(result, indent=2, sort_keys=True, default=str)+"\n", encoding="utf-8")
     print(json.dumps({"status": result["status"], "bursts": [{"n": x["burst_size"], "success": x["successes"], "failed": x["failures"]} for x in result["bursts"]],
-                      "health_regression_window_seconds": WINDOW, "artifacts": result["artifacts"]}, indent=2))
+                      "HEALTH_REGRESSION_WINDOW_SECONDS": PROCESS_ENVIRONMENT["HEALTH_REGRESSION_WINDOW_SECONDS"],
+                      "GATEWAY_PROBE_TIMEOUT_SECONDS": PROCESS_ENVIRONMENT["GATEWAY_PROBE_TIMEOUT_SECONDS"],
+                      "RATE_LIMIT_PER_MIN": PROCESS_ENVIRONMENT["RATE_LIMIT_PER_MIN"],
+                      "pool_exhaustion_status": result["pool_exhaustion"].get("status"),
+                      "pool_exhaustion_error": result["pool_exhaustion"].get("error", ""),
+                      "artifacts": result["artifacts"]}, indent=2))
     return result
 
 
@@ -519,13 +875,16 @@ def main():
                         "ROUTING_DOMAIN": cfg["network"].get("domain") == "cloudpulse.cstam.felcloud.tn",
                         "DPA_PASS": bool(os.environ.get("DPA_PASS")),
                         "BENCH_PRIMARY_HOST": bool(cfg.get("safety_gates", {}).get("allowed_gateway_hosts", {}).get("primary")),
-                        "BENCH_STANDBY_HOST": bool(cfg.get("safety_gates", {}).get("allowed_gateway_hosts", {}).get("standby"))}
+                        "BENCH_STANDBY_HOST": bool(cfg.get("safety_gates", {}).get("allowed_gateway_hosts", {}).get("standby")),
+                        "sqlite3_executable": bool(shutil.which("sqlite3")),
+                        "go_executable": bool(shutil.which("go"))}
             print(json.dumps({"test":"T2_concurrent_stress", "mode":"DRY RUN", "bursts":[2] if args.smoke else LEVELS,
                 "hard_concurrency_cap":15, "configured_cap":cap, "health_regression_window_seconds":WINDOW,
+                "process_environment":PROCESS_ENVIRONMENT,
                 "probe_limit_per_second":5, "routing_domain":"cloudpulse.cstam.felcloud.tn",
                 "vip":cfg["network"].get("public_vip") or "NOT CONFIGURED", "control_plane":cfg["control_plane"]["base_url"],
                 "configuration_gates":required,
-                "actions":["barrier-start provision API requests", "poll sandbox HTTP routes and team1 every 200ms", "read DPA configs/IPAM/Neutron/events/generations", "delete this burst's bench-* IDs", "exhaust and restore leases", "final OpenStack and HAProxy checks"],
+                "actions":["check both DPA configs have exactly 3 baseline route backends before each burst", "barrier-start provision API requests", "poll sandbox HTTP routes and team1 every 200ms", "read DPA configs/IPAM/Neutron/events/generations", "delete this burst's bench-* IDs", "copy live DB with sqlite3 .backup and run pool exhaustion on isolated control plane port 8082", "retry 429 responses, release every allocated lease, and verify isolated IPAM signature", "final OpenStack and HAProxy checks"],
                 "network_calls":False}, indent=2)); return 0
         result = asyncio.run(run(cfg, smoke=args.smoke))
         return 0 if result.get("status") == "EXECUTED" else 2
@@ -535,6 +894,7 @@ def main():
         detail = f"{type(exc).__name__}: {exc}"
         out = {"test":"T2_concurrent_stress", "status":"NOT EXECUTED", "error":detail,
                "health_regression_window_seconds":WINDOW, "timestamp_utc":utc(),
+               "process_environment":PROCESS_ENVIRONMENT, **PROCESS_ENVIRONMENT,
                "chart":"NOT EXECUTED: no live burst data; " + detail,
                "per_sandbox_results":"NOT EXECUTED: provisioning did not start; " + detail}
         (RAW / f"t2_concurrent_{stamp}_summary.json").write_text(json.dumps(out, indent=2)+"\n", encoding="utf-8")
@@ -543,6 +903,7 @@ def main():
             writer.writeheader(); writer.writerow({"timestamp_utc": out["timestamp_utc"], "test": out["test"],
                                                    "status": "NOT EXECUTED", "error": detail})
         print(f"T2 NOT EXECUTED: {detail}", file=sys.stderr)
+        print(json.dumps(PROCESS_ENVIRONMENT, sort_keys=True))
         return 2
 
 
