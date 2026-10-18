@@ -425,7 +425,8 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
               "released_all_allocated_leases": False, "ipam_signature_before": None,
               "ipam_signature_after": None, "ipam_signature_matches": False,
               "allocated_set_matches": False, "unexpected_changes": [],
-              "release_results": []}
+              "release_results": [], "quarantine_wait_seconds": 0,
+              "reclaim_calls_during_wait": 0, "starting_ipam_counts": None}
     result["port_8082_free_before"] = port_8082_is_free()
     if not result["port_8082_free_before"]:
         result["error"] = "port 8082 already in use"
@@ -503,26 +504,32 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
                 starting_leases = data.get("leases", [])
                 before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
                 quarantine_count = sum(1 for _ip, state, _owner in signature_before_rows if state == "QUARANTINED")
-                drain_deadline = time.monotonic() + 90
-                while quarantine_count and time.monotonic() < drain_deadline:
-                    await asyncio.sleep(min(5, max(0, drain_deadline - time.monotonic())))
-                    if time.monotonic() >= drain_deadline:
-                        break
-                    code, data = await pool_request_with_retry(client, gate, "GET", "/api/leases", counter=read_counter)
-                    if code != 200:
-                        raise RuntimeError(f"isolated starting lease read returned HTTP {code}: {error_text(data)}")
-                    starting_leases = data.get("leases", [])
-                    before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
-                    quarantine_count = sum(1 for _ip, state, _owner in signature_before_rows if state == "QUARANTINED")
-                if quarantine_count:
+                quarantine_wait_started = time.monotonic()
+                drain_deadline = quarantine_wait_started + 90
+                try:
+                    while quarantine_count and time.monotonic() < drain_deadline:
+                        await asyncio.sleep(min(5, max(0, drain_deadline - time.monotonic())))
+                        if time.monotonic() >= drain_deadline:
+                            break
+                        result["reclaim_calls_during_wait"] += 1
+                        reclaim_code, reclaim_data = await pool_request_with_retry(client, gate, "POST",
+                            "/api/leases/reclaim", json_body={}, counter=reclaim_counter)
+                        if reclaim_code != 200:
+                            raise RuntimeError(f"isolated quarantine-wait reclaim returned HTTP {reclaim_code}: {error_text(reclaim_data)}")
+                        code, data = await pool_request_with_retry(client, gate, "GET", "/api/leases", counter=read_counter)
+                        if code != 200:
+                            raise RuntimeError(f"isolated starting lease read returned HTTP {code}: {error_text(data)}")
+                        starting_leases = data.get("leases", [])
+                        before_hash, signature_before_rows = ipam_signature(starting_leases, pool_cidr)
+                        quarantine_count = sum(1 for _ip, state, _owner in signature_before_rows if state == "QUARANTINED")
+                finally:
+                    result["quarantine_wait_seconds"] = round(time.monotonic() - quarantine_wait_started, 3)
                     result["starting_ipam_counts"] = {
                         state: sum(1 for _ip, row_state, _owner in signature_before_rows if row_state == state)
                         for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
+                if quarantine_count:
                     operation_error = "starting quarantine did not drain"
                 result["ipam_signature_before"] = before_hash
-                result["starting_ipam_counts"] = {
-                    state: sum(1 for _ip, row_state, _owner in signature_before_rows if row_state == state)
-                    for state in ("ALLOCATED", "QUARANTINED", "RESERVED", "FREE")}
                 safety_bound = pool_capacity + 5
                 for index in range(1, (safety_bound if not operation_error else 0) + 1):
                     sandbox_id = f"bench-t2-pool-{stamp.lower()}-{index:03d}"
