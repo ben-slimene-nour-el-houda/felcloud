@@ -36,6 +36,8 @@ SMOKE_SHORT_CYCLES = 2
 SMOKE_DEFAULT_CYCLES = 1
 RECYCLE_TARGET_SECONDS = 5
 RECLAIM_TIMEOUT_SECONDS = 15
+DEFAULT_RECLAIM_TIMEOUT_MIN_SECONDS = 120
+DEFAULT_RECLAIM_TIMEOUT_MARGIN_SECONDS = 60
 REAPER_INTERVAL_SECONDS = 2_000_000_000
 
 
@@ -66,7 +68,7 @@ def source_ipam_signature(db_path, cidr):
     return signature_hash, signature_rows
 
 
-def phase_not_executed(cycles, error, expected_to_fail_by_design=False):
+def phase_not_executed(cycles, error, expected_to_fail_by_design=False, deadline_seconds=RECLAIM_TIMEOUT_SECONDS):
     return {
         "status": "NOT EXECUTED",
         "n": 0,
@@ -86,6 +88,7 @@ def phase_not_executed(cycles, error, expected_to_fail_by_design=False):
         "expected_to_fail_by_design": expected_to_fail_by_design,
         "quarantine_time_resolution": "1 second",
         "release_to_free_time_resolution": "approximately 1 second (1-second polling)",
+        "release_to_free_deadline_seconds": deadline_seconds if cycles else None,
         "cycles": [],
     }
 
@@ -150,14 +153,35 @@ async def run_cycle(client, gate, counters, phase, cycle_number, stamp, active_l
         row["immediate_status"] = immediate.get("status", "MISSING") if immediate else "MISSING"
         row["quarantine_state_seen_immediately"] = row["immediate_status"] == "QUARANTINED"
 
-        await asyncio.sleep(max(0.0, 0.5 - (time.monotonic() - release_clock)))
-        negative_leases = await get_leases(client, gate, counters)
-        negative = lease_by_ip(negative_leases, first_ip)
-        row["negative_control_elapsed_seconds"] = round(time.monotonic() - release_clock, 3)
-        row["negative_control_status"] = negative.get("status", "MISSING") if negative else "MISSING"
-        row["negative_control_violation"] = row["negative_control_status"] != "QUARANTINED"
+        negative_checks = []
+        check_times = [0.5] + ([5, 30, 55] if phase == "default" else [])
+        quarantine_until = None
+        if row["quarantine_until"]:
+            try:
+                quarantine_until = datetime.strptime(row["quarantine_until"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        for check_at in check_times:
+            await asyncio.sleep(max(0.0, check_at - (time.monotonic() - release_clock)))
+            observed_at = datetime.now(timezone.utc)
+            negative_leases = await get_leases(client, gate, counters)
+            negative = lease_by_ip(negative_leases, first_ip)
+            observed_status = negative.get("status", "MISSING") if negative else "MISSING"
+            violation = observed_status == "FREE" and quarantine_until is not None and observed_at < quarantine_until
+            negative_checks.append({"target_elapsed_seconds": check_at,
+                                   "elapsed_seconds": round(time.monotonic() - release_clock, 3),
+                                   "status": observed_status, "violation": violation})
+        row["negative_control_checks"] = negative_checks
+        row["negative_control_elapsed_seconds"] = negative_checks[0]["elapsed_seconds"]
+        row["negative_control_status"] = negative_checks[0]["status"]
+        row["negative_control_violation"] = any(check["violation"] for check in negative_checks)
 
-        free_deadline = release_clock + RECLAIM_TIMEOUT_SECONDS
+        quarantine_seconds = row["quarantine_until_minus_release_seconds"]
+        reclaim_deadline_seconds = (RECLAIM_TIMEOUT_SECONDS if phase == "short" else
+            max(DEFAULT_RECLAIM_TIMEOUT_MIN_SECONDS,
+                (quarantine_seconds or 0) + DEFAULT_RECLAIM_TIMEOUT_MARGIN_SECONDS))
+        row["release_to_free_deadline_seconds"] = reclaim_deadline_seconds
+        free_deadline = release_clock + reclaim_deadline_seconds
         next_reclaim_at = release_clock + 1
         row["release_to_free_seconds"] = None
         row["free_state_observed"] = False
@@ -179,7 +203,7 @@ async def run_cycle(client, gate, counters, phase, cycle_number, stamp, active_l
                 break
             next_reclaim_at += 1
         if not row["free_state_observed"]:
-            row["errors"].append(f"IP {first_ip} did not reach FREE within {RECLAIM_TIMEOUT_SECONDS} seconds")
+            row["errors"].append(f"IP {first_ip} did not reach FREE within {reclaim_deadline_seconds} seconds")
 
         second_id = f"{prefix}-b"
         second_ip, reuse_latency, _ = await allocate_lease(client, gate, counters, second_id, active_leases)
@@ -249,6 +273,10 @@ async def run_phase(client, gate, phase, cycles, stamp, active_leases, record_de
         "expected_to_fail_by_design": phase == "default",
         "quarantine_time_resolution": "1 second",
         "release_to_free_time_resolution": "approximately 1 second (1-second polling)",
+        "release_to_free_deadline_seconds": (RECLAIM_TIMEOUT_SECONDS if phase == "short" else
+            max((row.get("release_to_free_deadline_seconds", DEFAULT_RECLAIM_TIMEOUT_MIN_SECONDS)
+                 for row in rows), default=DEFAULT_RECLAIM_TIMEOUT_MIN_SECONDS)),
+        "release_to_free_deadline_seconds_by_cycle": [row.get("release_to_free_deadline_seconds") for row in rows],
         "cycles": rows,
     }
 
@@ -522,7 +550,8 @@ async def run(cfg, smoke=False):
             "test": "T4_ip_recycling", "status": "NOT EXECUTED", "timestamp_utc": utc_now(),
             "IP_QUARANTINE_SECONDS_used": "unset",
             "phases": {"short": phase_not_executed(short_cycles, error),
-                       "default": phase_not_executed(default_cycles, error, True)},
+                       "default": phase_not_executed(default_cycles, error, True,
+                           DEFAULT_RECLAIM_TIMEOUT_MIN_SECONDS)},
             "final_sanity": {"status": "NOT EXECUTED", "error": error},
         }
     else:
@@ -564,7 +593,8 @@ def main():
                             "start isolated control plane with IP_QUARANTINE_SECONDS unset and reaper disabled",
                             "run short and default quarantine cycles as separate datasets",
                             "release quarantine only through isolated /api/leases/reclaim",
-                            "poll release-to-FREE at one-second intervals for at most 15 seconds",
+                            "short phase: poll release-to-FREE for at most 15 seconds; default phase: poll for max(120 seconds, observed quarantine duration + 60 seconds)",
+                            "default phase negative controls: check QUARANTINED at 0.5, 5, 30, and 55 seconds after release",
                             "verify process group stopped, port 8082 free, temp directory removed, live DB signature unchanged, and gateway backends untouched",
                             "write CSV, summary JSON, and separate-phase chart"],
             }, indent=2))
