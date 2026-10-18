@@ -1,0 +1,9 @@
+{
+  "test": "T2_concurrent_stress",
+  "status": "NOT EXECUTED",
+  "error": "RuntimeError: missing required configuration: ADMIN_TOKEN, PUBLIC_VIP_IP, ROUTING_DOMAIN",
+  "health_regression_window_seconds": "5",
+  "timestamp_utc": "2026-10-18T18:12:04.912Z",
+  "chart": "NOT EXECUTED: no live burst data; RuntimeError: missing required configuration: ADMIN_TOKEN, PUBLIC_VIP_IP, ROUTING_DOMAIN",
+  "per_sandbox_results": "NOT EXECUTED: provisioning did not start; RuntimeError: missing required configuration: ADMIN_TOKEN, PUBLIC_VIP_IP, ROUTING_DOMAIN"
+}
