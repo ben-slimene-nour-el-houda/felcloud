@@ -42,11 +42,29 @@ class TimedResponseParsingTest(unittest.TestCase):
         self.assertEqual(neutron_port_ips(ports, ["bench-t2-a", "bench-t2-b"]),
                          {"bench-t2-a": "10.20.30.37", "bench-t2-b": "10.20.30.15"})
 
-    def test_baseline_guard_counts_only_route_backends(self):
-        baseline = "backend team1_backend\nbackend team2_backend\nbackend jury-demo_backend\nbackend default_maintenance\n"
-        self.assertTrue(baseline_backend_guard({"gw1": baseline, "gw2": baseline})[0])
+    def test_baseline_guard_accepts_exact_gateway_backends(self):
+        baseline = "backend default_maintenance\nbackend team1_backend\nbackend team2_backend\n"
+        valid, details = baseline_backend_guard({"gw1": baseline, "gw2": baseline})
+        self.assertTrue(valid)
+        self.assertEqual(details["expected"], ["default_maintenance", "team1_backend", "team2_backend"])
+        self.assertEqual(details["found"]["gw1"], details["expected"])
+        self.assertEqual(details["found"]["gw2"], details["expected"])
+
+    def test_baseline_guard_reports_unexpected_backend(self):
+        baseline = "backend default_maintenance\nbackend team1_backend\nbackend team2_backend\n"
         extra = baseline + "backend bench-leftover_backend\n"
-        self.assertFalse(baseline_backend_guard({"gw1": extra, "gw2": baseline})[0])
+        valid, details = baseline_backend_guard({"gw1": extra, "gw2": baseline})
+        self.assertFalse(valid)
+        self.assertEqual(details["difference"]["gw1"]["unexpected"], ["bench-leftover_backend"])
+        self.assertEqual(details["difference"]["gw1"]["missing"], [])
+
+    def test_baseline_guard_reports_missing_backend(self):
+        baseline = "backend default_maintenance\nbackend team1_backend\nbackend team2_backend\n"
+        missing = "backend default_maintenance\nbackend team2_backend\n"
+        valid, details = baseline_backend_guard({"gw1": missing, "gw2": baseline})
+        self.assertFalse(valid)
+        self.assertEqual(details["difference"]["gw1"]["missing"], ["team1_backend"])
+        self.assertEqual(details["difference"]["gw1"]["unexpected"], [])
 
     def test_sync_event_and_provision_failures_preserve_error_text(self):
         events = [

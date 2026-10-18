@@ -35,7 +35,7 @@ LEVELS = [3, 5, 10, 15]
 PROTECTED = {"team1", "team2", "jury-demo", "gateways", "bastion"}
 TIMEOUT = 420.0
 WINDOW = "5"
-BASELINE_BACKENDS = {"team1_backend", "team2_backend", "jury-demo_backend"}
+BASELINE_BACKENDS = {"default_maintenance", "team1_backend", "team2_backend"}
 POOL_CONTROL_PLANE_URL = "http://127.0.0.1:8082"
 
 
@@ -121,9 +121,16 @@ def neutron_port_ips(ports, sandbox_ids):
 
 def baseline_backend_guard(configs):
     names = {gateway: sorted(backend_names(content)) for gateway, content in configs.items()}
-    route_names = {gateway: set(found) - {"default_maintenance"} for gateway, found in names.items()}
-    valid = set(configs) == {"gw1", "gw2"} and all(found == BASELINE_BACKENDS for found in route_names.values())
-    return valid, names
+    differences = {}
+    for gateway in ("gw1", "gw2"):
+        found = set(names.get(gateway, []))
+        differences[gateway] = {
+            "missing": sorted(BASELINE_BACKENDS - found),
+            "unexpected": sorted(found - BASELINE_BACKENDS),
+        }
+    valid = set(configs) == {"gw1", "gw2"} and all(
+        not diff["missing"] and not diff["unexpected"] for diff in differences.values())
+    return valid, {"found": names, "expected": sorted(BASELINE_BACKENDS), "difference": differences}
 
 
 def sync_failure_events(events):
@@ -620,12 +627,17 @@ async def run(cfg, smoke=False):
             if not baseline_ok:
                 result["status"] = "NOT EXECUTED" if not result["bursts"] else "PARTIAL"
                 result["aborted_before_burst"] = {"burst_size": burst_n,
-                    "status": "NOT EXECUTED", "backend_names_found": baseline_names,
+                    "status": "NOT EXECUTED", "backend_names_found": baseline_names["found"],
+                    "backend_names_expected": baseline_names["expected"],
+                    "backend_names_difference": baseline_names["difference"],
                     "gateway_errors": baseline_errors,
                     "error": "both gateways must have exactly the 3 baseline backends before a burst"}
                 all_rows.append({"timestamp_utc": utc(), "burst_size": burst_n,
                     "status": "NOT EXECUTED", "error": result["aborted_before_burst"]["error"],
-                    "backend_names_found": baseline_names, "gateway_errors": baseline_errors})
+                    "backend_names_found": baseline_names["found"],
+                    "backend_names_expected": baseline_names["expected"],
+                    "backend_names_difference": baseline_names["difference"],
+                    "gateway_errors": baseline_errors})
                 break
             try:
                 try:
