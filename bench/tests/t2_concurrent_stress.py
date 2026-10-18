@@ -9,6 +9,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -365,6 +367,55 @@ def redact_process_error(message):
     return message
 
 
+def port_8082_is_free():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        try:
+            listener.bind(("127.0.0.1", 8082))
+        except OSError:
+            return False
+    return True
+
+
+def stop_process_group(proc):
+    pgid = proc.pid
+    try:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            proc.poll()
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+    finally:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                proc.poll()
+                try:
+                    os.killpg(pgid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db_path, stamp):
     result = {"status": "NOT EXECUTED", "health_regression_window_seconds": WINDOW,
               "pool_size": pool_capacity, "pool_cidr": pool_cidr,
@@ -375,11 +426,19 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
               "ipam_signature_after": None, "ipam_signature_matches": False,
               "allocated_set_matches": False, "unexpected_changes": [],
               "release_results": []}
+    result["port_8082_free_before"] = port_8082_is_free()
+    if not result["port_8082_free_before"]:
+        result["error"] = "port 8082 already in use"
+        result["temporary_db_deleted"] = True
+        result["live_db_written"] = False
+        result["port_8082_free_after"] = port_8082_is_free()
+        return result
     go = shutil.which("go")
     if not go:
         result["error"] = "go executable not found; cannot start isolated control plane"
         result["temporary_db_deleted"] = True
         result["live_db_written"] = False
+        result["port_8082_free_after"] = port_8082_is_free()
         return result
 
     with tempfile.TemporaryDirectory(prefix="felcloud-t2-pool-", dir="/tmp") as tmp:
@@ -408,7 +467,8 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
             log_file = log_path.open("w", encoding="utf-8")
             proc = subprocess.Popen([go, "run", ".", "serve", "--port", "8082"],
                                     cwd=Path(__file__).resolve().parents[2] / "controlplane",
-                                    env=env, stdout=log_file, stderr=subprocess.STDOUT, text=True)
+                                    env=env, stdout=log_file, stderr=subprocess.STDOUT, text=True,
+                                    start_new_session=True)
             deadline = time.monotonic() + 180
             last_health_error = "no HTTP health response received"
             async with httpx.AsyncClient(base_url=POOL_CONTROL_PLANE_URL,
@@ -565,15 +625,28 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
             if not started:
                 result["startup_error"] = detail
         finally:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                try:
-                    await asyncio.to_thread(proc.wait, 10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    await asyncio.to_thread(proc.wait)
-            if log_file is not None:
-                log_file.close()
+            try:
+                if proc is not None:
+                    stop_process_group(proc)
+            except Exception as exc:
+                result["process_group_cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                if result["status"] == "PASSED":
+                    result["status"] = "FAILED"
+                    if not result["error"]:
+                        result["error"] = "isolated control plane process-group cleanup failed"
+            finally:
+                if log_file is not None:
+                    log_file.close()
+                deadline = time.monotonic() + 5
+                port_free = port_8082_is_free()
+                while not port_free and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    port_free = port_8082_is_free()
+                result["port_8082_free_after"] = port_free
+                if not port_free:
+                    result["status"] = "FAILED"
+                    if not result["error"]:
+                        result["error"] = "port 8082 still in use after isolated control plane cleanup"
         result["allocate_429_count"] = allocate_counter[0]
         result["release_429_count"] = release_counter[0]
         result["reclaim_429_count"] = reclaim_counter[0]
