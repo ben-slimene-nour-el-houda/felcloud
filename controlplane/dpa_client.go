@@ -121,18 +121,33 @@ type dpaTransaction struct {
 }
 
 // dpaOpenTransaction opens a new DPA transaction and returns its ID.
-func dpaOpenTransaction(ctx context.Context, baseURL, user, pass string) (string, error) {
-	url := baseURL + "/services/haproxy/transactions"
-	// DPA v3 requires haproxy_version param to open a transaction.
-	// We fetch it first from /info, then pass it.
-	version, err := dpaHAProxyVersion(ctx, baseURL, user, pass)
+// dpaConfigVersion returns the integer HAProxy configuration version
+// that DPA requires when opening a transaction.
+func dpaConfigVersion(ctx context.Context, baseURL, user, pass string) (string, error) {
+	body, status, err := dpaRequest(ctx, http.MethodGet, baseURL+"/services/haproxy/configuration/version", nil, user, pass, "")
 	if err != nil {
-		// Fallback: try without version (some DPA versions accept it)
-		version = ""
+		return "", err
 	}
-	if version != "" {
-		url += "?haproxy_version=" + version
+	if status != http.StatusOK {
+		return "", fmt.Errorf("DPA configuration version: HTTP %d: %s", status, truncate(string(body), 200))
 	}
+	v := strings.TrimSpace(string(body))
+	if n, convErr := strconv.Atoi(v); convErr != nil || n < 0 {
+		return "", fmt.Errorf("DPA configuration version: unexpected response %q", truncate(v, 80))
+	}
+	return v, nil
+}
+
+// dpaOpenTransaction opens a new DPA transaction and returns its ID.
+func dpaOpenTransaction(ctx context.Context, baseURL, user, pass string) (string, error) {
+	// DPA requires the integer configuration version (not the HAProxy
+	// software version) as the "version" query parameter.
+	version, err := dpaConfigVersion(ctx, baseURL, user, pass)
+	if err != nil {
+		return "", fmt.Errorf("open transaction: %w", err)
+	}
+	url := baseURL + "/services/haproxy/transactions?version=" + version
+
 	body, status, err := dpaRequest(ctx, http.MethodPost, url, nil, user, pass, "")
 	if err != nil {
 		return "", fmt.Errorf("open transaction: %w", err)
