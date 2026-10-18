@@ -552,11 +552,24 @@ func (p *OpenStackProvisioner) resolveSecurityGroup(ctx context.Context) (string
 
 func cloudInitHTTP() []byte {
 	// Input-independent script: team names never enter cloud-init or shell syntax.
+	// systemd unit survives reboots; no package install (sandbox network has no internet).
 	script := `#cloud-config
-packages: [python3]
+write_files:
+  - path: /var/www/sandbox/index.html
+    content: "FelCloud sandbox ready\n"
+  - path: /etc/systemd/system/sandbox-http.service
+    content: |
+      [Unit]
+      Description=Sandbox HTTP
+      After=network.target
+      [Service]
+      ExecStart=/usr/bin/python3 -m http.server 80 --directory /var/www/sandbox
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
 runcmd:
-  - [sh, -c, "mkdir -p /var/www/sandbox && echo 'FelCloud sandbox ready' > /var/www/sandbox/index.html"]
-  - [sh, -c, "nohup python3 -m http.server 80 --directory /var/www/sandbox >/var/log/sandbox-http.log 2>&1 &"]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, sandbox-http.service]
 `
 	return []byte(script)
 }
