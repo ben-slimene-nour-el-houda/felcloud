@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from bench.lib.api_client import AsyncControlPlaneClient
+from bench.lib.api_client import AsyncControlPlaneClient, TimedResponse
 from bench.lib.config import load_config
 
 BASE = Path(__file__).resolve().parents[1]
@@ -56,13 +56,19 @@ def error_text(data):
     return str(data)
 
 
-async def api_json(client, method, path, **kwargs):
-    response = await client.request(method, path, **kwargs)
+def parse_api_response(response):
+    """Normalize a harness TimedResponse or an httpx Response to status/data."""
+    if isinstance(response, TimedResponse):
+        return response.status_code, response.data
     try:
         data = response.json()
     except Exception:
         data = {"raw": response.text}
     return response.status_code, data
+
+
+async def api_json(client, method, path, **kwargs):
+    return parse_api_response(await client.request(method, path, **kwargs))
 
 
 async def probe(client, gate, url, host, timeout=4):
