@@ -86,8 +86,29 @@ async def probe(client, gate, url, host, timeout=4):
                 "body": "", "gateway_id": "", "error": f"{type(exc).__name__}: {exc}"}
 
 
-def identity_matches(body, sandbox_id):
-    return sandbox_id.lower() in body.lower()
+def identity_matches(body, fixed_ip):
+    return bool(fixed_ip and re.search(rf"\b{re.escape(fixed_ip)}\b", body))
+
+
+def body_ipv4_addresses(body):
+    return sorted(set(re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", body)))
+
+
+def neutron_port_ips(ports, sandbox_ids):
+    """Map actual sandbox-<id> Neutron port names back to sandbox IDs."""
+    wanted = set(sandbox_ids)
+    result = {}
+    for port in ports:
+        name = str(port.get("Name", ""))
+        if not name.startswith("sandbox-"):
+            continue
+        sandbox_id = name[len("sandbox-"):]
+        if sandbox_id not in wanted:
+            continue
+        addresses = body_ipv4_addresses(str(port))
+        if addresses:
+            result[sandbox_id] = addresses[0]
+    return result
 
 
 async def background_probe(client, gate, url, stop, samples):
@@ -262,12 +283,13 @@ async def run(cfg, smoke=False):
                             if p["status"] == 200:
                                 row["post_first_http_200_ms"] = (time.perf_counter()-started)*1000
                                 row["first_http_200_utc"] = p["timestamp_utc"]
-                                row["identity_ok"] = identity_matches(p["body"], name)
+                                row["body_ips_found"] = body_ipv4_addresses(p["body"])
+                                row["identity_ok"] = identity_matches(p["body"], row["fixed_ip"])
                                 row["gateway_id"] = p["gateway_id"]
                                 row["success"] = row["identity_ok"]
                                 row["status"] = "SUCCESS" if row["success"] else "MISROUTED_CONTENT"
                                 if not row["success"]:
-                                    row["errors"].append("HTTP 200 body did not contain its sandbox ID")
+                                    row["errors"].append("HTTP 200 body did not contain its fixed IP")
                                 return
                         row["status"] = "HTTP_200_TIMEOUT"
                         row["errors"].append("HTTP 200 not observed before 420-second deadline")
@@ -299,19 +321,14 @@ async def run(cfg, smoke=False):
                               if x.get("entity_name") in ids and x.get("status") == "ALLOCATED"}
                 try:
                     ports = await openstack_json(cfg["openstack"]["cloud"], "port", "list")
-                    port_ips = {}
-                    for p in ports:
-                        pname = str(p.get("Name", ""))
-                        if pname in ids:
-                            ips = re.findall(r"10\.20\.30\.\d+", str(p))
-                            if ips: port_ips[pname] = ips[0]
+                    port_ips = neutron_port_ips(ports, ids)
                     ports_observation = {"status": "READ", "ips": port_ips}
                 except Exception as exc:
                     port_ips = {}
                     ports_observation = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
                 ip_values = [v for k, v in bench_ipam.items() if k not in {"team1", "team2"}]
                 duplicates = sorted({ip for ip in ip_values if ip_values.count(ip) > 1})
-                port_ip_values = [v for k, v in port_ips.items() if k in ids]
+                port_ip_values = list(port_ips.values())
                 duplicate_port_ips = sorted({ip for ip in port_ip_values if port_ip_values.count(ip) > 1})
 
                 # Events are the control plane's gateway sync error log when available.
