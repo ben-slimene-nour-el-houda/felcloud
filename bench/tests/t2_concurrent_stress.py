@@ -200,7 +200,8 @@ def ipam_signature(leases, cidr):
 
 def process_environment_values():
     return {key: os.environ.get(key, "unset") for key in
-            ("HEALTH_REGRESSION_WINDOW_SECONDS", "GATEWAY_PROBE_TIMEOUT_SECONDS", "RATE_LIMIT_PER_MIN")}
+            ("HEALTH_REGRESSION_WINDOW_SECONDS", "GATEWAY_PROBE_TIMEOUT_SECONDS", "RATE_LIMIT_PER_MIN",
+             "MAX_CONCURRENT_PROVISIONS", "PROVISION_TIMEOUT_SECONDS")}
 
 
 PROCESS_ENVIRONMENT = process_environment_values()
@@ -665,7 +666,7 @@ async def isolated_pool_exhaustion(cfg, token, pool_capacity, pool_cidr, live_db
     return result
 
 
-async def run(cfg, smoke=False):
+async def run(cfg, smoke=False, bursts=None, skip_pool=False):
     env_snapshot = dict(PROCESS_ENVIRONMENT)
     cp = cfg["control_plane"]
     net = cfg["network"]
@@ -695,7 +696,7 @@ async def run(cfg, smoke=False):
     cap = int(os.environ.get("BENCH_MAX_CONCURRENCY", "15"))
     if cap < 1 or cap > 15:
         raise RuntimeError(f"BENCH_MAX_CONCURRENCY must be 1..15 (got {cap})")
-    levels = [2] if smoke else LEVELS
+    levels = [2] if smoke else (bursts if bursts is not None else LEVELS)
     if max(levels) > cap:
         raise RuntimeError(f"T2 requires concurrency 15, but BENCH_MAX_CONCURRENCY={cap}")
     os.environ["HEALTH_REGRESSION_WINDOW_SECONDS"] = WINDOW
@@ -906,15 +907,19 @@ async def run(cfg, smoke=False):
                     "error": f"{type(exc).__name__}: {exc}", "cleanup": cleanup_errors,
                     "sandbox_rows": list(rows.values()), "team1_prober": {"status": "NOT EXECUTED"}})
 
-        if "aborted_before_burst" in result:
+        if skip_pool:
+            result["pool_exhaustion"] = {"status": "NOT EXECUTED", "error": "skipped by --skip-pool"}
+        elif "aborted_before_burst" in result:
             result["pool_exhaustion"] = {"status": "NOT EXECUTED",
                 "error": "test stopped by the baseline-backend guard before provisioning"}
+        if "aborted_before_burst" in result:
             result["final_sanity"] = {"status": "NOT EXECUTED",
                 "error": "test stopped by the baseline-backend guard before provisioning"}
         else:
-            # Pool exhaustion runs only on a separate process and SQLite backup copy.
-            result["pool_exhaustion"] = await isolated_pool_exhaustion(
-                cfg, token, pool_capacity, pool_cidr, pool_db, stamp)
+            if not skip_pool:
+                # Pool exhaustion runs only on a separate process and SQLite backup copy.
+                result["pool_exhaustion"] = await isolated_pool_exhaustion(
+                    cfg, token, pool_capacity, pool_cidr, pool_db, stamp)
 
             # Final checks use real OpenStack/API/SSH observations.
             final = result["final_sanity"]
@@ -945,6 +950,9 @@ async def run(cfg, smoke=False):
                 except Exception as exc:
                     final.setdefault("gateway_validation", {})[label] = {"status": "NOT EXECUTED", "error": f"{type(exc).__name__}: {exc}"}
 
+    result["pool_exhaustion_status"] = result["pool_exhaustion"].get("status", "NOT EXECUTED")
+    result["pool_exhaustion_reason"] = (result["pool_exhaustion"].get("error", "")
+                                        if result["pool_exhaustion_status"] == "NOT EXECUTED" else "")
     raw_path = RAW / f"t2_concurrent_{stamp}.csv"
     fields = sorted({k for row in all_rows for k in row})
     with raw_path.open("w", newline="", encoding="utf-8") as f:
@@ -967,7 +975,10 @@ async def run(cfg, smoke=False):
                       "HEALTH_REGRESSION_WINDOW_SECONDS": PROCESS_ENVIRONMENT["HEALTH_REGRESSION_WINDOW_SECONDS"],
                       "GATEWAY_PROBE_TIMEOUT_SECONDS": PROCESS_ENVIRONMENT["GATEWAY_PROBE_TIMEOUT_SECONDS"],
                       "RATE_LIMIT_PER_MIN": PROCESS_ENVIRONMENT["RATE_LIMIT_PER_MIN"],
-                      "pool_exhaustion_status": result["pool_exhaustion"].get("status"),
+                      "MAX_CONCURRENT_PROVISIONS": PROCESS_ENVIRONMENT["MAX_CONCURRENT_PROVISIONS"],
+                      "PROVISION_TIMEOUT_SECONDS": PROCESS_ENVIRONMENT["PROVISION_TIMEOUT_SECONDS"],
+                      "pool_exhaustion_status": result["pool_exhaustion_status"],
+                      "pool_exhaustion_reason": result["pool_exhaustion_reason"],
                       "pool_exhaustion_error": result["pool_exhaustion"].get("error", ""),
                       "artifacts": result["artifacts"]}, indent=2))
     return result
@@ -982,16 +993,31 @@ def percentile(values, p):
     return v[lo] + (v[hi]-v[lo])*(rank-lo)
 
 
+def parse_bursts(value):
+    try:
+        bursts = [int(item.strip()) for item in value.split(",")]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--bursts must be a comma-separated list from 3,5,10,15") from exc
+    if not bursts or any(burst not in LEVELS for burst in bursts):
+        raise argparse.ArgumentTypeError("--bursts values must be selected from 3,5,10,15")
+    return bursts
+
+
 def main():
     p = argparse.ArgumentParser(description="T2 concurrent provisioning stress")
     modes = p.add_mutually_exclusive_group()
     modes.add_argument("--dry-run", action="store_true")
     modes.add_argument("--smoke", action="store_true")
+    p.add_argument("--bursts", type=parse_bursts, default=None, metavar="N[,N...]")
+    p.add_argument("--skip-pool", action="store_true", help="skip isolated pool-exhaustion phase")
     args = p.parse_args()
+    if args.smoke and args.bursts is not None:
+        p.error("--smoke cannot be combined with --bursts")
     try:
         cfg = load_config(BASE / "config.yaml")
         cap = int(os.environ.get("BENCH_MAX_CONCURRENCY", "15"))
         if cap < 1 or cap > 15: raise ValueError("BENCH_MAX_CONCURRENCY must be 1..15")
+        selected_bursts = [2] if args.smoke else (args.bursts if args.bursts is not None else LEVELS)
         if args.dry_run:
             required = {"ADMIN_TOKEN": bool(os.environ.get("ADMIN_TOKEN")),
                         "PUBLIC_VIP_IP": bool(cfg["network"].get("public_vip")),
@@ -1001,15 +1027,18 @@ def main():
                         "BENCH_STANDBY_HOST": bool(cfg.get("safety_gates", {}).get("allowed_gateway_hosts", {}).get("standby")),
                         "sqlite3_executable": bool(shutil.which("sqlite3")),
                         "go_executable": bool(shutil.which("go"))}
-            print(json.dumps({"test":"T2_concurrent_stress", "mode":"DRY RUN", "bursts":[2] if args.smoke else LEVELS,
+            print(json.dumps({"test":"T2_concurrent_stress", "mode":"DRY RUN", "bursts":selected_bursts,
+                "flags":{"--bursts":args.bursts, "--skip-pool":args.skip_pool},
+                "pool_exhaustion_status":"NOT EXECUTED" if args.skip_pool else "PLANNED",
+                "pool_exhaustion_reason":"skipped by --skip-pool" if args.skip_pool else "",
                 "hard_concurrency_cap":15, "configured_cap":cap, "health_regression_window_seconds":WINDOW,
                 "process_environment":PROCESS_ENVIRONMENT,
                 "probe_limit_per_second":5, "routing_domain":"cloudpulse.cstam.felcloud.tn",
                 "vip":cfg["network"].get("public_vip") or "NOT CONFIGURED", "control_plane":cfg["control_plane"]["base_url"],
                 "configuration_gates":required,
-                "actions":["check both DPA configs have exactly 3 baseline route backends before each burst", "barrier-start provision API requests", "poll sandbox HTTP routes and team1 every 200ms", "read DPA configs/IPAM/Neutron/events/generations", "delete this burst's bench-* IDs", "copy live DB with sqlite3 .backup and run pool exhaustion on isolated control plane port 8082", "retry 429 responses, release every allocated lease, and verify isolated IPAM signature", "final OpenStack and HAProxy checks"],
+                "actions":["check both DPA configs have exactly 3 baseline route backends before each burst", "barrier-start provision API requests", "poll sandbox HTTP routes and team1 every 200ms", "read DPA configs/IPAM/Neutron/events/generations", "delete this burst's bench-* IDs"] + ([] if args.skip_pool else ["copy live DB with sqlite3 .backup and run pool exhaustion on isolated control plane port 8082", "retry 429 responses, release every allocated lease, and verify isolated IPAM signature"]) + ["final OpenStack and HAProxy checks"],
                 "network_calls":False}, indent=2)); return 0
-        result = asyncio.run(run(cfg, smoke=args.smoke))
+        result = asyncio.run(run(cfg, smoke=args.smoke, bursts=args.bursts, skip_pool=args.skip_pool))
         return 0 if result.get("status") == "EXECUTED" else 2
     except Exception as exc:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
