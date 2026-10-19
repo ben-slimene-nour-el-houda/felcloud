@@ -163,7 +163,6 @@ async def background_prober(client, gate, url, host, stop, samples):
     while not stop.is_set():
         due = time.monotonic()
         sample = await t2.probe(client, gate, url, host, timeout=5)
-        sample["monotonic_finished"] = time.monotonic()
         samples.append(sample)
         delay = max(0.0, PROBE_INTERVAL_SECONDS - (time.monotonic() - due))
         try:
@@ -172,12 +171,49 @@ async def background_prober(client, gate, url, host, stop, samples):
             pass
 
 
-def probe_drops(samples, started, ended):
-    during = [sample for sample in samples if started <= sample.get("monotonic_finished", -1) <= ended]
-    return {"total": len(during), "drops": sum(sample["status"] != 200 for sample in during),
+def timestamp_value(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def probe_drops(samples, started_utc, finished_utc):
+    started, finished = timestamp_value(started_utc), timestamp_value(finished_utc)
+    during = [sample for sample in samples
+              if started <= timestamp_value(sample["timestamp_utc"]) <= finished]
+    latencies = [float(sample.get("latency_ms") or 0) for sample in during]
+    return {"total": len(during),
+            "drops": sum(sample["status"] != 200 or bool(sample.get("error")) or sample["status"] == 0
+                         for sample in during),
             "non_200": sum(sample["status"] not in (200, 429, 0) for sample in during),
             "429": sum(sample["status"] == 429 for sample in during),
-            "connection_errors": sum(sample["status"] == 0 for sample in during)}
+            "connection_errors": sum(sample["status"] == 0 or bool(sample.get("error")) for sample in during),
+            "slow_samples_over_500ms": sum(latency > 500 for latency in latencies),
+            "max_latency_ms": max(latencies) if latencies else None}
+
+
+def attribute_all_probe_samples(result):
+    calls = result.get("scenario_a_syncs", []) + result.get("scenario_c_rollbacks", [])
+    assigned = [set() for _ in calls]
+    for sample_index, sample in enumerate(result.get("prober", {}).get("samples", [])):
+        stamp = timestamp_value(sample["timestamp_utc"])
+        for call_index, call in enumerate(calls):
+            if timestamp_value(call["client_started_utc"]) <= stamp <= timestamp_value(call["client_finished_utc"]):
+                assigned[call_index].add(sample_index)
+                break
+    for call_index, call in enumerate(calls):
+        call["prober_drops_during_call"] = probe_drops(
+            [result["prober"]["samples"][i] for i in sorted(assigned[call_index])],
+            call["client_started_utc"], call["client_finished_utc"])
+    in_call = set().union(*assigned) if assigned else set()
+    outside = [sample for i, sample in enumerate(result.get("prober", {}).get("samples", [])) if i not in in_call]
+    result["prober"]["samples_outside_call_windows"] = outside
+    error_count = lambda items: sum(sample["status"] == 0 or bool(sample.get("error")) for sample in items)
+    call_error_count = sum(call["prober_drops_during_call"]["connection_errors"] for call in calls)
+    outside_error_count = error_count(outside)
+    total_error_count = error_count(result.get("prober", {}).get("samples", []))
+    result["prober"].update({"connection_error_count": total_error_count,
+        "connection_error_count_in_call_windows": call_error_count,
+        "connection_error_count_outside_call_windows": outside_error_count,
+        "connection_error_attribution_matches_total": total_error_count == call_error_count + outside_error_count})
 
 
 async def gateway_raw_configs(password):
@@ -261,14 +297,16 @@ async def run(cfg, smoke):
             async with httpx.AsyncClient(timeout=420, follow_redirects=False) as sync_client:
                 for index in range(sync_count):
                     before = generation_count(db_path)
-                    started_utc, started = utc_now(), time.monotonic()
+                    started_utc = utc_now()
                     response = await api.request("POST", "/api/gateways/sync", json_body={"dry_run": False})
-                    ended, ended_utc = time.monotonic(), utc_now()
+                    ended_utc = utc_now()
                     after = generation_count(db_path)
-                    drops = probe_drops(samples, started, ended)
+                    drops = probe_drops(samples, started_utc, ended_utc)
                     result["scenario_a_syncs"].append({"index": index + 1,
                         "http_status": response.status_code, "response": response.data,
-                        "duration_ms": response.elapsed_seconds * 1000, "client_started_utc": started_utc,
+                        "duration_ms": response.elapsed_seconds * 1000,
+                        "client_duration_ms": (timestamp_value(ended_utc) - timestamp_value(started_utc)).total_seconds() * 1000,
+                        "client_started_utc": started_utc,
                         "client_finished_utc": ended_utc, "success": response.status_code == 200 and
                         response.data.get("success") is True, "generation_count_before": before,
                         "generation_count_after": after, "generation_count_changed": after != before,
@@ -276,16 +314,27 @@ async def run(cfg, smoke):
                 result["scenario_b_invalid_config"] = await invalid_config_scenario(
                     cfg, password, vip_client, gate, vip, domain)
                 for index in range(rollback_count):
-                    started_utc, started = utc_now(), time.monotonic()
-                    response = await api.request("POST", "/api/gateways/rollback",
-                        json_body={"target_generation": result["preflight"]["safe_target_generation"]})
-                    ended, ended_utc = time.monotonic(), utc_now()
-                    drops = probe_drops(samples, started, ended)
+                    started_utc = utc_now()
+                    try:
+                        response = await api.request("POST", "/api/gateways/rollback",
+                            json_body={"target_generation": result["preflight"]["safe_target_generation"]})
+                    except Exception as exc:
+                        ended_utc = utc_now()
+                        result["scenario_c_rollbacks"].append({"index": index + 1, "http_status": None,
+                            "success": False, "duration_ms": None, "client_started_utc": started_utc,
+                            "client_finished_utc": ended_utc,
+                            "client_duration_ms": (timestamp_value(ended_utc) - timestamp_value(started_utc)).total_seconds() * 1000,
+                            "error": t2.redact_process_error(f"{type(exc).__name__}: {exc}"), "response": {},
+                            "prober_drops_during_call": probe_drops(samples, started_utc, ended_utc)})
+                        raise
+                    ended_utc = utc_now()
+                    drops = probe_drops(samples, started_utc, ended_utc)
                     result["scenario_c_rollbacks"].append({"index": index + 1,
                         "http_status": response.status_code, "success": response.status_code == 200 and
                         response.data.get("success") is True, "duration_ms": response.data.get("duration_ms"),
-                        "client_duration_ms": (ended - started) * 1000, "client_started_utc": started_utc,
-                        "client_finished_utc": ended_utc, "new_generation_id": response.data.get("generation"),
+                        "client_duration_ms": (timestamp_value(ended_utc) - timestamp_value(started_utc)).total_seconds() * 1000,
+                        "client_started_utc": started_utc, "client_finished_utc": ended_utc,
+                        "new_generation_id": response.data.get("generation"),
                         "response": response.data, "prober_drops_during_call": drops})
             result["status"] = "COMPLETED"
     except Exception as exc:
@@ -294,11 +343,13 @@ async def run(cfg, smoke):
         if prober_task:
             stop.set()
             await prober_task
+    attribute_all_probe_samples(result)
     result["prober"].update({"sample_count": len(samples),
         "non_200_count": sum(sample["status"] not in (200, 429, 0) for sample in samples),
         "429_count": sum(sample["status"] == 429 for sample in samples),
-        "connection_error_count": sum(sample["status"] == 0 for sample in samples),
-        "total_drops": sum(sample["status"] != 200 for sample in samples),
+        "connection_error_count": sum(sample["status"] == 0 or bool(sample.get("error")) for sample in samples),
+        "total_drops": sum(sample["status"] != 200 or bool(sample.get("error")) or sample["status"] == 0
+                            for sample in samples),
         "interval_seconds": PROBE_INTERVAL_SECONDS})
     if result.get("preflight", {}).get("passed"):
         try:
@@ -328,10 +379,22 @@ async def run(cfg, smoke):
     syncs = result.get("scenario_a_syncs", [])
     rollbacks = result.get("scenario_c_rollbacks", [])
     invalid = result.get("scenario_b_invalid_config", {})
+    rollbacks_succeeded = sum(bool(op.get("success")) for op in rollbacks)
+    rollbacks_attempted = len(rollbacks)
+    any_rollback_failed = rollbacks_succeeded < rollbacks_attempted
+    successful_rollbacks = [op for op in rollbacks if op.get("success")]
+    all_successful_durations_present = all(isinstance(op.get("duration_ms"), (int, float))
+                                            for op in successful_rollbacks)
+    rollback_under_1_second = (None if any_rollback_failed or not rollbacks_attempted or
+                               not all_successful_durations_present else
+        all(float(op["duration_ms"]) < 1000 for op in successful_rollbacks))
+    result["rollbacks_succeeded"] = rollbacks_succeeded
+    result["rollbacks_attempted"] = rollbacks_attempted
+    result["rollback_under_1_second"] = rollback_under_1_second
+    result["rollback_under_1_second_status"] = "NOT MEASURED" if rollback_under_1_second is None else "MEASURED"
     result["pass_targets"] = {"zero_sync_prober_drops": bool(syncs) and all(
         op["prober_drops_during_call"]["drops"] == 0 for op in syncs),
-        "rollback_under_1_second": bool(rollbacks) and all(
-            isinstance(op.get("duration_ms"), (int, float)) and op["duration_ms"] < 1000 for op in rollbacks),
+        "rollback_under_1_second": rollback_under_1_second,
         "invalid_rejected_pre_commit": invalid.get("rejected_pre_commit") is True}
     if result["status"] == "COMPLETED":
         result["status"] = "PASSED" if all(result["pass_targets"].values()) and \
@@ -409,6 +472,7 @@ def main():
                 "health_window_checks": "Both gateway HAProxy UP; VIP 2xx; previously healthy backends remain present and not DOWN.",
                 "content_sha_behavior": "No content_sha short-circuit; sync calls gateway deployment runner.",
                 "rollback_duration_note": "The 5-second health window is included in API duration.",
+                "rollback_under_1_second": None, "rollback_under_1_second_status": "NOT MEASURED",
                 "outputs": ["raw CSV", "summary JSON", "chart in bench/results"]}, indent=2))
             return 0
         result = write_outputs(asyncio.run(run(cfg, args.smoke)))
