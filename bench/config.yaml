@@ -2,7 +2,7 @@
 # Set secrets and live endpoints in the environment. Never put credentials here.
 control_plane:
   base_url: "${CONTROL_PLANE_URL:-http://127.0.0.1:8081}"
-  request_timeout_seconds: 180
+  request_timeout_seconds: 420
 
 openstack:
   cloud: "${OS_CLOUD:-felcloud}"
