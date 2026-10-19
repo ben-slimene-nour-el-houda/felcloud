@@ -35,9 +35,8 @@ DEFAULT_NETWORK_ID = "7d1b48ee-0b28-449b-aba4-869364e72623"
 DEFAULT_NETWORK_NAME = "felcloud-sandbox"
 DEFAULT_KEYPAIR = "felcloud-resilient-v2"
 SECURITY_GROUP = "sg-sandbox"
-RESULT_BEGIN = "T7_RESULT_BEGIN"
-RESULT_END = "T7_RESULT_END"
-CONSOLE_DEADLINE_SECONDS = 300
+RESULT_DEADLINE_SECONDS = 300
+RESULT_POLL_INTERVAL_SECONDS = 5
 CONNECT_TIMEOUT_SECONDS = 3
 MAX_SCRIPT_SECONDS = 110
 SETTINGS = ("MAX_CONCURRENT_PROVISIONS", "HEALTH_REGRESSION_WINDOW_SECONDS",
@@ -106,7 +105,7 @@ runcmd:
     return script
 
 
-def prober_shell_script(probes):
+def prober_shell_script(probes, result_path="/var/www/t7/result.json"):
     rows = []
     for name, address, port, kind in probes:
         address = address if address.startswith("<") else str(ipaddress.ip_address(address))
@@ -115,6 +114,7 @@ def prober_shell_script(probes):
     body = f"""#!/usr/bin/env bash
 set +e
 started=$SECONDS
+mkdir -p "$(dirname {result_path})"
 results=""
 separator=""
 while IFS='|' read -r target address port classification; do
@@ -135,7 +135,8 @@ while IFS='|' read -r target address port classification; do
   separator="," 
 done <<'T7_PROBES'
 """ + "\n".join(rows) + "\nT7_PROBES\n" + f"""printf -v json '{{\"results\":[%s],\"duration_seconds\":%s}}' "$results" "$((SECONDS-started))"
-printf '%s\\n%s\\n%s\\n' '{RESULT_BEGIN}' "$json" '{RESULT_END}' > /dev/console
+result_tmp="{result_path}.tmp.$$"
+printf '%s\\n' "$json" > "$result_tmp" && mv -f "$result_tmp" "{result_path}"
 """
     return body
 
@@ -143,9 +144,24 @@ printf '%s\\n%s\\n%s\\n' '{RESULT_BEGIN}' "$json" '{RESULT_END}' > /dev/console
 def prober_userdata(probes):
     body = prober_shell_script(probes)
     indented = "\n".join("      " + line if line else "" for line in body.rstrip("\n").splitlines())
-    return ("#cloud-config\nwrite_files:\n  - path: /usr/local/bin/t7-probe.sh\n"
+    return ("#cloud-config\nwrite_files:\n"
+            "  - path: /etc/systemd/system/t7-prober-http.service\n"
+            "    content: |\n"
+            "      [Unit]\n"
+            "      Description=T7 result HTTP transport\n"
+            "      After=network-online.target\n"
+            "      Wants=network-online.target\n"
+            "      [Service]\n"
+            "      ExecStart=/usr/bin/python3 -m http.server 80 --directory /var/www/t7\n"
+            "      Restart=always\n"
+            "      [Install]\n"
+            "      WantedBy=multi-user.target\n"
+            "  - path: /usr/local/bin/t7-probe.sh\n"
             "    permissions: '0755'\n    content: |\n" + indented +
-            "\nruncmd:\n  - [bash, /usr/local/bin/t7-probe.sh]\n")
+            "\nruncmd:\n  - [mkdir, -p, /var/www/t7]\n"
+            "  - [systemctl, daemon-reload]\n"
+            "  - [systemctl, enable, --now, t7-prober-http.service]\n"
+            "  - [bash, /usr/local/bin/t7-probe.sh]\n")
 
 
 def dry_run_self_test():
@@ -154,8 +170,8 @@ def dry_run_self_test():
               for index, port in enumerate(closed_ports, 1)]
     with tempfile.TemporaryDirectory(prefix="t7-dry-run-") as temp_dir:
         script_path = Path(temp_dir) / "prober.sh"
-        console_path = Path(temp_dir) / "console.log"
-        script = prober_shell_script(probes).replace("> /dev/console", f"> {console_path}")
+        result_path = Path(temp_dir) / "result.json"
+        script = prober_shell_script(probes, str(result_path))
         script_path.write_text(script, encoding="utf-8")
         syntax = subprocess.run(["bash", "-n", str(script_path)], capture_output=True, text=True, timeout=10)
         if syntax.returncode:
@@ -163,11 +179,7 @@ def dry_run_self_test():
         execution = subprocess.run(["bash", str(script_path)], capture_output=True, text=True, timeout=20)
         if execution.returncode:
             raise RuntimeError(f"offline prober failed ({execution.returncode}): {execution.stderr.strip()}")
-        output = console_path.read_text(encoding="utf-8")
-        lines = output.splitlines()
-        begin = lines.index(RESULT_BEGIN)
-        end = lines.index(RESULT_END)
-        parsed = json.loads("\n".join(lines[begin + 1:end]))
+        parsed = json.loads(result_path.read_text(encoding="utf-8"))
         if len(parsed.get("results", [])) != 2:
             raise RuntimeError("offline prober JSON did not contain two loopback results")
         return {"passed": True, "bash_n": {"passed": True, "returncode": syntax.returncode,
@@ -275,26 +287,28 @@ async def create_probe_vm(cfg, name, port_name, userdata, resources):
     return {"server": server, "port": port}
 
 
-async def read_console_result(cloud, server_id):
-    deadline = time.monotonic() + CONSOLE_DEADLINE_SECONDS
-    last_console = ""
+async def read_http_result(cfg, prober_ip):
+    deadline = time.monotonic() + RESULT_DEADLINE_SECONDS
+    last_curl_result = ""
+    last_http_code = None
+    gateway = cfg["safety_gates"]["allowed_gateway_hosts"]["primary"]
+    url = f"http://{ipaddress.ip_address(prober_ip)}/result.json"
     while time.monotonic() < deadline:
         try:
-            last_console = await openstack_text(cloud, "console", "log", "show", server_id)
-            begin = last_console.find(RESULT_BEGIN)
-            end = last_console.find(RESULT_END, begin + len(RESULT_BEGIN)) if begin >= 0 else -1
-            if begin >= 0 and end >= 0:
-                payload = last_console[begin + len(RESULT_BEGIN):end].strip()
-                # Console drivers may prefix each line; locate the embedded JSON object.
-                start_json = payload.find("{")
-                if start_json >= 0:
-                    parsed, _ = json.JSONDecoder().raw_decode(payload[start_json:])
-                    return {"status": "READ", "result": parsed, "last_20_lines": last_console.splitlines()[-20:]}
+            last_curl_result = await t2.ssh_remote(cfg, gateway,
+                f"curl -s -m 5 -o - -w '\\n%{{http_code}}' {url}")
+            body, separator, code = last_curl_result.rstrip("\n").rpartition("\n")
+            last_http_code = code if separator and code.isdigit() else None
+            if last_http_code == "200":
+                parsed = json.loads(body)
+                return {"status": "READ", "result": parsed, "last_curl_result": last_curl_result,
+                        "last_http_code": last_http_code}
         except Exception as exc:
-            last_console = f"{last_console}\nconsole read error: {type(exc).__name__}: {exc}"
-        await asyncio.sleep(5)
-    return {"status": "NOT EXECUTED", "error": "T7 result markers were not found within 300 seconds",
-            "last_20_lines": last_console.splitlines()[-20:]}
+            last_curl_result = f"{type(exc).__name__}: {exc}"
+            last_http_code = None
+        await asyncio.sleep(RESULT_POLL_INTERVAL_SECONDS)
+    return {"status": "NOT EXECUTED", "error": "HTTP result.json did not return valid JSON with HTTP 200 within 300 seconds",
+            "last_curl_result": last_curl_result, "last_http_code": last_http_code}
 
 
 def readonly_ipam_counts(db_path, ids):
@@ -401,6 +415,7 @@ async def execute(cfg, smoke):
     expected_names = set(ids) | {f"{sid}-port" for sid in ids}
     result = {"test": "T7_network_isolation", "timestamp_utc": utc_now(),
         "status": "NOT EXECUTED", "mode": "smoke" if smoke else "full",
+        "result_channel": "HTTP via gateway", "console_log_finding": "console log empty on this cloud",
         "probe_vms_created_directly": False,
         "creation_method": "direct OpenStack port and server create; provisioning API is not used",
         "probe_vm_names": ids, "probe_vm_specs": {"image": IMAGE, "flavor": FLAVOR,
@@ -469,13 +484,13 @@ async def execute(cfg, smoke):
             result["probe_vm_ips"] = {"prober": prober_port["fixed_ip"],
                 "target": target_vm["port"]["fixed_ip"] if target_vm else None}
             result["ipam_rows"] = readonly_ipam_counts(db_path, ids)
-            console = await read_console_result(cloud, prober["id"])
-            result["console_result"] = console
-            if console["status"] != "READ":
+            http_result = await read_http_result(cfg, prober_port["fixed_ip"])
+            result["http_result"] = http_result
+            if http_result["status"] != "READ":
                 result["status"] = "NOT EXECUTED"
-                result["error"] = console["error"]
+                result["error"] = http_result["error"]
             else:
-                parsed_results = console["result"].get("results", [])
+                parsed_results = http_result["result"].get("results", [])
                 result["probe_results"] = parsed_results
                 result["forbidden_open_connections"] = [item for item in parsed_results
                     if item.get("classification") == "forbidden" and item.get("result") == "open"]
@@ -575,6 +590,7 @@ def main():
             offline_self_test = dry_run_self_test()
             print(json.dumps({"test": "T7_network_isolation", "mode": "DRY RUN", "network_calls": False,
                 "smoke": smoke, "status": "PLAN READY", "creation_method": "direct OpenStack CLI; no provisioning API",
+                "result_channel": "HTTP via gateway", "console_log_finding": "console log empty on this cloud",
                 "offline_self_test": offline_self_test,
                 "vm_names": names, "vm_specs": specs, "prober_user_data": prober_userdata(probes),
                 "target_user_data": None if smoke else target_userdata(),
@@ -582,7 +598,8 @@ def main():
                 "planned_probes": [{"target": name, "ip": address, "port": port,
                     "classification": classify_probe(name, port, kind)} for name, address, port, kind in probes],
                 "connect_timeout_seconds": CONNECT_TIMEOUT_SECONDS, "user_data_max_runtime_seconds": MAX_SCRIPT_SECONDS,
-                "console_poll_interval_seconds": 5, "console_deadline_seconds": CONSOLE_DEADLINE_SECONDS,
+                "result_poll_interval_seconds": RESULT_POLL_INTERVAL_SECONDS,
+                "result_deadline_seconds": RESULT_DEADLINE_SECONDS,
                 "process_environment": process_settings(), "security_groups_to_record": ["sg-sandbox", "sg-gateway"],
                 "cleanup_name_guard": "only exact VM/port names for this run beginning bench-t7-",
                 "pass_condition": "zero forbidden connections open",
