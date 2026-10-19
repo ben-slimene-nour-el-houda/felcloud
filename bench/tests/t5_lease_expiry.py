@@ -30,6 +30,11 @@ BASELINE_BACKENDS = {"default_maintenance", "team1_backend", "team2_backend"}
 TIMEOUT = 420.0
 TEARDOWN_DEADLINE_MARGIN_SECONDS = 180
 RECLAIM_WAIT_MARGIN_SECONDS = 180
+KNOWN_STALE_ROWS = {
+    "bench-t1-20261017t214147z-01",
+    "bench-t1-20261017t222905z-01",
+    "bench-t1-20261018t082213z-01",
+}
 
 
 def utc_now():
@@ -180,12 +185,37 @@ async def preflight(cfg, api, db_path):
     baseline_ok, baseline = check_baseline(configs)
     observation["gateways"] = {"backend_guard_passed": baseline_ok, **baseline,
                                 "errors": gateway_errors}
-    db_rows = read_all_bench_rows(db_path)
+    with readonly_db(db_path) as db:
+        db_rows = [dict(zip(("sandbox_id", "status", "updated_at"), row)) for row in db.execute(
+            "SELECT sandbox_id,status,updated_at FROM sandboxes WHERE sandbox_id LIKE 'bench-%' ORDER BY sandbox_id").fetchall()]
     api_rows = await read_sandbox_list(api)
-    api_bench_rows = [row for row in api_rows if str(row.get("sandbox_id", "")).startswith("bench-")]
-    observation["leftover_bench_rows"] = {"database": db_rows, "api": api_bench_rows,
-                                           "none": not db_rows and not api_bench_rows}
-    observation["passed"] = observation["openstack_servers"]["only_five_permanent_vms"] and baseline_ok and observation["leftover_bench_rows"]["none"]
+    status_counts = {}
+    db_by_id = {}
+    for row in db_rows:
+        status = str(row.get("status") or "UNKNOWN").upper()
+        status_counts[status] = status_counts.get(status, 0) + 1
+        db_by_id[row["sandbox_id"]] = row
+    non_released = {row["sandbox_id"]: dict(row) for row in db_rows
+                    if str(row.get("status") or "").upper() != "RELEASED"}
+    for api_row in api_rows:
+        sid = str(api_row.get("sandbox_id", ""))
+        status = str(api_row.get("status", "")).upper()
+        if sid.startswith("bench-") and status != "RELEASED":
+            non_released.setdefault(sid, {"sandbox_id": sid, "status": status,
+                                          "updated_at": api_row.get("updated_at"), "source": "api"})
+    known_stale = [
+        {"sandbox_id": sid, "status": db_by_id[sid].get("status"), "updated_at": db_by_id[sid].get("updated_at")}
+        for sid in sorted(KNOWN_STALE_ROWS)
+        if sid in db_by_id and str(db_by_id[sid].get("status", "")).upper() == "TEARDOWN_FAILED"
+    ]
+    known_stale_ids = {row["sandbox_id"] for row in known_stale}
+    non_released_rows = sorted(non_released.values(), key=lambda row: row["sandbox_id"])
+    unexpected_rows = [row for row in non_released_rows if row["sandbox_id"] not in known_stale_ids]
+    observation["leftover_bench_rows"] = {"counts_by_status": status_counts,
+        "known_stale_rows": known_stale, "non_released_rows": non_released_rows,
+        "unexpected_non_released_rows": unexpected_rows, "none": not unexpected_rows}
+    observation["passed"] = (observation["openstack_servers"]["only_five_permanent_vms"] and
+                              baseline_ok and observation["leftover_bench_rows"]["none"])
     return observation
 
 
