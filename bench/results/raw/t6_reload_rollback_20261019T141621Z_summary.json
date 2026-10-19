@@ -1,0 +1,1333 @@
+{
+  "artifacts": {
+    "chart": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/charts/t6_reload_rollback_20261019T141621Z.png",
+    "raw_csv": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/raw/t6_reload_rollback_20261019T141621Z.csv",
+    "summary_json": "/home/ben-slimene-nour-el-houda/felcloud/bench/results/raw/t6_reload_rollback_20261019T141621Z_summary.json"
+  },
+  "content_sha_identical_config_behavior": "No content_sha short-circuit exists; sync calls the gateway deployment runner, which posts config to both DPAs.",
+  "final_sanity": {
+    "gateway_baseline": {
+      "difference": {
+        "gw1": {
+          "missing": [],
+          "unexpected": []
+        },
+        "gw2": {
+          "missing": [],
+          "unexpected": []
+        }
+      },
+      "errors": {},
+      "expected": [
+        "default_maintenance",
+        "team1_backend",
+        "team2_backend"
+      ],
+      "found": {
+        "gw1": [
+          "default_maintenance",
+          "team1_backend",
+          "team2_backend"
+        ],
+        "gw2": [
+          "default_maintenance",
+          "team1_backend",
+          "team2_backend"
+        ]
+      },
+      "passed": true
+    },
+    "gateway_haproxy_checks": {
+      "gw1": {
+        "baseline_backend_count": 3,
+        "haproxy_config_valid": true,
+        "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+        "three_baseline_backends": true
+      },
+      "gw2": {
+        "baseline_backend_count": 3,
+        "haproxy_config_valid": true,
+        "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+        "three_baseline_backends": true
+      }
+    },
+    "newest_committed_backends": [
+      "default_maintenance",
+      "team1_backend",
+      "team2_backend"
+    ],
+    "newest_committed_generation": "gen-20261019T141555.920428087",
+    "newest_committed_has_baseline": true,
+    "only_five_permanent_vms": true,
+    "passed": true,
+    "servers": [
+      {
+        "Flavor": "G0.basic.1c1g",
+        "ID": "4b67cdca-2f0b-47bd-88b1-d188357e9546",
+        "Image": "Ubuntu 24.04 LTS - Noble Numbat",
+        "Name": "team2",
+        "Networks": {
+          "felcloud-sandbox": [
+            "10.20.30.15"
+          ]
+        },
+        "Status": "ACTIVE"
+      },
+      {
+        "Flavor": "G0.basic.1c1g",
+        "ID": "d59ff9bb-0d5c-4f09-8ae0-80e96e919e3e",
+        "Image": "Ubuntu 24.04 LTS - Noble Numbat",
+        "Name": "team1",
+        "Networks": {
+          "felcloud-sandbox": [
+            "10.20.30.37"
+          ]
+        },
+        "Status": "ACTIVE"
+      },
+      {
+        "Flavor": "G0.basic.1c1g",
+        "ID": "202bfc2e-5547-4908-8d86-d359f76d8252",
+        "Image": "Ubuntu 24.04 LTS - Noble Numbat",
+        "Name": "felcloud-bastion",
+        "Networks": {
+          "felcloud-edge": [
+            "10.20.20.177",
+            "197.5.133.77"
+          ],
+          "felcloud-mgmt": [
+            "10.20.10.246"
+          ]
+        },
+        "Status": "ACTIVE"
+      },
+      {
+        "Flavor": "G0.basic.2c2g",
+        "ID": "22dbe5d8-7cea-4918-a521-49c069ac2b87",
+        "Image": "Ubuntu 24.04 LTS - Noble Numbat",
+        "Name": "felcloud-gw2",
+        "Networks": {
+          "felcloud-edge": [
+            "10.20.20.190"
+          ],
+          "felcloud-mgmt": [
+            "10.20.10.164"
+          ],
+          "felcloud-sandbox": [
+            "10.20.30.224"
+          ]
+        },
+        "Status": "ACTIVE"
+      },
+      {
+        "Flavor": "G0.basic.2c2g",
+        "ID": "ed2433a6-2370-45c1-9886-b65041e86e62",
+        "Image": "Ubuntu 24.04 LTS - Noble Numbat",
+        "Name": "felcloud-gw1",
+        "Networks": {
+          "felcloud-edge": [
+            "10.20.20.82"
+          ],
+          "felcloud-mgmt": [
+            "10.20.10.24"
+          ],
+          "felcloud-sandbox": [
+            "10.20.30.86"
+          ]
+        },
+        "Status": "ACTIVE"
+      }
+    ],
+    "team1_probe": {
+      "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+      "error": "",
+      "gateway_id": "gw1",
+      "latency_ms": 94.58796300077665,
+      "status": 200,
+      "timestamp_utc": "2026-10-19T14:16:19.031Z"
+    },
+    "team1_returns_200": true
+  },
+  "health_window_checks": "Both gateway HAProxy UP, VIP HTTP 2xx, and each previously healthy backend remains present and not DOWN.",
+  "health_window_duration_in_rollback": "5 seconds; included in rollback duration",
+  "mode": "smoke",
+  "pass_targets": {
+    "invalid_rejected_pre_commit": true,
+    "rollback_under_1_second": false,
+    "zero_sync_prober_drops": true
+  },
+  "preflight": {
+    "credentials": {
+      "ADMIN_TOKEN": {
+        "length": 48,
+        "set": true
+      },
+      "DPA_PASS": {
+        "length": 24,
+        "set": true
+      }
+    },
+    "dpa": {
+      "gw1": {
+        "configuration_version": "210",
+        "info_http_status": 200
+      },
+      "gw2": {
+        "configuration_version": "212",
+        "info_http_status": 200
+      }
+    },
+    "gateway_configs": {
+      "difference": {
+        "gw1": {
+          "missing": [],
+          "unexpected": []
+        },
+        "gw2": {
+          "missing": [],
+          "unexpected": []
+        }
+      },
+      "errors": {},
+      "expected": [
+        "default_maintenance",
+        "team1_backend",
+        "team2_backend"
+      ],
+      "found": {
+        "gw1": [
+          "default_maintenance",
+          "team1_backend",
+          "team2_backend"
+        ],
+        "gw2": [
+          "default_maintenance",
+          "team1_backend",
+          "team2_backend"
+        ]
+      },
+      "passed": true
+    },
+    "gateway_haproxy_checks": {
+      "gw1": {
+        "baseline_backend_count": 3,
+        "haproxy_config_valid": true,
+        "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+        "three_baseline_backends": true
+      },
+      "gw2": {
+        "baseline_backend_count": 3,
+        "haproxy_config_valid": true,
+        "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+        "three_baseline_backends": true
+      }
+    },
+    "gateway_haproxy_valid": true,
+    "no_provision_in_flight": true,
+    "passed": true,
+    "provisions_in_flight": [],
+    "safe_target_generation": "gen-20261019T124430.201580616",
+    "servers": {
+      "count": 5,
+      "names": [
+        "felcloud-bastion",
+        "felcloud-gw1",
+        "felcloud-gw2",
+        "team1",
+        "team2"
+      ],
+      "only_five_permanent_vms": true
+    },
+    "team1_probe": {
+      "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+      "error": "",
+      "gateway_id": "gw1",
+      "latency_ms": 110.8244619999823,
+      "status": 200,
+      "timestamp_utc": "2026-10-19T14:15:51.640Z"
+    },
+    "team1_returns_200": true
+  },
+  "prober": {
+    "429_count": 0,
+    "connection_error_count": 1,
+    "interval_seconds": 0.2,
+    "non_200_count": 0,
+    "sample_count": 108,
+    "samples": [
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 73.18074599970714,
+        "monotonic_finished": 7549.932380608,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:51.803Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 127.18971699996473,
+        "monotonic_finished": 7550.186958564,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:52.004Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 81.78153799963184,
+        "monotonic_finished": 7550.342161705,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:52.204Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 76.94004399945698,
+        "monotonic_finished": 7550.539611302,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:52.407Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 93.17548200033343,
+        "monotonic_finished": 7550.756186335,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:52.607Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 84.92535300047166,
+        "monotonic_finished": 7550.94838245,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:52.808Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 150.69656500054407,
+        "monotonic_finished": 7551.215358436,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:53.009Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 90.00750900031562,
+        "monotonic_finished": 7551.355594782,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:53.210Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 114.47532100009994,
+        "monotonic_finished": 7551.580386569,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:53.410Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 54.28223800026899,
+        "monotonic_finished": 7551.721038321,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:53.611Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 72.9076490006264,
+        "monotonic_finished": 7551.94029229,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:53.811Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 133.912139000131,
+        "monotonic_finished": 7552.202831067,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:54.013Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 127.07795700043789,
+        "monotonic_finished": 7552.396166492,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:54.213Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 100.43647099973896,
+        "monotonic_finished": 7552.569864022,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:54.413Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 99.52251599952433,
+        "monotonic_finished": 7552.769662374,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:54.614Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 87.01382399976865,
+        "monotonic_finished": 7552.957929228,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:54.815Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 56.057180999232514,
+        "monotonic_finished": 7553.127606325,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:55.016Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 104.25980699983484,
+        "monotonic_finished": 7553.377271997,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:55.217Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 85.74516800035781,
+        "monotonic_finished": 7553.559395819,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:55.418Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 54.55906400038657,
+        "monotonic_finished": 7553.729402849,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:55.619Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 108.15512400040461,
+        "monotonic_finished": 7553.983981093,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:55.820Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 76.15700400037895,
+        "monotonic_finished": 7554.152444593,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:56.020Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 59.797914999762725,
+        "monotonic_finished": 7554.336708536,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:56.221Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 86.99283700025262,
+        "monotonic_finished": 7554.56526204,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:56.422Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 169.29022899967094,
+        "monotonic_finished": 7554.847934597,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:56.623Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 133.68927099963912,
+        "monotonic_finished": 7555.012981897,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:56.823Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 87.04895499977283,
+        "monotonic_finished": 7555.168311172,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:57.025Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 78.8787190003859,
+        "monotonic_finished": 7555.360375101,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:57.226Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 110.22549799963599,
+        "monotonic_finished": 7555.592995018,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:57.427Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 98.00602299947059,
+        "monotonic_finished": 7555.781259943,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:57.627Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 79.84200100054295,
+        "monotonic_finished": 7555.963487656,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:57.828Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 125.13201399997342,
+        "monotonic_finished": 7556.210323979,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:58.029Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 201.75428699985787,
+        "monotonic_finished": 7556.487373172,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:58.230Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 114.88538899993728,
+        "monotonic_finished": 7556.602488718,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:58.432Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 100.06823000003351,
+        "monotonic_finished": 7556.787895944,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:58.632Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 69.61805399987497,
+        "monotonic_finished": 7556.957811316,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:58.832Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 114.7945439997784,
+        "monotonic_finished": 7557.204267157,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:59.034Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 71.74907800072106,
+        "monotonic_finished": 7557.362287005,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:59.235Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 65.09423399984371,
+        "monotonic_finished": 7557.556815193,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:59.436Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 74.98087400017539,
+        "monotonic_finished": 7557.767326099,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:59.636Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 74.12023000051704,
+        "monotonic_finished": 7557.966769575,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:15:59.837Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 74.85203899977932,
+        "monotonic_finished": 7558.167976626,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:00.037Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 151.27046899942798,
+        "monotonic_finished": 7558.445652361,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:00.238Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 82.00234099967929,
+        "monotonic_finished": 7558.577152319,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:00.439Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 130.9197270002187,
+        "monotonic_finished": 7558.827562249,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:00.641Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 68.64479100022436,
+        "monotonic_finished": 7558.965608563,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:00.841Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 159.7941689997242,
+        "monotonic_finished": 7559.257725955,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:01.042Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 62.65996099955373,
+        "monotonic_finished": 7559.361715796,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:01.243Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 85.47772400015674,
+        "monotonic_finished": 7559.585659614,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:01.444Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 96.16110700062563,
+        "monotonic_finished": 7559.797196133,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:01.645Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 88.30580999983795,
+        "monotonic_finished": 7559.990793005,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:01.847Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 103.78694300015923,
+        "monotonic_finished": 7560.207220856,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:02.048Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 108.67193499962013,
+        "monotonic_finished": 7560.413263681,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:02.249Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 103.63026199956948,
+        "monotonic_finished": 7560.609290259,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:02.450Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 92.7665290000732,
+        "monotonic_finished": 7560.79940898,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:02.651Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 92.02279799956159,
+        "monotonic_finished": 7560.999803927,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:02.852Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 109.77634499977285,
+        "monotonic_finished": 7561.218069403,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:03.052Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 85.05730900014896,
+        "monotonic_finished": 7561.394430786,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:03.253Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 78.10179500029335,
+        "monotonic_finished": 7561.602482712,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:03.468Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 240.3160760004539,
+        "monotonic_finished": 7561.965567747,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:03.669Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 81.04733499931172,
+        "monotonic_finished": 7562.046722073,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:03.910Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 96.68837299977895,
+        "monotonic_finished": 7562.263097927,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:04.110Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 73.72486999975081,
+        "monotonic_finished": 7562.442112978,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:04.312Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 118.37337099950673,
+        "monotonic_finished": 7562.687934334,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:04.514Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 121.79609599934338,
+        "monotonic_finished": 7562.892090306,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:04.714Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 102.59778399995412,
+        "monotonic_finished": 7563.074099068,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:04.916Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 122.02720500044961,
+        "monotonic_finished": 7563.294903941,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:05.117Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 98.19033700023283,
+        "monotonic_finished": 7563.471373036,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:05.317Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 110.27871900023456,
+        "monotonic_finished": 7563.684246985,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:05.518Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 83.41894699969998,
+        "monotonic_finished": 7563.858216902,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:05.719Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 115.15893600062554,
+        "monotonic_finished": 7564.090805604,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:05.920Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 128.16155700056697,
+        "monotonic_finished": 7564.304528201,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:06.120Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 60.42470400007005,
+        "monotonic_finished": 7564.438265019,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:06.322Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 75.99977800055058,
+        "monotonic_finished": 7564.654598284,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:06.523Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 96.85477499988338,
+        "monotonic_finished": 7564.875798658,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:06.723Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 117.28471300011734,
+        "monotonic_finished": 7565.098462028,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:06.925Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 80.05164799942577,
+        "monotonic_finished": 7565.261879141,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:07.126Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 128.49553799969726,
+        "monotonic_finished": 7565.510720568,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:07.326Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 66.24343400017096,
+        "monotonic_finished": 7565.650563652,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:07.528Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 98.2629319996704,
+        "monotonic_finished": 7565.884231175,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:07.730Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 57.51035600042087,
+        "monotonic_finished": 7566.245628491,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:08.132Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 86.70935800000734,
+        "monotonic_finished": 7566.47685865,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:08.334Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 49.98169899954519,
+        "monotonic_finished": 7566.641124603,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:08.535Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 1106.57266599992,
+        "monotonic_finished": 7567.898677546,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:08.736Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 136.65440099975967,
+        "monotonic_finished": 7568.035460137,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:09.843Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 107.5922800000626,
+        "monotonic_finished": 7568.207480886,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:10.044Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 93.86659900064842,
+        "monotonic_finished": 7568.394777723,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:10.245Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 92.2562489995471,
+        "monotonic_finished": 7568.594353939,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:10.446Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 66.01036699976248,
+        "monotonic_finished": 7568.768779034,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:10.647Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 91.86900199983938,
+        "monotonic_finished": 7568.996277621,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:10.848Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 82.99575599994569,
+        "monotonic_finished": 7569.18767794,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:11.049Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 68.29591299992899,
+        "monotonic_finished": 7569.373423316,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:11.249Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 136.50798800063058,
+        "monotonic_finished": 7569.642401792,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:11.450Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 339.8725730003207,
+        "monotonic_finished": 7570.046709768,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:11.651Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 89.86104099949443,
+        "monotonic_finished": 7570.136686073,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:11.991Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 97.20341499996721,
+        "monotonic_finished": 7570.345546197,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:12.192Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 94.2333149996557,
+        "monotonic_finished": 7570.544194192,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:12.394Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 82.12142100001074,
+        "monotonic_finished": 7570.732645675,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:12.595Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 79.83458200033056,
+        "monotonic_finished": 7570.931788403,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:12.796Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 88.15094999954454,
+        "monotonic_finished": 7571.141244013,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:12.997Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 71.0120370004006,
+        "monotonic_finished": 7571.32491436,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:13.198Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 76.8155059995479,
+        "monotonic_finished": 7571.531038139,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:13.398Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 73.79184900037217,
+        "monotonic_finished": 7571.729334822,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:13.599Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 108.85296800006472,
+        "monotonic_finished": 7571.964581971,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:13.800Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 1161.687193999569,
+        "monotonic_finished": 7573.218648741,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:14.001Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 84.9811320003937,
+        "monotonic_finished": 7573.303909174,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:15.163Z"
+      },
+      {
+        "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+        "error": "",
+        "gateway_id": "gw1",
+        "latency_ms": 71.27323599979718,
+        "monotonic_finished": 7573.490456336,
+        "status": 200,
+        "timestamp_utc": "2026-10-19T14:16:15.363Z"
+      },
+      {
+        "body": "",
+        "error": "ReadError: ",
+        "gateway_id": "",
+        "latency_ms": 236.28162400018482,
+        "monotonic_finished": 7573.856069517,
+        "status": 0,
+        "timestamp_utc": "2026-10-19T14:16:15.564Z"
+      }
+    ],
+    "total_drops": 1
+  },
+  "scenario_a_syncs": [
+    {
+      "client_finished_utc": "2026-10-19T14:16:03.447Z",
+      "client_started_utc": "2026-10-19T14:15:51.801Z",
+      "duration_ms": 11646.223736000138,
+      "generation_count_after": 225,
+      "generation_count_before": 224,
+      "generation_count_changed": true,
+      "http_status": 200,
+      "index": 1,
+      "prober_drops_during_call": {
+        "429": 0,
+        "connection_errors": 0,
+        "drops": 0,
+        "non_200": 0,
+        "total": 58
+      },
+      "response": {
+        "duration_ms": 11638,
+        "message": "Generation gen-20261019T141555.920428087 applied",
+        "success": true
+      },
+      "success": true
+    }
+  ],
+  "scenario_b_invalid_config": {
+    "gateway_state_after": {
+      "baseline_backend_count": 3,
+      "haproxy_config_valid": true,
+      "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+      "three_baseline_backends": true
+    },
+    "gateway_state_after_gw2": {
+      "baseline_backend_count": 3,
+      "haproxy_config_valid": true,
+      "output": "Configuration file is valid\nBASELINE_BACKENDS=3",
+      "three_baseline_backends": true
+    },
+    "gw1": {
+      "error_text": "{\"code\":400,\"message\":\"validation error: exit status 1: msg=\\\"config parsing [/tmp/onlyvalidate365838461:1]: unknown keyword 'this' out of section.\\\"\\nmsg=\\\"config Error(s) found in configuration file /tmp/onlyvalidate365838461\\\"\\nmsg=\\\"config Fatal errors found in configuration.\\\"\"}",
+      "status_code": 400,
+      "version_after": "211",
+      "version_before": "211",
+      "version_unchanged": true
+    },
+    "gw2": {
+      "error_text": "{\"code\":400,\"message\":\"validation error: exit status 1: msg=\\\"config parsing [/tmp/onlyvalidate1249729144:1]: unknown keyword 'this' out of section.\\\"\\nmsg=\\\"config Error(s) found in configuration file /tmp/onlyvalidate1249729144\\\"\\nmsg=\\\"config Fatal errors found in configuration.\\\"\"}",
+      "status_code": 400,
+      "version_after": "213",
+      "version_before": "213",
+      "version_unchanged": true
+    },
+    "rejected_pre_commit": true,
+    "team1_probe_after": {
+      "body": "Hello from team1 sandbox (10.20.30.37)!\n",
+      "error": "",
+      "gateway_id": "gw1",
+      "latency_ms": 83.79039600004035,
+      "status": 200,
+      "timestamp_utc": "2026-10-19T14:16:07.931Z"
+    }
+  },
+  "scenario_c_rollbacks": [
+    {
+      "client_duration_ms": 7784.127107000131,
+      "client_finished_utc": "2026-10-19T14:16:15.799Z",
+      "client_started_utc": "2026-10-19T14:16:08.015Z",
+      "duration_ms": 7774,
+      "http_status": 502,
+      "index": 1,
+      "new_generation_id": null,
+      "prober_drops_during_call": {
+        "429": 0,
+        "connection_errors": 0,
+        "drops": 0,
+        "non_200": 0,
+        "total": 27
+      },
+      "response": {
+        "duration_ms": 7774,
+        "error": "rollback failed",
+        "reason": "rollback health check failed: VIP health check failed: status=0 error=Get \"http://197.5.133.119/\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"
+      },
+      "success": false
+    }
+  ],
+  "scenario_d": {
+    "reason": "A valid but unhealthy generated backend cannot be created without changing route data, provisioning a VM, or hand-pushing config; all are excluded by this test's constraints.",
+    "status": "NOT EXECUTED"
+  },
+  "settings": {
+    "GATEWAY_PROBE_TIMEOUT_SECONDS": "30",
+    "HEALTH_REGRESSION_WINDOW_SECONDS": "5",
+    "MAX_CONCURRENT_PROVISIONS": "15",
+    "RATE_LIMIT_PER_MIN": "120"
+  },
+  "status": "FAILED",
+  "test": "T6_reload_rollback",
+  "timestamp_utc": "2026-10-19T14:15:44.962Z",
+  "timestamp_utc_end": "2026-10-19T14:16:21.585Z"
+}
