@@ -106,7 +106,7 @@ runcmd:
     return script
 
 
-def prober_userdata(probes):
+def prober_shell_script(probes):
     rows = []
     for name, address, port, kind in probes:
         address = address if address.startswith("<") else str(ipaddress.ip_address(address))
@@ -134,13 +134,44 @@ while IFS='|' read -r target address port classification; do
   results="${{results}}${{separator}}${{item}}"
   separator="," 
 done <<'T7_PROBES'
-""" + "\n".join(rows) + "\nT7_PROBES\n" + f"""json="{{\"results\":[${{results}}],\"duration_seconds\":$((SECONDS-started))}}"
+""" + "\n".join(rows) + "\nT7_PROBES\n" + f"""printf -v json '{{\"results\":[%s],\"duration_seconds\":%s}}' "$results" "$((SECONDS-started))"
 printf '%s\\n%s\\n%s\\n' '{RESULT_BEGIN}' "$json" '{RESULT_END}' > /dev/console
 """
+    return body
+
+
+def prober_userdata(probes):
+    body = prober_shell_script(probes)
     indented = "\n".join("      " + line if line else "" for line in body.rstrip("\n").splitlines())
     return ("#cloud-config\nwrite_files:\n  - path: /usr/local/bin/t7-probe.sh\n"
             "    permissions: '0755'\n    content: |\n" + indented +
             "\nruncmd:\n  - [bash, /usr/local/bin/t7-probe.sh]\n")
+
+
+def dry_run_self_test():
+    closed_ports = (1, 2)
+    probes = [(f"loopback_closed_{index}", "127.0.0.1", port, "peer_sandbox")
+              for index, port in enumerate(closed_ports, 1)]
+    with tempfile.TemporaryDirectory(prefix="t7-dry-run-") as temp_dir:
+        script_path = Path(temp_dir) / "prober.sh"
+        console_path = Path(temp_dir) / "console.log"
+        script = prober_shell_script(probes).replace("> /dev/console", f"> {console_path}")
+        script_path.write_text(script, encoding="utf-8")
+        syntax = subprocess.run(["bash", "-n", str(script_path)], capture_output=True, text=True, timeout=10)
+        if syntax.returncode:
+            raise RuntimeError(f"bash -n failed: {(syntax.stderr or syntax.stdout).strip()}")
+        execution = subprocess.run(["bash", str(script_path)], capture_output=True, text=True, timeout=20)
+        if execution.returncode:
+            raise RuntimeError(f"offline prober failed ({execution.returncode}): {execution.stderr.strip()}")
+        output = console_path.read_text(encoding="utf-8")
+        lines = output.splitlines()
+        begin = lines.index(RESULT_BEGIN)
+        end = lines.index(RESULT_END)
+        parsed = json.loads("\n".join(lines[begin + 1:end]))
+        if len(parsed.get("results", [])) != 2:
+            raise RuntimeError("offline prober JSON did not contain two loopback results")
+        return {"passed": True, "bash_n": {"passed": True, "returncode": syntax.returncode,
+                "stderr": syntax.stderr.strip()}, "parsed_result": parsed}
 
 
 async def run_preflight(cfg, api, db_path):
@@ -541,8 +572,10 @@ def main():
                  "security_group": SECURITY_GROUP, "keypair": os.environ.get("SANDBOX_KEYPAIR", "").strip() or DEFAULT_KEYPAIR,
                  "ports": [f"{name}-port" for name in names]}
         if args.dry_run:
+            offline_self_test = dry_run_self_test()
             print(json.dumps({"test": "T7_network_isolation", "mode": "DRY RUN", "network_calls": False,
                 "smoke": smoke, "status": "PLAN READY", "creation_method": "direct OpenStack CLI; no provisioning API",
+                "offline_self_test": offline_self_test,
                 "vm_names": names, "vm_specs": specs, "prober_user_data": prober_userdata(probes),
                 "target_user_data": None if smoke else target_userdata(),
                 "planned_probe_count": len(probes),
