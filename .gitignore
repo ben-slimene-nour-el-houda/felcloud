@@ -63,5 +63,6 @@ controlplane/controlplane
 
 # Dashboard frontend
 dashboard/node_modules/
+.last_run.json
 # dashboard/dist is intentionally tracked so the Go server can serve it
 # without a separate build step on the demo machine.
