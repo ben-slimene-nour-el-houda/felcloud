@@ -1,6 +1,17 @@
 import { useState, useCallback } from 'react'
-import { fetchGatewayStatus, fetchSandboxes, fetchEvents, triggerFailover, triggerRollback, type GatewayStatus, type Sandbox, type EventEntry } from '../api'
+import {
+  fetchGatewayStatus,
+  fetchSandboxes,
+  fetchEvents,
+  triggerFailover,
+  triggerRollback,
+  type GatewayStatus,
+  type Sandbox,
+  type EventEntry,
+} from '../api'
 import { usePolling } from '../hooks'
+import { Sparkline } from '../components/Sparkline'
+import { RefreshButton } from '../components/RefreshButton'
 
 interface Props {
   onNavigate: (view: any) => void
@@ -14,9 +25,9 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
   const sbFetcher = useCallback(() => fetchSandboxes(), [])
   const evFetcher = useCallback(() => fetchEvents(10), [])
 
-  const { data: gw, refresh: refreshGw } = usePolling<GatewayStatus>(gwFetcher, 5000)
-  const { data: sandboxes } = usePolling<Sandbox[]>(sbFetcher, 6000)
-  const { data: evData } = usePolling<{ events: EventEntry[] }>(evFetcher, 6000)
+  const { data: gw, loading: gwLoading, refresh: refreshGw } = usePolling<GatewayStatus>(gwFetcher, 5000)
+  const { data: sandboxes, refresh: refreshSb } = usePolling<Sandbox[]>(sbFetcher, 6000)
+  const { data: evData, refresh: refreshEv } = usePolling<{ events: EventEntry[] }>(evFetcher, 6000)
 
   const [simulatedCrash, setSimulatedCrash] = useState(false)
 
@@ -42,6 +53,13 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
     { time: '14:21:59', subdomain: 'team6.cstam.felcloud.tn', method: 'GET',  path: '/socket',           code: 503, latency: '1ms',   gw: 'gw-1' },
     { time: '14:21:58', subdomain: 'team1.cstam.felcloud.tn', method: 'GET',  path: '/dashboard',        code: 200, latency: '22ms',  gw: 'gw-1' },
   ]
+
+  async function handleRefreshAll() {
+    refreshGw()
+    refreshSb()
+    refreshEv()
+    showToast('Overview Synced', 'Live cluster telemetry updated.', 'info')
+  }
 
   async function handleQuickFailover() {
     setSimulatedCrash(true)
@@ -116,162 +134,186 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
   return (
     <div className="space-y-6">
 
-      {/* ── TOP BAR ── */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      {/* ── TOP HEADER HERO BAR ── */}
+      <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-[22px] font-bold text-[#170B1B] tracking-tight">The Resilient IP Optimizer</h1>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">The Resilient IP Optimizer</h1>
             <span className={`badge ${masterGw.status === 'HEALTHY' ? 'badge-emerald' : 'badge-rose'}`}>
-              {masterGw.status === 'HEALTHY' ? 'STABLE' : 'DEGRADED / CRASHED'}
+              <span className={`w-2 h-2 rounded-full ${masterGw.status === 'HEALTHY' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
+              {masterGw.status === 'HEALTHY' ? 'STABLE CLUSTER' : 'DEGRADED / CRASHED'}
             </span>
-            <span className="text-xs text-[#827787] font-mono">Shared VIP: {vip}</span>
+            <span className="badge badge-purple font-mono">Shared VIP: {vip}</span>
           </div>
-          <p className="text-xs text-[#827787] mt-0.5">
-            OpenStack orchestration, Keepalived/VRRP dual HAProxy gateways, and sub-second transaction rollback.
+          <p className="text-xs text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
+            Multi-tenant OpenStack orchestration, Keepalived/VRRP dual HAProxy gateways, and sub-second config transaction rollback.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <RefreshButton onRefresh={handleRefreshAll} label="Refresh" />
           <button
             onClick={handleRollback}
-            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-[#2D0035] border border-[#E8E0EA] rounded-[10px] text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            className="px-3.5 py-2 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-xs"
           >
-            <span className="material-symbols-outlined text-[15px]">history</span>
+            <span className="material-symbols-outlined text-[16px]">history</span>
             <span>Rollback Config</span>
           </button>
           <button
             onClick={handleExportTopology}
-            className="px-3 py-1.5 bg-white hover:bg-slate-50 text-[#2D0035] border border-[#E8E0EA] rounded-[10px] text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            className="px-3.5 py-2 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-xs"
           >
-            <span className="material-symbols-outlined text-[15px]">download</span>
+            <span className="material-symbols-outlined text-[16px]">download</span>
             <span>Export Topology</span>
           </button>
           <button
             onClick={onOpenProvision}
-            className="px-3 py-1.5 bg-[#2D0035] hover:bg-[#492B50] text-white rounded-[10px] text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
+            className="px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[15px]">add_circle</span>
+            <span className="material-symbols-outlined text-[16px]">add_circle</span>
             <span>Provision Sandbox</span>
           </button>
         </div>
       </div>
 
-      {/* ── 4 KPI TILES ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Card 1 */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
+      {/* ── 4 TELEMETRY & METRICS KPI CARDS (With Glowing Indicators & Inline Sparklines) ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {/* KPI Card 1: HAProxy Gateways */}
+        <div className="kpi-card glow-healthy">
           <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span>HAProxy Gateways</span>
-            <span className="material-symbols-outlined text-[18px] text-[#74537a]">router</span>
+            <span className="font-semibold tracking-wide">HAProxy Gateways</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">router</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-[22px] font-bold text-[#170B1B]">2 / 2 Online</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">2 / 2 Online</span>
             <span className="badge badge-purple">{masterGw.id.toUpperCase()} MASTER</span>
           </div>
-          <div className="mt-2 text-[11px] text-[#827787] flex items-center gap-1">
-            <span className="text-emerald-700 font-mono">VRRP Sync: 1.0s</span>
-            <span>•</span>
-            <span>VIP on {masterGw.id}</span>
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+              <span className="text-emerald-700 font-mono font-bold">VRRP Sync: 1.0s</span>
+              <span>•</span>
+              <span>VIP on {masterGw.id}</span>
+            </div>
+            {/* Inline Sparkline */}
+            <Sparkline data={[1, 1, 1, 1, 1, 1, 1, 1]} color="emerald" width={64} height={22} />
           </div>
         </div>
 
-        {/* Card 2 */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
+        {/* KPI Card 2: Active Sandboxes */}
+        <div className="kpi-card glow-primary">
           <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span>Active Sandboxes</span>
-            <span className="material-symbols-outlined text-[18px] text-[#74537a]">dns</span>
+            <span className="font-semibold tracking-wide">Active Sandboxes</span>
+            <span className="material-symbols-outlined text-[20px] text-[#74537a]">dns</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-[22px] font-bold text-[#170B1B]">5 Teams</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">{activeCount} Teams</span>
             <span className="badge badge-emerald">100% Up</span>
           </div>
-          <div className="mt-2 text-[11px] text-[#827787] flex items-center gap-1">
-            <span className="font-mono text-[#2D0035]">6 total leases</span>
-            <span>•</span>
-            <span className="text-rose-600 font-medium">2 in quarantine</span>
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+              <span className="font-mono text-[#2D0035] font-semibold">{totalLeased} leases</span>
+              <span>•</span>
+              <span className="text-amber-700 font-medium">2 quarantine</span>
+            </div>
+            {/* Inline Sparkline */}
+            <Sparkline data={[3, 3, 4, 4, 5, 5, 5, activeCount]} color="purple" width={64} height={22} />
           </div>
         </div>
 
-        {/* Card 3 */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
+        {/* KPI Card 3: Private IP Pool */}
+        <div className="kpi-card glow-info">
           <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span>Private IP Pool (10.20.0.0/24)</span>
-            <span className="material-symbols-outlined text-[18px] text-[#74537a]">pie_chart</span>
+            <span className="font-semibold tracking-wide">Private IP Pool (10.20.0.0/24)</span>
+            <span className="material-symbols-outlined text-[20px] text-blue-600">pie_chart</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-[22px] font-bold text-[#170B1B]">2%</span>
-            <span className="badge badge-emerald">6 / 250 Used</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">2%</span>
+            <span className="badge badge-blue">{totalLeased} / 250 Used</span>
           </div>
-          <div className="mt-2 text-[11px] text-[#827787] flex items-center gap-1">
-            <span>244 IPs free</span>
-            <span>•</span>
-            <span>Reconcile drift: 0</span>
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+              <span className="font-semibold text-blue-700">244 IPs free</span>
+              <span>•</span>
+              <span>0 drift</span>
+            </div>
+            {/* Inline Sparkline */}
+            <Sparkline data={[2, 3, 4, 5, 6, 6, totalLeased]} color="blue" width={64} height={22} />
           </div>
         </div>
 
-        {/* Card 4 */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
+        {/* KPI Card 4: Mean Failover Time */}
+        <div className="kpi-card glow-healthy">
           <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span>Mean Failover Time</span>
-            <span className="material-symbols-outlined text-[18px] text-[#74537a]">timer</span>
+            <span className="font-semibold tracking-wide">Mean Failover SLA</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">timer</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-[22px] font-bold text-[#170B1B]">412 ms</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">412 ms</span>
             <span className="badge badge-emerald">Sub-second</span>
           </div>
-          <div className="mt-2 text-[11px] text-[#827787] flex items-center gap-1">
-            <span>Target: &lt; 1000ms</span>
-            <span>•</span>
-            <span>Zero TCP reset</span>
+          <div className="mt-4 flex items-center justify-between">
+            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+              <span>Target &lt; 1000ms</span>
+              <span>•</span>
+              <span className="text-emerald-700 font-semibold">Zero TCP resets</span>
+            </div>
+            {/* Inline Sparkline */}
+            <Sparkline data={[420, 415, 410, 418, 412, 412]} color="emerald" width={64} height={22} />
           </div>
         </div>
       </div>
 
       {/* ── DUAL GATEWAY ARCHITECTURE & TOPOLOGY CARD ── */}
-      <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-5 shadow-xs space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-[#E8E0EA] gap-2">
+      <div className="card-elevated p-7 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-purple-900/5 gap-3">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[20px] text-[#2D0035]">hub</span>
-              <h2 className="text-sm font-semibold text-[#170B1B]">Active Redundant Gateway Pair (Keepalived / VRRP)</h2>
+            <div className="flex items-center gap-2.5">
+              <span className="material-symbols-outlined text-[22px] text-[#2D0035]">hub</span>
+              <h2 className="text-base font-bold text-[#170B1B]">Active Redundant Gateway Pair (Keepalived / VRRP)</h2>
             </div>
-            <p className="text-[11px] text-[#827787]">
-              Both instances run HAProxy + Keepalived. The active MASTER holds virtual IP <code className="font-mono text-[#2D0035] bg-purple-50 px-1 py-0.5 rounded">{vip}</code>.
+            <p className="text-xs text-[#827787] mt-1 leading-relaxed">
+              Both spine instances run HAProxy + Keepalived. The active MASTER holds virtual IP{' '}
+              <code className="font-mono text-[#2D0035] bg-purple-50 px-2 py-0.5 rounded-lg font-bold">{vip}</code>.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <button
               onClick={handleQuickFailover}
-              className="px-2.5 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded-[8px] text-xs font-medium transition-colors flex items-center gap-1 cursor-pointer"
+              className="px-3.5 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 cursor-pointer shadow-xs border border-rose-200/40"
             >
-              <span className="material-symbols-outlined text-[14px]">bolt</span>
-              <span>Simulate primary gateway crash</span>
+              <span className="material-symbols-outlined text-[15px]">bolt</span>
+              <span>Simulate Crash</span>
             </button>
             <button
               onClick={handleResetNodes}
-              className="px-2.5 py-1 bg-white hover:bg-slate-50 text-[#2D0035] border border-[#E8E0EA] rounded-[8px] text-xs font-medium transition-colors cursor-pointer"
+              className="px-3.5 py-1.5 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer shadow-xs"
             >
               Reset Nodes
             </button>
           </div>
         </div>
 
-        {/* 2 NODES CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* 2 NODES CARDS (Modern floating cards with soft depth) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {nodes.map(node => {
             const isCrashed = node.status !== 'HEALTHY'
             return (
               <div
                 key={node.id}
-                className={`p-4 rounded-[12px] border ${isCrashed ? 'border-rose-300 bg-rose-50/40' : 'border-[#E8E0EA] bg-white'} space-y-3 shadow-xs`}
+                className={`p-6 rounded-2xl transition-all duration-200 space-y-4 shadow-xs ${
+                  isCrashed
+                    ? 'bg-rose-50/50 border border-rose-200/60'
+                    : 'bg-[#F8F6F9] hover:bg-[#F5EFF6]'
+                }`}
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono font-bold text-sm text-[#170B1B]">{node.name} ({node.id})</span>
-                      <span className={`w-2 h-2 rounded-full ${isCrashed ? 'bg-rose-500 animate-ping' : 'bg-emerald-500'}`} />
+                    <div className="flex items-center gap-2.5">
+                      <span className="font-mono font-bold text-base text-[#170B1B]">{node.name} ({node.id})</span>
+                      <span className={`w-2.5 h-2.5 rounded-full ${isCrashed ? 'bg-rose-500 animate-ping' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'}`} />
                     </div>
-                    <div className="text-[11px] font-mono text-[#827787] mt-0.5">
-                      Private IP: {node.ip} • VRRP Priority: {node.vrrpPrio}
+                    <div className="text-xs font-mono text-[#827787] mt-1">
+                      Private IP: <span className="font-semibold text-[#170B1B]">{node.ip}</span> • Priority: {node.vrrpPrio}
                     </div>
                   </div>
                   <span className={`badge ${node.role === 'MASTER' ? 'badge-purple' : 'badge-blue'}`}>
@@ -279,40 +321,42 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
                   </span>
                 </div>
 
-                <div className="p-2.5 rounded-[8px] bg-[#F8F6F9] border border-[#E8E0EA] space-y-1.5 text-xs">
-                  <div className="flex justify-between">
+                {/* Metrics Breakdown Box */}
+                <div className="p-4 rounded-xl bg-white shadow-xs space-y-2 text-xs">
+                  <div className="flex justify-between items-center">
                     <span className="text-[#827787]">HAProxy State:</span>
-                    <span className={`font-mono font-semibold ${isCrashed ? 'text-rose-700' : 'text-emerald-700'}`}>{node.haproxy}</span>
+                    <span className={`font-mono font-bold ${isCrashed ? 'text-rose-700' : 'text-emerald-700'}`}>{node.haproxy}</span>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-center">
                     <span className="text-[#827787]">Data Plane API:</span>
-                    <span className={`font-mono font-semibold ${isCrashed ? 'text-rose-700' : 'text-purple-900'}`}>{node.dpApi}</span>
+                    <span className={`font-mono font-bold ${isCrashed ? 'text-rose-700' : 'text-purple-900'}`}>{node.dpApi}</span>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between items-center">
                     <span className="text-[#827787]">VIP Binding:</span>
-                    <span className={`font-mono font-bold ${node.vipBound ? 'text-purple-800' : 'text-gray-400'}`}>
-                      {node.vipBound ? `${vip} (BOUND)` : 'None (Standby)'}
+                    <span className={`font-mono font-bold ${node.vipBound ? 'text-[#2D0035]' : 'text-gray-400'}`}>
+                      {node.vipBound ? `${vip} (BOUND)` : 'Standby'}
                     </span>
                   </div>
                 </div>
 
-                <div className="space-y-1.5 text-[11px]">
+                {/* CPU & RAM Sliders */}
+                <div className="space-y-2.5 text-xs">
                   <div>
-                    <div className="flex justify-between text-[#827787] mb-0.5">
+                    <div className="flex justify-between text-[#827787] mb-1">
                       <span>CPU Usage</span>
-                      <span className="font-mono">{node.cpu}%</span>
+                      <span className="font-mono font-semibold text-[#170B1B]">{node.cpu}%</span>
                     </div>
-                    <div className="w-full bg-[#E8E0EA] h-1.5 rounded-full overflow-hidden">
-                      <div className="bg-[#2D0035] h-full rounded-full transition-all" style={{ width: `${node.cpu}%` }} />
+                    <div className="w-full bg-purple-950/5 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#2D0035] h-full rounded-full transition-all duration-300" style={{ width: `${node.cpu}%` }} />
                     </div>
                   </div>
                   <div>
-                    <div className="flex justify-between text-[#827787] mb-0.5">
+                    <div className="flex justify-between text-[#827787] mb-1">
                       <span>Memory Allocated</span>
-                      <span className="font-mono">{node.ram}%</span>
+                      <span className="font-mono font-semibold text-[#170B1B]">{node.ram}%</span>
                     </div>
-                    <div className="w-full bg-[#E8E0EA] h-1.5 rounded-full overflow-hidden">
-                      <div className="bg-[#74537a] h-full rounded-full transition-all" style={{ width: `${node.ram}%` }} />
+                    <div className="w-full bg-purple-950/5 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#74537a] h-full rounded-full transition-all duration-300" style={{ width: `${node.ram}%` }} />
                     </div>
                   </div>
                 </div>
@@ -321,79 +365,89 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
           })}
         </div>
 
-        {/* ANIMATED TOPOLOGY FLOW DIAGRAM */}
-        <div className="p-3 bg-[#F8F6F9] border border-[#E8E0EA] rounded-[10px] flex flex-col md:flex-row items-center justify-between text-xs text-[#827787] gap-3">
+        {/* ANIMATED TOPOLOGY FLOW DIAGRAM (Soft rounded pill container) */}
+        <div className="p-4 bg-[#F8F6F9] rounded-2xl flex flex-col md:flex-row items-center justify-between text-xs text-[#827787] gap-3">
           <div className="flex items-center gap-2 font-mono text-[11px] flex-wrap">
-            <span className="px-2 py-0.5 bg-white border border-[#E8E0EA] rounded text-[#170B1B] font-semibold">Client (*.cstam.felcloud.tn)</span>
+            <span className="px-3 py-1 bg-white rounded-xl text-[#170B1B] font-semibold shadow-xs">Client (*.cstam.felcloud.tn)</span>
             <span>→</span>
-            <span className="px-2 py-0.5 bg-white border border-[#E8E0EA] rounded text-[#2D0035] font-semibold">Designate DNS</span>
+            <span className="px-3 py-1 bg-white rounded-xl text-[#2D0035] font-semibold shadow-xs">Designate DNS</span>
             <span>→</span>
-            <span className="px-2 py-0.5 bg-purple-100 border border-purple-200 rounded text-purple-900 font-bold">VRRP VIP ({vip})</span>
+            <span className="px-3 py-1 bg-purple-100 rounded-xl text-purple-900 font-bold shadow-xs">VRRP VIP ({vip})</span>
             <span>→</span>
-            <span className="px-2 py-0.5 bg-white border border-[#E8E0EA] rounded text-emerald-800 font-semibold">{masterGw.id} ({masterGw.role})</span>
+            <span className="px-3 py-1 bg-white rounded-xl text-emerald-800 font-bold shadow-xs">{masterGw.id} ({masterGw.role})</span>
             <span>→</span>
-            <span className="px-2 py-0.5 bg-white border border-[#E8E0EA] rounded text-blue-800 font-semibold">Nova VM (10.20.0.x:port)</span>
+            <span className="px-3 py-1 bg-white rounded-xl text-blue-800 font-semibold shadow-xs">Nova VM (10.20.0.x:port)</span>
           </div>
-          <span className="text-[11px] text-emerald-700 font-medium flex items-center gap-1 flex-shrink-0">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            Data Plane Transaction Verified
+          <span className="text-xs text-emerald-700 font-semibold flex items-center gap-1.5 flex-shrink-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+            Data Plane Active
           </span>
         </div>
       </div>
 
-      {/* ── LOWER SPLIT PANELS: LIVE LOGS & RECENT AUDIT ── */}
+      {/* ── LOWER SPLIT PANELS: LIVE TRAFFIC & AUDIT STREAM ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
         {/* LIVE REQUEST STREAM */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-5 shadow-xs space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-[#E8E0EA]">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[18px] text-[#2D0035]">sync_alt</span>
-              <h3 className="text-xs font-semibold text-[#170B1B]">Live Traffic Sampling</h3>
+        <div className="card-elevated p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-purple-900/5">
+            <div className="flex items-center gap-2.5">
+              <span className="material-symbols-outlined text-[20px] text-[#2D0035]">sync_alt</span>
+              <h3 className="text-sm font-bold text-[#170B1B]">Live Traffic Sampling</h3>
             </div>
             <button
               onClick={() => onNavigate('traffic')}
-              className="text-xs text-[#2D0035] hover:underline font-medium cursor-pointer"
+              className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold transition-colors cursor-pointer"
             >
               Full Stream →
             </button>
           </div>
-          <div className="space-y-1.5 font-mono text-[11px]">
+          <div className="space-y-2 font-mono text-[11px]">
             {trafficLogs.map((l, i) => (
-              <div key={i} className="p-2 rounded-[8px] bg-[#F8F6F9] border border-[#E8E0EA] flex items-center justify-between">
-                <div className="flex items-center gap-2 truncate">
-                  <span className={l.code === 200 ? 'text-emerald-700 font-bold' : 'text-rose-600 font-bold'}>{l.code}</span>
-                  <span className="text-gray-500">{l.method}</span>
+              <div
+                key={i}
+                className="p-3 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
+              >
+                <div className="flex items-center gap-2.5 truncate">
+                  <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                    l.code === 200 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                  }`}>
+                    {l.code}
+                  </span>
+                  <span className="text-[#827787] font-semibold">{l.method}</span>
                   <span className="text-[#170B1B] font-medium truncate">{l.subdomain}{l.path}</span>
                 </div>
-                <span className="text-gray-400 shrink-0 ml-2">{l.latency}</span>
+                <span className="text-[#827787] shrink-0 ml-2 font-semibold">{l.latency}</span>
               </div>
             ))}
           </div>
         </div>
 
         {/* RECENT AUDIT EVENTS */}
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-5 shadow-xs space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-[#E8E0EA]">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[18px] text-[#2D0035]">policy</span>
-              <h3 className="text-xs font-semibold text-[#170B1B]">Audit &amp; Reconcile Stream</h3>
+        <div className="card-elevated p-6 space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-purple-900/5">
+            <div className="flex items-center gap-2.5">
+              <span className="material-symbols-outlined text-[20px] text-[#2D0035]">policy</span>
+              <h3 className="text-sm font-bold text-[#170B1B]">Audit &amp; Reconcile Stream</h3>
             </div>
             <button
               onClick={() => onNavigate('audit')}
-              className="text-xs text-[#2D0035] hover:underline font-medium cursor-pointer"
+              className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold transition-colors cursor-pointer"
             >
               View All →
             </button>
           </div>
-          <div className="space-y-1.5 text-xs">
+          <div className="space-y-2 text-xs">
             {events.map((e, i) => (
-              <div key={i} className="p-2 rounded-[8px] bg-[#F8F6F9] border border-[#E8E0EA] flex items-center justify-between">
-                <div className="truncate pr-2">
-                  <span className="font-mono text-[10px] text-[#2D0035] font-semibold">{e.event_type || 'EVENT'}</span>
-                  <span className="text-[#827787] text-[11px] ml-1.5">{e.detail}</span>
+              <div
+                key={i}
+                className="p-3 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
+              >
+                <div className="truncate pr-3">
+                  <span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-purple-100 text-[#2D0035] font-bold">{e.event_type || 'EVENT'}</span>
+                  <span className="text-[#170B1B] font-medium text-xs ml-2">{e.detail}</span>
                 </div>
-                <span className="text-[10px] text-gray-400 font-mono shrink-0">{e.created_at || 'Just now'}</span>
+                <span className="text-[10px] text-[#827787] font-mono shrink-0 font-medium">{e.created_at || 'Just now'}</span>
               </div>
             ))}
           </div>

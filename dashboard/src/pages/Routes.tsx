@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { fetchSandboxes, fetchConfig, fetchLogs, type Sandbox, type ConfigResponse } from '../api'
 import { usePolling } from '../hooks'
+import { Sparkline } from '../components/Sparkline'
+import { RefreshButton } from '../components/RefreshButton'
 
 interface Props {
   onOpenCustomDomain: () => void
@@ -16,7 +18,7 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
   const sbFetcher  = useCallback(() => fetchSandboxes(), [])
   const cfgFetcher = useCallback(() => fetchConfig(), [])
 
-  const { data: sandboxes } = usePolling<Sandbox[]>(sbFetcher, 5000)
+  const { data: sandboxes, refresh } = usePolling<Sandbox[]>(sbFetcher, 5000)
   const { data: config }    = usePolling<ConfigResponse>(cfgFetcher, 60000)
 
   const domain = config?.routing_domain ?? 'cstam.felcloud.tn'
@@ -99,147 +101,153 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
     <div className="space-y-6 min-w-0">
 
       {/* ── Page Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+      <div className="card-elevated p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">Traffic &amp; Routing Rules</h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold font-mono bg-emerald-100 text-emerald-800 border border-emerald-300">
-              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">Traffic &amp; Routing Rules</h1>
+            <span className="badge badge-emerald">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               {activeRoutes} Active Frontends
             </span>
+            <span className="badge badge-purple font-mono">*.{domain}</span>
           </div>
-          <p className="text-xs text-slate-600 mt-1">
-            Wildcard subdomain routing · SSL certificates · Per-team stick-table rate limiting · Live stream
+          <p className="text-xs text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
+            Wildcard subdomain routing, automated TLS certificates, per-team stick-table rate limiting, and live stream telemetry.
           </p>
         </div>
 
-        <button
-          onClick={onOpenCustomDomain}
-          className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer"
-        >
-          <span className="material-symbols-outlined text-[16px]">link</span>
-          <span>Bind Custom Domain</span>
-        </button>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <RefreshButton onRefresh={refresh} label="Refresh" />
+          <button
+            onClick={onOpenCustomDomain}
+            className="flex items-center gap-2 px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px]">link</span>
+            <span>Bind Custom Domain</span>
+          </button>
+        </div>
       </div>
 
-      {/* ── 4 Stats Strip with High Contrast ── */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      {/* ── 4 Stats Cards with Telemetry Glow ── */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-5">
         {[
-          { label: 'Active Frontends', val: `${activeRoutes} Routes`, icon: 'alt_route', bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-950', badge: 'bg-emerald-100 text-emerald-800' },
-          { label: 'Registered Teams', val: `${list.length} Instances`, icon: 'dns', bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-950', badge: 'bg-blue-100 text-blue-800' },
-          { label: 'Custom Domain Aliases', val: `${withCustom} Active`, icon: 'public', bg: 'bg-violet-50', border: 'border-violet-200', text: 'text-violet-950', badge: 'bg-violet-100 text-violet-800' },
-          { label: 'Base Routing Wildcard', val: `*.${domain}`, icon: 'globe', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-950', badge: 'bg-amber-100 text-amber-800' },
+          { label: 'Active Frontends', val: `${activeRoutes} Routes`, icon: 'alt_route', glow: 'glow-healthy', color: 'emerald' as const, sub: '100% SLA PASS' },
+          { label: 'Registered Teams', val: `${list.length} Instances`, icon: 'dns', glow: 'glow-primary', color: 'purple' as const, sub: 'Sub-second deploy' },
+          { label: 'Custom Domain Aliases', val: `${withCustom} Active`, icon: 'public', glow: 'glow-info', color: 'blue' as const, sub: 'CNAME verified' },
+          { label: 'Base Routing Wildcard', val: `*.${domain}`, icon: 'language', glow: 'glow-warning', color: 'amber' as const, sub: 'ACME Wildcard' },
         ].map((s, i) => (
-          <div key={i} className={`p-4 rounded-2xl border ${s.border} ${s.bg} flex items-center gap-3.5 shadow-xs`}>
-            <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-slate-800 flex-shrink-0">
-              <span className="material-symbols-outlined text-[20px]">{s.icon}</span>
+          <div key={i} className={`kpi-card ${s.glow} space-y-3`}>
+            <div className="flex items-center justify-between text-[#827787] text-xs">
+              <span className="font-semibold tracking-wide">{s.label}</span>
+              <span className="material-symbols-outlined text-[20px] text-[#74537a]">{s.icon}</span>
             </div>
-            <div className="min-w-0">
-              <div className="text-[11px] font-bold text-slate-600 uppercase tracking-wider font-mono">{s.label}</div>
-              <div className={`font-mono font-black text-base ${s.text} truncate mt-0.5`}>{s.val}</div>
+            <div className="font-mono font-bold text-xl text-[#170B1B] truncate">{s.val}</div>
+            <div className="flex items-center justify-between text-[11px] text-[#827787]">
+              <span>{s.sub}</span>
+              <Sparkline data={[10, 12, 14, 15, 18]} color={s.color} width={48} height={16} />
             </div>
           </div>
         ))}
       </div>
 
-      {/* ── Subdomain Routing Table ── */}
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+      {/* ── Subdomain Routing Table (Spacious, modern, uniform rows) ── */}
+      <div className="card-elevated overflow-hidden">
         {/* Table header bar */}
-        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-800 flex-shrink-0">
-              <span className="material-symbols-outlined text-[18px]">alt_route</span>
+        <div className="p-5 border-b border-purple-900/5 bg-[#F8F6F9] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-purple-100 flex items-center justify-center text-[#2D0035] flex-shrink-0">
+              <span className="material-symbols-outlined text-[20px]">alt_route</span>
             </div>
             <div>
-              <h2 className="text-sm font-extrabold text-slate-900">
+              <h2 className="text-sm font-bold text-[#170B1B]">
                 HAProxy Frontend Subdomain Routing Table
               </h2>
-              <div className="text-xs text-slate-500 font-mono">
-                Matching rules against <strong className="text-violet-900">*.{domain}</strong>
+              <div className="text-xs text-[#827787] font-mono">
+                Matching rules against <strong className="text-[#2D0035]">*.{domain}</strong>
               </div>
             </div>
           </div>
 
           {/* Search bar */}
-          <div className="relative min-w-[220px]">
-            <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
-              <span className="material-symbols-outlined text-[16px]">search</span>
+          <div className="relative min-w-[240px]">
+            <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
+              <span className="material-symbols-outlined text-[17px]">search</span>
             </span>
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search routes by team or IP…"
-              className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-xl bg-white focus:outline-none focus:border-violet-600 text-slate-900 font-medium"
+              className="w-full pl-9 pr-3.5 py-2 text-xs rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 text-[#170B1B] font-medium transition-all shadow-xs"
             />
           </div>
         </div>
 
         {/* Table content */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="table-modern">
             <thead>
-              <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-700 text-[11px] font-bold uppercase tracking-wider font-mono">
-                <th className="py-3 px-4">Subdomain Route</th>
-                <th className="py-3 px-3">Backend Target</th>
-                <th className="py-3 px-3">Gateway</th>
-                <th className="py-3 px-3">TLS / SSL</th>
-                <th className="py-3 px-3">Rate Limit</th>
-                <th className="py-3 px-4 text-right">Actions</th>
+              <tr>
+                <th>Subdomain Route</th>
+                <th>Backend Target</th>
+                <th>Gateway Node</th>
+                <th>TLS / SSL</th>
+                <th>Rate Limit</th>
+                <th className="text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody>
               {filtered.map(s => {
                 const team = cleanLabel(s.hostname) || cleanLabel(s.sandbox_id)
                 const routeUrl = `${team}.${domain}`
                 const lim = rateLimits[s.sandbox_id] || 120
 
                 return (
-                  <tr key={s.sandbox_id} className="hover:bg-slate-50/80 transition-colors">
+                  <tr key={s.sandbox_id}>
                     {/* Subdomain */}
-                    <td className="py-3.5 px-4 min-w-[200px]">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
-                        <span className="font-mono font-bold text-slate-900 text-xs">{routeUrl}</span>
+                    <td className="min-w-[200px]">
+                      <div className="flex items-center gap-2.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] flex-shrink-0" />
+                        <span className="font-mono font-bold text-[#170B1B] text-xs">{routeUrl}</span>
                       </div>
                       {s.custom_domain && (
-                        <div className="text-[11px] font-mono text-emerald-800 font-semibold pl-4 mt-0.5">
+                        <div className="text-[11px] font-mono text-emerald-800 font-semibold pl-5 mt-0.5">
                           Alias: {s.custom_domain}
                         </div>
                       )}
                     </td>
 
                     {/* Backend Target */}
-                    <td className="py-3.5 px-3 font-mono whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-900 font-bold text-[11px]">
+                    <td className="font-mono whitespace-nowrap">
+                      <span className="px-2.5 py-1 rounded-lg bg-[#F8F6F9] text-[#170B1B] font-bold text-xs">
                         {s.ip_address || '10.20.10.x'}:8080
                       </span>
                     </td>
 
                     {/* Gateway */}
-                    <td className="py-3.5 px-3 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1 font-mono font-bold text-violet-900 bg-violet-50 px-2 py-0.5 rounded border border-violet-200 text-[11px]">
+                    <td className="whitespace-nowrap">
+                      <span className="badge badge-purple">
                         GW1 (MASTER)
                       </span>
                     </td>
 
                     {/* TLS */}
-                    <td className="py-3.5 px-3 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1 font-mono font-bold text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
-                        <span className="material-symbols-outlined text-[13px] text-emerald-700">lock</span>
+                    <td className="whitespace-nowrap">
+                      <span className="badge badge-emerald">
+                        <span className="material-symbols-outlined text-[13px]">lock</span>
                         Let's Encrypt (Auto)
                       </span>
                     </td>
 
                     {/* Rate Limit */}
-                    <td className="py-3.5 px-3 font-mono text-slate-700 font-bold whitespace-nowrap">
+                    <td className="font-mono text-[#170B1B] font-bold whitespace-nowrap text-xs">
                       {lim} req/min
                     </td>
 
                     {/* Edit limit */}
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                    <td className="text-right whitespace-nowrap">
                       <button
                         onClick={() => handleEditLimit(s.sandbox_id)}
-                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-semibold transition-colors cursor-pointer"
+                        className="px-3 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] text-xs font-semibold transition-all cursor-pointer"
                       >
                         Edit Limit
                       </button>
@@ -253,46 +261,49 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
       </div>
 
       {/* ── Live HTTP Access Stream + TLS Security Overview ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
 
         {/* Live HTTP Terminal Stream */}
-        <div className="lg:col-span-8 bg-slate-950 rounded-2xl border border-slate-800 p-5 shadow-lg space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-            <div className="flex items-center gap-2.5">
-              <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
-              <h3 className="font-mono font-extrabold text-sm text-slate-100">Live HTTP Access Stream</h3>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-900/60 text-emerald-300 border border-emerald-700">
+        <div className="lg:col-span-8 card-elevated bg-[#170B1B] p-6 text-white space-y-4">
+          <div className="flex items-center justify-between pb-3.5 border-b border-white/10">
+            <div className="flex items-center gap-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+              <h3 className="font-mono font-bold text-sm text-white">Live HTTP Access Stream</h3>
+              <span className="badge badge-dark-emerald">
                 100% SLA PASS
               </span>
             </div>
 
             <button
               onClick={handleSpike}
-              className="px-3 py-1.5 rounded-xl bg-violet-700 hover:bg-violet-600 text-white font-mono text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-sm"
+              className="px-3.5 py-1.5 rounded-xl bg-purple-700/80 hover:bg-purple-600 text-white font-mono text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
             >
-              <span className="material-symbols-outlined text-[15px]" style={{ fontVariationSettings: "'FILL' 1" }}>bolt</span>
+              <span className="material-symbols-outlined text-[16px]">bolt</span>
               <span>Inject Traffic Spike</span>
             </button>
           </div>
 
-          <div ref={streamRef} className="space-y-2 max-h-[280px] overflow-y-auto font-mono text-xs pr-1">
+          <div ref={streamRef} className="space-y-2.5 max-h-[300px] overflow-y-auto font-mono text-xs pr-1 dark-scroll">
             {logs.map((l, i) => (
-              <div key={i} className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/80 flex items-center justify-between hover:bg-slate-800/60 transition-colors">
+              <div
+                key={i}
+                className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 flex items-center justify-between transition-colors duration-150"
+              >
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-slate-500 text-[11px] font-semibold">[{l.time}]</span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-black ${
-                    l.code >= 500 ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                  <span className="text-purple-300/70 text-[11px] font-semibold">[{l.time}]</span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    l.code >= 500 ? 'bg-rose-900/60 text-rose-300' : 'bg-emerald-900/60 text-emerald-300'
                   }`}>
                     {l.code}
                   </span>
-                  <span className="text-blue-400 font-bold text-xs">{l.method}</span>
-                  <span className="text-slate-200 truncate">
-                    <strong className="text-violet-300">{l.subdomain}</strong>{l.path}
+                  <span className="text-blue-300 font-bold text-xs">{l.method}</span>
+                  <span className="text-purple-100 truncate">
+                    <strong className="text-purple-300">{l.subdomain}</strong>{l.path}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 font-semibold text-slate-400 text-[11px] flex-shrink-0">
+                <div className="flex items-center gap-3 font-semibold text-purple-200/80 text-[11px] flex-shrink-0">
                   <span className="text-emerald-400">{l.latency}</span>
-                  <span className="text-slate-600">via {l.gw}</span>
+                  <span className="text-white/40">via {l.gw}</span>
                 </div>
               </div>
             ))}
@@ -300,52 +311,52 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
         </div>
 
         {/* TLS & HAProxy Profile */}
-        <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-xs space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-slate-200">
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-800">
-              <span className="material-symbols-outlined text-[18px]">lock</span>
+        <div className="lg:col-span-4 card-elevated p-6 space-y-5">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-purple-900/5">
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-700">
+              <span className="material-symbols-outlined text-[20px]">lock</span>
             </div>
-            <h3 className="text-sm font-extrabold text-slate-900">TLS &amp; Certificate Profile</h3>
+            <h3 className="text-sm font-bold text-[#170B1B]">TLS &amp; Certificate Profile</h3>
           </div>
 
-          <div className="space-y-2 text-xs">
-            <div className="flex justify-between py-1.5 border-b border-slate-100">
-              <span className="text-slate-500 font-medium">Provider:</span>
-              <span className="font-bold text-slate-900">Let's Encrypt Wildcard ACME</span>
+          <div className="space-y-2.5 text-xs">
+            <div className="flex justify-between py-1.5 border-b border-purple-900/5">
+              <span className="text-[#827787] font-medium">Provider:</span>
+              <span className="font-bold text-[#170B1B]">Let's Encrypt Wildcard ACME</span>
             </div>
-            <div className="flex justify-between py-1.5 border-b border-slate-100">
-              <span className="text-slate-500 font-medium">TLS Protocol:</span>
-              <span className="font-mono font-bold text-slate-900">TLS 1.3 / ALPN h2</span>
+            <div className="flex justify-between py-1.5 border-b border-purple-900/5">
+              <span className="text-[#827787] font-medium">TLS Protocol:</span>
+              <span className="font-mono font-bold text-[#170B1B]">TLS 1.3 / ALPN h2</span>
             </div>
-            <div className="flex justify-between py-1.5 border-b border-slate-100">
-              <span className="text-slate-500 font-medium">HSTS:</span>
-              <span className="font-mono font-bold text-emerald-800">Enabled (max-age 1y)</span>
+            <div className="flex justify-between py-1.5 border-b border-purple-900/5">
+              <span className="text-[#827787] font-medium">HSTS:</span>
+              <span className="font-mono font-bold text-emerald-700">Enabled (max-age 1y)</span>
             </div>
             <div className="flex justify-between py-1.5">
-              <span className="text-slate-500 font-medium">Domain Coverage:</span>
-              <span className="font-mono font-bold text-violet-900">*.{domain}</span>
+              <span className="text-[#827787] font-medium">Domain Coverage:</span>
+              <span className="font-mono font-bold text-[#2D0035]">*.{domain}</span>
             </div>
           </div>
 
-          <div className="pt-2 border-t border-slate-200">
-            <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono mb-2">
+          <div className="pt-3 border-t border-purple-900/5">
+            <div className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono mb-2.5">
               HAProxy Config Snapshot
             </div>
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs font-mono">
-              <div className="flex justify-between text-slate-700">
-                <span>Default Rate Limit:</span>
+            <div className="p-3.5 rounded-2xl bg-[#F8F6F9] space-y-2 text-xs font-mono">
+              <div className="flex justify-between text-[#170B1B]">
+                <span className="text-[#827787]">Default Rate Limit:</span>
                 <span className="font-bold">120 req/min</span>
               </div>
-              <div className="flex justify-between text-slate-700">
-                <span>Stick-Table TTL:</span>
+              <div className="flex justify-between text-[#170B1B]">
+                <span className="text-[#827787]">Stick-Table TTL:</span>
                 <span className="font-bold">30s</span>
               </div>
-              <div className="flex justify-between text-slate-700">
-                <span>Max Connections:</span>
+              <div className="flex justify-between text-[#170B1B]">
+                <span className="text-[#827787]">Max Connections:</span>
                 <span className="font-bold">50,000</span>
               </div>
-              <div className="flex justify-between text-slate-700">
-                <span>Timeout Connect:</span>
+              <div className="flex justify-between text-[#170B1B]">
+                <span className="text-[#827787]">Timeout Connect:</span>
                 <span className="font-bold">5s</span>
               </div>
             </div>

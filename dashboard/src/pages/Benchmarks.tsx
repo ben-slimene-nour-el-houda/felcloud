@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Sparkline } from '../components/Sparkline'
 
 interface Props {
   showToast: (title: string, message: string, type?: 'info' | 'success' | 'warning' | 'error') => void
@@ -32,74 +33,110 @@ export default function Benchmarks({ showToast }: Props) {
   return (
     <div className="space-y-6">
       {/* Header bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-[20px] font-bold text-[#170B1B]">Performance Benchmarks &amp; SLAs</h2>
-          <p className="text-xs text-[#827787]">Simulated real-world stress test telemetry for the OpenStack Control Plane and HAProxy Gateway.</p>
+          <h2 className="text-2xl font-bold text-[#170B1B] tracking-tight">Performance Benchmarks &amp; SLAs</h2>
+          <p className="text-xs text-[#827787] mt-1.5 leading-relaxed">
+            Simulated stress test telemetry for OpenStack Nova Compute, Neutron IPAM, and Keepalived/HAProxy Gateway.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={runSuite}
             disabled={running}
-            className="px-3.5 py-1.5 bg-[#2D0035] text-white hover:bg-[#492B50] rounded-[10px] text-xs font-medium flex items-center gap-1.5 shadow-xs transition-colors disabled:opacity-50"
+            className="px-4 py-2 bg-[#2D0035] text-white hover:bg-[#43134c] rounded-xl text-xs font-bold flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
           >
-            <span className={`material-symbols-outlined text-[15px] ${running ? 'animate-spin' : ''}`}>
+            <span className={`material-symbols-outlined text-[16px] ${running ? 'animate-spin' : ''}`}>
               {running ? 'refresh' : 'play_arrow'}
             </span>
-            <span>{running ? 'Executing Tests…' : 'Run Benchmark Suite'}</span>
+            <span>{running ? 'Executing Suite…' : 'Run Benchmark Suite'}</span>
           </button>
         </div>
       </div>
 
       {/* 4 Metric cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
-          <span className="text-xs text-[#827787]">Nova VM Provisioning p50 / p95</span>
-          <div className="mt-2 text-xl font-bold font-mono text-[#170B1B]">1.84s / 2.31s</div>
-          <span className="badge badge-emerald mt-2">Well Under 5s SLA</span>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="kpi-card glow-primary space-y-3">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Nova Provisioning p95</span>
+            <span className="material-symbols-outlined text-[20px] text-[#74537a]">speed</span>
+          </div>
+          <div className="text-2xl font-bold font-mono text-[#170B1B]">1.84s / 2.31s</div>
+          <div className="flex items-center justify-between">
+            <span className="badge badge-emerald">Under 5s SLA</span>
+            <Sparkline data={[2.4, 2.35, 2.3, 2.31]} color="emerald" width={48} height={16} />
+          </div>
         </div>
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
-          <span className="text-xs text-[#827787]">VRRP Gateway Failover</span>
-          <div className="mt-2 text-xl font-bold font-mono text-[#2D0035]">412 ms</div>
-          <span className="badge badge-emerald mt-2">Sub-second Zero Drop</span>
+
+        <div className="kpi-card glow-healthy space-y-3">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">VRRP Failover SLA</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">timer</span>
+          </div>
+          <div className="text-2xl font-bold font-mono text-[#2D0035]">412 ms</div>
+          <div className="flex items-center justify-between">
+            <span className="badge badge-emerald">Zero TCP Drops</span>
+            <Sparkline data={[445, 420, 412, 412]} color="emerald" width={48} height={16} />
+          </div>
         </div>
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
-          <span className="text-xs text-[#827787]">Config Rollback Latency</span>
-          <div className="mt-2 text-xl font-bold font-mono text-purple-900">640 ms</div>
-          <span className="badge badge-emerald mt-2">Transaction Verified</span>
+
+        <div className="kpi-card glow-info space-y-3">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Config Rollback Latency</span>
+            <span className="material-symbols-outlined text-[20px] text-blue-600">history</span>
+          </div>
+          <div className="text-2xl font-bold font-mono text-[#170B1B]">640 ms</div>
+          <div className="flex items-center justify-between">
+            <span className="badge badge-blue">Verified Atomic</span>
+            <Sparkline data={[710, 680, 650, 640]} color="blue" width={48} height={16} />
+          </div>
         </div>
-        <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-4 shadow-xs">
-          <span className="text-xs text-[#827787]">Concurrent Stress Success</span>
-          <div className="mt-2 text-xl font-bold font-mono text-emerald-700">98.4%</div>
-          <span className="badge badge-emerald mt-2">10 Teams Parallel</span>
+
+        <div className="kpi-card glow-healthy space-y-3">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Concurrent Stress Test</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">groups</span>
+          </div>
+          <div className="text-2xl font-bold font-mono text-emerald-700">98.4%</div>
+          <div className="flex items-center justify-between">
+            <span className="badge badge-emerald">10 Teams Parallel</span>
+            <Sparkline data={[95, 96, 97, 98.4]} color="emerald" width={48} height={16} />
+          </div>
         </div>
       </div>
 
       {/* Benchmark run history */}
-      <div className="bg-white border border-[#E8E0EA] rounded-[14px] p-5 shadow-xs space-y-3">
-        <div className="flex items-center justify-between pb-2 border-b border-[#E8E0EA]">
-          <h3 className="text-xs font-semibold text-[#170B1B]">Benchmark History</h3>
-          <span className="text-xs font-mono text-[#827787]">Strict SLA Enforcement</span>
+      <div className="card-elevated overflow-hidden">
+        <div className="p-5 border-b border-purple-900/5 bg-[#F8F6F9] flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-purple-100 flex items-center justify-center text-[#2D0035]">
+              <span className="material-symbols-outlined text-[18px]">history</span>
+            </div>
+            <h3 className="text-sm font-bold text-[#170B1B]">Benchmark Execution History</h3>
+          </div>
+          <span className="badge badge-purple font-mono">Strict SLA Enforcement</span>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="table-modern">
             <thead>
-              <tr className="bg-[#F8F6F9] border-b border-[#E8E0EA] text-[#827787] text-[11px] font-medium uppercase tracking-wider">
-                <th className="p-3 pl-3">BENCHMARK RUN</th>
-                <th className="p-3">FAILOVER</th>
-                <th className="p-3">ROLLBACK</th>
-                <th className="p-3">PROVISION P95</th>
-                <th className="p-3">SUCCESS RATE</th>
+              <tr>
+                <th>Benchmark Run</th>
+                <th>Failover Duration</th>
+                <th>Rollback Duration</th>
+                <th>Provision P95</th>
+                <th className="text-right">Success Rate</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#E8E0EA] font-mono text-xs">
+            <tbody>
               {history.map((h, i) => (
-                <tr key={i} className="hover:bg-[#F8F6F9] transition-colors">
-                  <td className="p-3 pl-3 font-sans font-bold text-[#170B1B]">{h.run}</td>
-                  <td className="p-3 text-purple-900 font-semibold">{h.failover}</td>
-                  <td className="p-3 text-blue-900 font-semibold">{h.rollback}</td>
-                  <td className="p-3 text-gray-800">{h.p95}</td>
-                  <td className="p-3 text-emerald-700 font-bold">{h.success}</td>
+                <tr key={i}>
+                  <td className="font-bold text-[#170B1B] text-xs">{h.run}</td>
+                  <td className="text-[#2D0035] font-mono font-bold text-xs">{h.failover}</td>
+                  <td className="text-blue-900 font-mono font-semibold text-xs">{h.rollback}</td>
+                  <td className="font-mono text-xs text-[#827787]">{h.p95}</td>
+                  <td className="text-right">
+                    <span className="badge badge-emerald">{h.success}</span>
+                  </td>
                 </tr>
               ))}
             </tbody>

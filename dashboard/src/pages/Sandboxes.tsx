@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { fetchSandboxes, teardownSandbox, provisionSandbox, type Sandbox } from '../api'
-import { usePolling, useCountdown, formatDuration } from '../hooks'
+import { usePolling, formatDuration } from '../hooks'
+import { Sparkline } from '../components/Sparkline'
+import { RefreshButton } from '../components/RefreshButton'
+import { SkeletonTableRows } from '../components/SkeletonLoader'
 
 interface Props {
   onOpenProvision: () => void
@@ -36,7 +39,7 @@ function getSubdomain(hostname: string, sandboxId: string, custom?: string): str
 
 export default function Sandboxes({ onOpenProvision, showToast }: Props) {
   const sbFetcher = useCallback(() => fetchSandboxes(), [])
-  const { data: sandboxes, refresh } = usePolling<Sandbox[]>(sbFetcher, 5000)
+  const { data: sandboxes, loading, refresh } = usePolling<Sandbox[]>(sbFetcher, 5000)
 
   const [searchQuery, setSearchQuery] = useState('')
   const [filterMode, setFilterMode] = useState<'ACTIVE' | 'ALL' | 'ISSUES' | 'RELEASED'>('ACTIVE')
@@ -45,7 +48,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
   const [copyStatus, setCopyStatus] = useState('Copy cURL')
   const [recoveringId, setRecoveringId] = useState<string | null>(null)
 
-  // Demo fallback list
+  // Fallback data when backend hasn't populated yet
   const fallbackList: Sandbox[] = useMemo(() => [
     { id: 1, sandbox_id: 'sb-team-alpha', hostname: 'team-alpha', ip_address: '10.20.10.14', status: 'ACTIVE', custom_domain: '', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 7200, ttl_seconds: 7200 },
     { id: 2, sandbox_id: 'sb-team-beta',  hostname: 'team-beta',  ip_address: '10.20.10.15', status: 'ACTIVE', custom_domain: '', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 5400, ttl_seconds: 5400 },
@@ -81,12 +84,10 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
   // Filtered dataset
   const filtered = useMemo(() => {
     return rawList.filter(s => {
-      // 1. Hide released tests if toggle is on
       if (hideReleasedTests && s.status === 'RELEASED' && s.sandbox_id.startsWith('recycle-test-')) {
         return false
       }
 
-      // 2. Search query
       const q = searchQuery.toLowerCase().trim()
       if (q) {
         const team = formatTeamName(s.hostname, s.sandbox_id).toLowerCase()
@@ -98,7 +99,6 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
         }
       }
 
-      // 3. Tab filter
       if (filterMode === 'ACTIVE') {
         return s.status === 'ACTIVE' || s.status === 'PROVISIONING'
       }
@@ -110,7 +110,6 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
       }
       return true
     }).sort((a, b) => {
-      // Prioritize named teams first, then active status
       const aIsMock = a.sandbox_id.startsWith('recycle-test-')
       const bIsMock = b.sandbox_id.startsWith('recycle-test-')
       if (!aIsMock && bIsMock) return -1
@@ -165,119 +164,112 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
   return (
     <div className="space-y-6 min-w-0">
 
-      {/* ── Page Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
+      {/* ── Page Hero Header ── */}
+      <div className="card-elevated p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight">Sandboxes &amp; Private IPs</h1>
-            <span className="px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-800 text-xs font-mono font-bold border border-violet-200">
-              10.20.10.0/24 Subnet
-            </span>
-            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold font-mono border ${
-              activeCount > 0
-                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                : 'bg-amber-100 text-amber-900 border-amber-300'
-            }`}>
-              {activeCount > 0 ? `${activeCount} Running Active` : `${issueCount} Team Sandboxes`}
+            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">Sandboxes &amp; Private IPs</h1>
+            <span className="badge badge-purple font-mono">10.20.10.0/24 Subnet</span>
+            <span className={`badge ${activeCount > 0 ? 'badge-emerald' : 'badge-amber'}`}>
+              <span className={`w-2 h-2 rounded-full ${activeCount > 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              {activeCount > 0 ? `${activeCount} Running Active` : `${issueCount} Attention Needed`}
             </span>
           </div>
-          <p className="text-xs text-slate-600 mt-1">
-            Dynamic IPAM allocation for hackathon teams on OpenStack Nova &amp; Neutron with Keepalived/HAProxy routing
+          <p className="text-xs text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
+            Dynamic IPAM allocation for hackathon teams on OpenStack Nova &amp; Neutron with Keepalived/HAProxy routing.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
-          <button
-            onClick={() => { refresh(); showToast('Refreshed', 'Synced live sandbox state from control plane.', 'info') }}
-            className="flex items-center gap-1.5 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-all cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-[16px]">refresh</span>
-            <span>Refresh</span>
-          </button>
+        <div className="flex items-center gap-2.5 flex-wrap flex-shrink-0">
+          <RefreshButton
+            onRefresh={() => { refresh(); showToast('Refreshed', 'Synced live sandbox state from control plane.', 'info') }}
+            label="Refresh"
+          />
           <button
             onClick={onOpenProvision}
-            className="flex items-center gap-1.5 px-4 py-2 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer"
-            style={{ background: 'linear-gradient(135deg, #4c1d95, #6d28d9)', boxShadow: '0 4px 12px rgba(91,33,182,0.3)' }}
+            className="flex items-center gap-2 px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]" style={{ fontVariationSettings: "'FILL' 1" }}>add_circle</span>
+            <span className="material-symbols-outlined text-[16px]">add_circle</span>
             <span>Provision Sandbox</span>
           </button>
         </div>
       </div>
 
-      {/* ── 4 KPI Stat Cards with High Contrast ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* ── 4 KPI Stat Cards with Glow & Sparklines ── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         {/* Card 1: Active Instances */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-violet-600" />
-          <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Active Teams</span>
-            <span className="material-symbols-outlined text-violet-600 text-[20px]">groups</span>
+        <div className="kpi-card glow-healthy">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Active Teams</span>
+            <span className="material-symbols-outlined text-emerald-600 text-[20px]">groups</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-extrabold text-slate-900 font-mono">{activeCount || 4}</span>
-            <span className="text-xs text-slate-500 font-medium">/ 10 Teams</span>
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">{activeCount || 4}</span>
+            <span className="text-xs text-[#827787] font-semibold">/ 10 Max</span>
           </div>
-          <div className="mt-2 flex items-center gap-1.5 text-xs">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-emerald-700 font-semibold font-mono">100% HA Ingress Ready</span>
+          <div className="mt-3 flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 font-semibold">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>100% Ingress Ready</span>
+            </div>
+            <Sparkline data={[2, 3, 3, 4, 4, activeCount || 4]} color="emerald" width={56} height={20} />
           </div>
         </div>
 
         {/* Card 2: IPAM Leased */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-blue-600" />
-          <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">IPAM Pool</span>
+        <div className="kpi-card glow-info">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">IPAM Leased</span>
             <span className="material-symbols-outlined text-blue-600 text-[20px]">layers</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-extrabold text-slate-900 font-mono">{rawList.length}</span>
-            <span className="text-xs text-slate-500 font-medium">/ 250 IPs</span>
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">{rawList.length}</span>
+            <span className="text-xs text-[#827787] font-semibold">/ 250 Pool</span>
           </div>
-          <div className="mt-2 w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-            <div className="bg-blue-600 h-full rounded-full transition-all" style={{ width: `${Math.min(100, (rawList.length / 250) * 100)}%` }} />
-          </div>
-        </div>
-
-        {/* Card 3: Default Lease TTL */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-emerald-600" />
-          <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Lease TTL</span>
-            <span className="material-symbols-outlined text-emerald-600 text-[20px]">timer</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-extrabold text-slate-900 font-mono">2h 00m</span>
-            <span className="text-xs text-emerald-800 font-semibold">Auto-renew</span>
-          </div>
-          <div className="mt-2 text-xs text-slate-500">
-            Quarantine: 180s ARP safety flush
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[11px] text-blue-700 font-semibold">{250 - rawList.length} Available</span>
+            <Sparkline data={[4, 5, 5, 6, 6, rawList.length]} color="blue" width={56} height={20} />
           </div>
         </div>
 
-        {/* Card 4: VIP Ingress */}
-        <div className="bg-white rounded-2xl p-4 border border-slate-200/90 shadow-xs relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-amber-500" />
-          <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600">Gateway VIP</span>
-            <span className="material-symbols-outlined text-amber-600 text-[20px]">router</span>
+        {/* Card 3: Issues / Expired */}
+        <div className="kpi-card glow-warning">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Quarantined / Issues</span>
+            <span className="material-symbols-outlined text-amber-600 text-[20px]">warning</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-extrabold text-violet-950 font-mono">10.20.20.246</span>
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">{issueCount || 0}</span>
+            <span className="badge badge-amber">{issueCount === 0 ? 'Clean' : 'Needs Reset'}</span>
           </div>
-          <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-700 font-semibold font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>HAProxy Sync: Live</span>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[11px] text-amber-800 font-semibold">180s Cooldown Active</span>
+            <Sparkline data={[1, 2, 1, 0, issueCount || 0]} color="amber" width={56} height={20} />
+          </div>
+        </div>
+
+        {/* Card 4: Sub-second Ingress */}
+        <div className="kpi-card glow-primary">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Ingress Proxy</span>
+            <span className="material-symbols-outlined text-[#74537a] text-[20px]">router</span>
+          </div>
+          <div className="mt-2.5 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">HAProxy 2.8</span>
+            <span className="badge badge-emerald">Live Sync</span>
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-[11px] text-purple-900 font-semibold">VIP 203.0.113.10</span>
+            <Sparkline data={[1, 1, 1, 1, 1]} color="purple" width={56} height={20} />
           </div>
         </div>
       </div>
 
       {/* ── Filter Bar: Tabs, Search, & Hide Tests Toggle ── */}
-      <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+      <div className="card-elevated p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3.5">
         {/* Search */}
         <div className="relative flex-1 min-w-[240px]">
-          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
             <span className="material-symbols-outlined text-[18px]">search</span>
           </span>
           <input
@@ -285,20 +277,20 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search by team, IP, or subdomain…"
-            className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 font-medium placeholder-slate-400 focus:outline-none focus:border-violet-600 focus:bg-white transition-all"
+            className="w-full pl-10 pr-9 py-2 bg-[#F8F6F9] hover:bg-[#F3EEF5] focus:bg-white rounded-xl text-xs text-[#170B1B] font-medium placeholder-[#827787] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all duration-200"
           />
           {searchQuery && (
             <button
               onClick={() => setSearchQuery('')}
-              className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-700"
+              className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#827787] hover:text-[#170B1B] cursor-pointer"
             >
               <span className="material-symbols-outlined text-[16px]">cancel</span>
             </button>
           )}
         </div>
 
-        {/* Tab Selector */}
-        <div className="flex items-center gap-1.5 overflow-x-auto text-xs">
+        {/* Tab Selector (Pill style) */}
+        <div className="flex items-center gap-2 overflow-x-auto text-xs">
           {[
             { id: 'ACTIVE',   label: 'Active & Prov', count: activeCount || 4 },
             { id: 'ALL',      label: 'All Teams',     count: rawList.length },
@@ -308,15 +300,15 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             <button
               key={tab.id}
               onClick={() => setFilterMode(tab.id as any)}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-all flex items-center gap-1.5 cursor-pointer flex-shrink-0 ${
+              className={`px-3.5 py-1.5 rounded-full font-bold transition-all duration-200 flex items-center gap-1.5 cursor-pointer flex-shrink-0 ${
                 filterMode === tab.id
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200'
+                  ? 'bg-[#2D0035] text-white shadow-xs'
+                  : 'bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B]'
               }`}
             >
               <span>{tab.label}</span>
-              <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono ${
-                filterMode === tab.id ? 'bg-white/20 text-white' : 'bg-white text-slate-800'
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                filterMode === tab.id ? 'bg-white/20 text-white' : 'bg-white text-[#74537a]'
               }`}>
                 {tab.count}
               </span>
@@ -325,40 +317,42 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
         </div>
 
         {/* Hide test instances toggle */}
-        <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer select-none px-2 py-1 bg-slate-50 rounded-xl border border-slate-200 flex-shrink-0">
+        <label className="flex items-center gap-2 text-xs font-semibold text-[#170B1B] cursor-pointer select-none px-3 py-1.5 bg-[#F8F6F9] rounded-xl flex-shrink-0">
           <input
             type="checkbox"
             checked={hideReleasedTests}
             onChange={e => setHideReleasedTests(e.target.checked)}
-            className="w-4 h-4 rounded text-violet-600 focus:ring-violet-500 cursor-pointer"
+            className="w-4 h-4 rounded accent-[#2D0035] cursor-pointer"
           />
-          <span>Hide 75 mock test leases</span>
+          <span className="text-[#827787]">Hide mock test leases</span>
         </label>
       </div>
 
       {/* ── Sandboxes Table & Details Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start min-w-0">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start min-w-0">
 
-        {/* Table Container */}
+        {/* Table Container (Spacious padding py-4 px-6, uniform rows, no harsh cadres) */}
         <div className={`${selectedSandbox ? 'lg:col-span-8' : 'lg:col-span-12'} min-w-0`}>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          <div className="card-elevated overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
+              <table className="table-modern">
                 <thead>
-                  <tr className="bg-slate-100/80 border-b border-slate-200 text-slate-700 text-[11px] font-bold uppercase tracking-wider font-mono">
-                    <th className="py-3.5 px-4">Team Instance</th>
-                    <th className="py-3.5 px-3">IP Address</th>
-                    <th className="py-3.5 px-3">Subdomain Route</th>
-                    <th className="py-3.5 px-3">Status</th>
-                    <th className="py-3.5 px-3">Lease TTL</th>
-                    <th className="py-3.5 px-4 text-right">Actions</th>
+                  <tr>
+                    <th>Team Instance</th>
+                    <th>IP Address</th>
+                    <th>Subdomain Route</th>
+                    <th>Status</th>
+                    <th>Lease TTL</th>
+                    <th className="text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filtered.length === 0 ? (
+                <tbody>
+                  {loading && rawList.length === 0 ? (
+                    <SkeletonTableRows rows={5} cols={6} />
+                  ) : filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-500">
-                        <span className="material-symbols-outlined text-[36px] text-slate-300 block mb-2">dns</span>
+                      <td colSpan={6} className="py-12 text-center text-[#827787]">
+                        <span className="material-symbols-outlined text-[36px] text-gray-300 block mb-2">dns</span>
                         No sandboxes match current criteria.
                       </td>
                     </tr>
@@ -375,33 +369,31 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                         <tr
                           key={s.sandbox_id}
                           onClick={() => setSelectedId(s.sandbox_id)}
-                          className={`transition-colors cursor-pointer ${
-                            isSelected
-                              ? 'bg-violet-50/80 border-l-4 border-violet-600'
-                              : 'hover:bg-slate-50/80'
+                          className={`cursor-pointer transition-colors duration-150 ${
+                            isSelected ? 'bg-purple-900/[0.04]' : ''
                           }`}
                         >
                           {/* Team Name */}
-                          <td className="py-3.5 px-4 min-w-[150px]">
-                            <div className="font-bold text-slate-900 text-[13px] flex items-center gap-1.5">
+                          <td className="min-w-[150px]">
+                            <div className="font-bold text-[#170B1B] text-sm flex items-center gap-2">
                               {teamName}
-                              {!isMock && <span className="w-1.5 h-1.5 rounded-full bg-violet-600" />}
+                              {!isMock && <span className="w-2 h-2 rounded-full bg-[#74537a]" />}
                             </div>
-                            <div className="text-[11px] text-slate-500 font-mono truncate max-w-[160px]" title={s.sandbox_id}>
+                            <div className="text-[11px] text-[#827787] font-mono truncate max-w-[160px]" title={s.sandbox_id}>
                               {cleanLabel(s.sandbox_id)}
                             </div>
                           </td>
 
                           {/* IP Address */}
-                          <td className="py-3.5 px-3 font-mono whitespace-nowrap">
-                            <span className="px-2 py-1 rounded-md bg-slate-100 border border-slate-200 text-slate-900 font-bold text-[11px]">
+                          <td className="font-mono whitespace-nowrap">
+                            <span className="px-2.5 py-1 rounded-lg bg-[#F8F6F9] text-[#170B1B] font-bold text-xs">
                               {s.ip_address || '10.20.10.x'}:8080
                             </span>
                           </td>
 
                           {/* Subdomain */}
-                          <td className="py-3.5 px-3 min-w-[190px] max-w-[260px]">
-                            <div className="font-mono text-xs font-semibold text-violet-900 truncate" title={sub}>
+                          <td className="min-w-[190px] max-w-[260px]">
+                            <div className="font-mono text-xs font-semibold text-[#2D0035] truncate" title={sub}>
                               {sub}
                             </div>
                             {s.custom_domain && (
@@ -411,57 +403,57 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                             )}
                           </td>
 
-                          {/* Status */}
-                          <td className="py-3.5 px-3 whitespace-nowrap">
+                          {/* Status Pill Badge */}
+                          <td className="whitespace-nowrap">
                             {isActive ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-300">
-                                <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                              <span className="badge badge-emerald">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                                 ACTIVE
                               </span>
                             ) : s.status === 'PROVISIONING' ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-300">
-                                <span className="w-2 h-2 rounded-full bg-blue-600 animate-spin" />
+                              <span className="badge badge-blue">
+                                <span className="w-2 h-2 rounded-full bg-blue-500 animate-spin" />
                                 BOOTING
                               </span>
                             ) : isFailed ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-100 text-rose-900 border border-rose-300">
+                              <span className="badge badge-rose">
                                 <span className="material-symbols-outlined text-[13px]">warning</span>
                                 {s.status === 'TEARDOWN_FAILED' ? 'FAILED' : s.status}
                               </span>
                             ) : (
-                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                              <span className="badge badge-gray">
                                 RELEASED
                               </span>
                             )}
                           </td>
 
                           {/* Lease TTL */}
-                          <td className="py-3.5 px-3 font-mono text-xs whitespace-nowrap">
+                          <td className="font-mono text-xs whitespace-nowrap">
                             {isActive && s.expires_at ? (
-                              <span className="font-bold text-slate-800">
+                              <span className="font-bold text-[#170B1B]">
                                 {formatDuration(Math.max(0, s.expires_at - Math.floor(Date.now() / 1000)))}
                               </span>
                             ) : isFailed ? (
                               <span className="text-amber-800 font-semibold">Needs reset</span>
                             ) : (
-                              <span className="text-slate-400">Expired</span>
+                              <span className="text-[#827787]">Expired</span>
                             )}
                           </td>
 
                           {/* Actions */}
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-1.5" onClick={e => e.stopPropagation()}>
+                          <td className="text-right whitespace-nowrap space-x-2" onClick={e => e.stopPropagation()}>
                             {isFailed ? (
                               <button
                                 onClick={() => handleRecoverOrReprovision(s)}
                                 disabled={recoveringId === s.sandbox_id}
-                                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                                className="px-3 py-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
                               >
                                 {recoveringId === s.sandbox_id ? 'Booting…' : 'Re-deploy'}
                               </button>
                             ) : isActive ? (
                               <button
                                 onClick={() => handleRenew(s.sandbox_id)}
-                                className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold transition-colors cursor-pointer"
+                                className="px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold transition-all cursor-pointer"
                               >
                                 +1h
                               </button>
@@ -469,7 +461,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
 
                             <button
                               onClick={() => setSelectedId(s.sandbox_id)}
-                              className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-semibold transition-colors cursor-pointer"
+                              className="px-3 py-1 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all cursor-pointer"
                             >
                               Inspect
                             </button>
@@ -477,7 +469,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                             {s.status !== 'RELEASED' && (
                               <button
                                 onClick={() => handleTeardown(s.sandbox_id)}
-                                className="px-2 py-1 rounded-lg bg-white hover:bg-rose-50 text-rose-700 border border-slate-200 hover:border-rose-300 text-xs font-semibold transition-colors cursor-pointer"
+                                className="px-3 py-1 rounded-xl bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 text-xs font-semibold transition-all cursor-pointer"
                               >
                                 Teardown
                               </button>
@@ -492,65 +484,65 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             </div>
 
             {filtered.length > 30 && (
-              <div className="p-3 bg-slate-50 border-t border-slate-200 text-center text-xs text-slate-500">
+              <div className="p-3.5 bg-[#F8F6F9] text-center text-xs text-[#827787]">
                 Displaying first 30 of {filtered.length} entries. Use search or filter tabs to narrow down results.
               </div>
             )}
           </div>
         </div>
 
-        {/* ── High Contrast Inspector Drawer ── */}
+        {/* ── Modern Inspector Drawer (Rounded-2xl, soft shadows) ── */}
         {selectedSandbox && (
-          <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4 sticky top-[68px]">
+          <div className="lg:col-span-4 card-elevated p-6 space-y-5 sticky top-20 animate-fade-in">
             {/* Header */}
-            <div className="flex items-start justify-between pb-3 border-b border-slate-200">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-violet-100 flex items-center justify-center text-violet-800">
-                  <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>troubleshoot</span>
+            <div className="flex items-start justify-between pb-3.5 border-b border-purple-900/5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-purple-50 flex items-center justify-center text-[#2D0035]">
+                  <span className="material-symbols-outlined text-[20px]">troubleshoot</span>
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-base text-slate-900 leading-tight">
+                  <h3 className="font-bold text-base text-[#170B1B] leading-tight">
                     {formatTeamName(selectedSandbox.hostname, selectedSandbox.sandbox_id)}
                   </h3>
-                  <div className="text-xs font-mono text-slate-500">
+                  <div className="text-xs font-mono text-[#827787]">
                     {selectedSandbox.sandbox_id}
                   </div>
                 </div>
               </div>
               <button
                 onClick={() => setSelectedId(null)}
-                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                className="text-[#827787] hover:text-[#170B1B] p-1.5 rounded-xl hover:bg-[#F8F6F9] transition-colors cursor-pointer"
               >
                 <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
 
             {/* Target Card */}
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+            <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2.5 text-xs">
               <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Private VM Target:</span>
-                <span className="font-mono font-bold text-slate-900 bg-white px-2 py-0.5 rounded border border-slate-200">
+                <span className="text-[#827787] font-medium">Private VM Target:</span>
+                <span className="font-mono font-bold text-[#170B1B] bg-white px-2 py-0.5 rounded-md shadow-xs">
                   {selectedSandbox.ip_address || '10.20.10.x'}:8080
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-medium">Subdomain:</span>
-                <span className="font-mono font-bold text-violet-900 truncate max-w-[190px]">
+                <span className="text-[#827787] font-medium">Subdomain:</span>
+                <span className="font-mono font-bold text-[#2D0035] truncate max-w-[190px]">
                   {getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id, selectedSandbox.custom_domain)}
                 </span>
               </div>
               <div className="flex justify-between items-center">
-                <span className="text-slate-500 font-medium">VIP Routing:</span>
-                <span className="font-mono font-bold text-emerald-800">10.20.20.246 (gw1)</span>
+                <span className="text-[#827787] font-medium">VIP Routing:</span>
+                <span className="font-mono font-bold text-emerald-800">203.0.113.10 (gw1)</span>
               </div>
             </div>
 
             {/* Security Isolation */}
-            <div className="space-y-1.5">
-              <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono">
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
                 Neutron Security Rules
               </span>
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+              <div className="p-3.5 rounded-2xl bg-[#F8F6F9] space-y-2 text-xs">
                 <div className="flex items-center gap-2 text-emerald-800 font-semibold">
                   <span className="material-symbols-outlined text-[16px]">check_circle</span>
                   <span>Ingress TCP 80/443 from Gateway VIP</span>
@@ -567,37 +559,37 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             </div>
 
             {/* Health cURL Command */}
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wider font-mono">
+                <span className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
                   Test Ingress Health
                 </span>
                 <button
-                  onClick={() => copyCurl(`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://10.20.20.246/health`)}
-                  className="text-xs text-violet-700 hover:text-violet-900 font-bold flex items-center gap-1 cursor-pointer"
+                  onClick={() => copyCurl(`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`)}
+                  className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold flex items-center gap-1 cursor-pointer transition-colors"
                 >
                   <span className="material-symbols-outlined text-[14px]">content_copy</span>
                   {copyStatus}
                 </button>
               </div>
-              <pre className="p-2.5 rounded-xl bg-slate-900 text-emerald-400 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all select-all border border-slate-800">
-                {`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://10.20.20.246/health`}
+              <pre className="p-3 rounded-2xl bg-[#170B1B] text-emerald-400 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all select-all">
+                {`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`}
               </pre>
             </div>
 
             {/* Lifecycle Buttons */}
-            <div className="grid grid-cols-2 gap-2 pt-2">
+            <div className="grid grid-cols-2 gap-3 pt-2">
               <button
                 onClick={() => handleRecoverOrReprovision(selectedSandbox)}
                 disabled={recoveringId === selectedSandbox.sandbox_id}
-                className="py-2.5 px-3 rounded-xl bg-violet-700 hover:bg-violet-800 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                className="py-2.5 px-3 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-[16px]">rocket_launch</span>
                 <span>Deploy / Reset</span>
               </button>
               <button
                 onClick={() => handleTeardown(selectedSandbox.sandbox_id)}
-                className="py-2.5 px-3 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-slate-200 hover:border-rose-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                className="py-2.5 px-3 rounded-xl bg-white hover:bg-rose-50 text-rose-700 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
               >
                 <span className="material-symbols-outlined text-[16px]">delete</span>
                 <span>Teardown</span>

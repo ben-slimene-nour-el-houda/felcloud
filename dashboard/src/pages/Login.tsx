@@ -115,13 +115,13 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
           <div>
             <div className="text-white font-bold text-[18px] tracking-tight leading-none flex items-center gap-2">
               <span>FelCloud</span>
-              <span className="text-[9px] text-yellow-400 font-mono font-medium px-1.5 py-0.5 rounded bg-yellow-400/10 border border-yellow-400/25">CSTAM 3.0</span>
+              <span className="text-[9px] text-yellow-400 font-mono font-medium px-2 py-0.5 rounded-full bg-yellow-400/10 border border-yellow-400/25">CSTAM 3.0</span>
             </div>
             <div className="text-purple-300/70 font-mono text-[10px] tracking-[0.15em] uppercase mt-1">Cluster Control Plane</div>
           </div>
         </div>
 
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+        <div className="hidden sm:flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/5 border border-white/10">
           <span className="relative flex h-2 w-2">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
@@ -129,7 +129,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
           <span className="text-[11px] font-mono text-emerald-300/90">
             Control Plane <span className="text-emerald-400 font-bold">ONLINE</span>
             <span className="text-white/30 mx-1.5">·</span>
-            <span className="text-white/50">VIP 10.20.20.246</span>
+            <span className="text-white/50">VIP 203.0.113.10</span>
           </span>
         </div>
       </header>
@@ -173,7 +173,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
           </div>
 
           {/* Glass card */}
-          <div className="glass-card rounded-2xl p-8 relative overflow-hidden">
+          <div className="glass-card rounded-3xl p-8 relative overflow-hidden">
             {/* Top shimmer line */}
             <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-purple-400/50 to-transparent" />
             {/* Bottom shimmer */}
@@ -207,7 +207,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
                     placeholder="felcloud-admin-token-…"
                     autoFocus
                     autoComplete="current-password"
-                    className="input-dark w-full pl-11 pr-12 py-3 rounded-xl text-[13px] font-mono"
+                    className="input-dark w-full pl-11 pr-12 py-3 rounded-2xl text-[13px] font-mono"
                   />
                   <button
                     type="button"
@@ -223,7 +223,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
 
               {/* Error */}
               {error && (
-                <div className="p-3 rounded-xl text-[12px] font-mono text-rose-300 bg-rose-900/20 border border-rose-700/30 flex items-start gap-2 animate-fade-in">
+                <div className="p-3.5 rounded-2xl text-[12px] font-mono text-rose-300 bg-rose-900/20 border border-rose-700/30 flex items-start gap-2 animate-fade-in">
                   <span className="material-symbols-outlined text-[15px] text-rose-400 shrink-0 mt-0.5">error_outline</span>
                   <span className="leading-relaxed">{error}</span>
                 </div>
@@ -234,10 +234,9 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
                 type="submit"
                 disabled={loading}
                 id="login-submit"
-                className="w-full py-3 px-4 rounded-xl text-sm font-bold text-white cursor-pointer flex items-center justify-center gap-2 transition-all disabled:opacity-50 relative overflow-hidden group"
+                className="w-full py-3.5 px-4 rounded-2xl text-sm font-bold text-white cursor-pointer flex items-center justify-center gap-2 transition-all duration-200 disabled:opacity-50 relative overflow-hidden group shadow-lg shadow-purple-900/30"
                 style={{
-                  background: 'linear-gradient(135deg, #6d28d9 0%, #7c3aed 50%, #5b21b6 100%)',
-                  boxShadow: '0 4px 24px rgba(109,40,217,0.4), inset 0 1px 0 rgba(255,255,255,0.15)',
+                  background: 'linear-gradient(135deg, #2D0035 0%, #4c1d95 50%, #6d28d9 100%)',
                 }}
               >
                 <span className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -248,7 +247,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
                   </>
                 ) : (
                   <>
-                    <span className="material-symbols-outlined text-[17px]" style={{ fontVariationSettings: "'FILL' 1" }}>lock_open</span>
+                    <span className="material-symbols-outlined text-[17px]">lock_open</span>
                     <span>Access Control Plane</span>
                   </>
                 )}
@@ -256,35 +255,35 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
             </form>
 
             {/* Demo section */}
-            <div className="mt-5 pt-5 border-t border-white/8 space-y-3">
+            <div className="mt-6 pt-5 border-t border-white/8 space-y-3">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="text-white/30">Hackathon Demo Environment</span>
-                <span className="text-emerald-400/70 font-mono">Keystone v3 Active</span>
+                <span className="text-white/40">Hackathon Demo Environment</span>
+                <span className="text-emerald-400/80 font-mono">Keystone v3 Active</span>
               </div>
               <button
                 type="button"
                 onClick={fillDemoCredentials}
-                className="w-full py-2 px-3 rounded-xl border border-white/8 bg-white/4 hover:bg-white/8 text-white/50 hover:text-white/80 text-[11px] font-mono flex items-center justify-between transition-all cursor-pointer group"
+                className="w-full py-2.5 px-3.5 rounded-2xl border border-white/8 bg-white/4 hover:bg-white/8 text-white/50 hover:text-white/80 text-[11px] font-mono flex items-center justify-between transition-all cursor-pointer group"
               >
                 <span className="truncate text-purple-300/60 group-hover:text-purple-200/80 transition-colors">{demoToken}</span>
-                <span className="text-[10px] text-purple-400/50 group-hover:text-purple-300/70 ml-2 transition-colors shrink-0">↑ Fill</span>
+                <span className="text-[10px] text-purple-400/60 group-hover:text-purple-300 ml-2 transition-colors shrink-0">↑ Fill</span>
               </button>
             </div>
           </div>
 
           {/* Footer badge */}
-          <div className="mt-5 flex items-center justify-center gap-4 text-[11px] font-mono">
-            <span className="flex items-center gap-1.5 text-white/20">
+          <div className="mt-6 flex items-center justify-center gap-4 text-[11px] font-mono">
+            <span className="flex items-center gap-1.5 text-white/30">
               <span className="material-symbols-outlined text-[13px]">shield</span>
               <span>Zero-trust auth</span>
             </span>
             <span className="text-white/10">·</span>
-            <span className="flex items-center gap-1.5 text-white/20">
+            <span className="flex items-center gap-1.5 text-white/30">
               <span className="material-symbols-outlined text-[13px]">lock</span>
               <span>Session memory only</span>
             </span>
             <span className="text-white/10">·</span>
-            <span className="flex items-center gap-1.5 text-white/20">
+            <span className="flex items-center gap-1.5 text-white/30">
               <span className="material-symbols-outlined text-[13px]">https</span>
               <span>TLS encrypted</span>
             </span>
@@ -294,18 +293,18 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
 
       {/* ── Bottom cluster bar ── */}
       <footer className="relative z-10 border-t border-white/5 px-8 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between text-[11px] font-mono text-white/20">
+        <div className="max-w-7xl mx-auto flex items-center justify-between text-[11px] font-mono text-white/30">
           <div className="flex items-center gap-5">
             <span className="flex items-center gap-1.5">
               <span className="status-dot-online" />
-              <span>gw1 <span className="text-emerald-400/50">MASTER</span></span>
+              <span>gw1 <span className="text-emerald-400/60 font-semibold">MASTER</span></span>
             </span>
             <span className="flex items-center gap-1.5">
               <span className="status-dot-standby" />
-              <span>gw2 <span className="text-blue-400/50">STANDBY</span></span>
+              <span>gw2 <span className="text-blue-400/60 font-semibold">STANDBY</span></span>
             </span>
             <span className="text-white/10">·</span>
-            <span>VIP 10.20.20.246</span>
+            <span>VIP 203.0.113.10</span>
           </div>
           <div>OpenStack Caracal/Dalmatian · CSTAM 3.0 · FelCloud</div>
         </div>

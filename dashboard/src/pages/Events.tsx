@@ -1,6 +1,8 @@
 import { useState, useCallback } from 'react'
 import { fetchEvents, type EventEntry } from '../api'
 import { usePolling } from '../hooks'
+import { Sparkline } from '../components/Sparkline'
+import { RefreshButton } from '../components/RefreshButton'
 
 interface Props {
   showToast: (title: string, message: string, type?: 'info' | 'success' | 'warning' | 'error') => void
@@ -30,7 +32,7 @@ interface AuditRow {
 
 export default function Events({ showToast }: Props) {
   const evFetcher = useCallback(() => fetchEvents(100), [])
-  const { data: evData } = usePolling<{ events: EventEntry[] }>(evFetcher, 6000)
+  const { data: evData, refresh } = usePolling<{ events: EventEntry[] }>(evFetcher, 6000)
 
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
   const [showSecurityDrawer, setShowSecurityDrawer] = useState(false)
@@ -91,7 +93,7 @@ export default function Events({ showToast }: Props) {
       timeAgo: 'today • 31m ago',
       actor: 'vrrp-monitor',
       action: 'GATEWAY_VRRP',
-      target: 'gw1 (VIP 10.20.20.246)',
+      target: 'gw1 (VIP 203.0.113.10)',
       severity: 'INFO',
       category: 'VRRP',
       details: 'Heartbeat sync verified on eth0.50; gw1 affirmed as MASTER (Priority 101 vs 100).',
@@ -183,44 +185,32 @@ export default function Events({ showToast }: Props) {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header section with live status & operational triggers */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-xl border border-[#E8E0EA] shadow-xs">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#F8F6F9] border border-[#E8E0EA] text-xs font-mono text-secondary">
-              <span className="w-1.5 h-1.5 rounded-full bg-secondary"></span>
-              CLUSTER AUDIT TRAIL
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#F8F6F9] border border-[#E8E0EA] text-xs font-mono text-[#827787]">
-              STREAM-ID: <span className="text-secondary font-semibold">cstam-w-sec-092</span>
-            </span>
+    <div className="space-y-6 min-w-0">
+      {/* Header section */}
+      <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="badge badge-purple font-mono">CLUSTER AUDIT TRAIL</span>
+            <span className="text-xs font-mono text-[#827787]">STREAM: cstam-w-sec-092</span>
           </div>
-          <h1 className="text-[22px] font-bold text-[#170B1B] tracking-tight">Cluster Security &amp; Operations Audit Stream</h1>
-          <p className="text-xs text-[#827787] max-w-3xl">
-            Deterministic immutable log of hypervisor events, network namespace mutations, VRRP state-shifts, and eBPF/Neutron policy enforcement decisions across CSTAM-West.
+          <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight mt-1">Cluster Security &amp; Operations Audit Stream</h1>
+          <p className="text-xs text-[#827787] mt-1.5 max-w-3xl leading-relaxed">
+            Deterministic immutable log of hypervisor events, network mutations, VRRP state-shifts, and eBPF/Neutron policy enforcement.
           </p>
         </div>
         <div className="flex items-center gap-2.5 flex-wrap">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#F8F6F9] border border-[#E8E0EA] text-xs">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-secondary opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-secondary"></span>
-            </span>
-            <span className="font-semibold text-secondary">LOGGING LIVE</span>
-            <span className="text-[#827787] font-mono text-[10px]">98.4 msg/s</span>
-          </div>
+          <RefreshButton onRefresh={refresh} label="Refresh" />
           <button
             onClick={() => setShowSecurityDrawer(!showSecurityDrawer)}
-            className="px-3.5 py-2 rounded-lg bg-[#F8F6F9] hover:bg-[#E8E0EA] border border-[#E8E0EA] text-[#170B1B] text-xs font-semibold flex items-center gap-2 transition-colors shadow-xs"
+            className="px-4 py-2 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs border border-rose-200/50"
           >
-            <span className="material-symbols-outlined text-[16px] text-error">shield</span>
+            <span className="material-symbols-outlined text-[16px]">shield</span>
             <span>Security Summary</span>
-            <span className="px-1.5 py-0.5 bg-error text-white rounded font-mono text-[10px] font-semibold">14 Blocked</span>
+            <span className="px-2 py-0.5 bg-rose-600 text-white rounded-full font-mono text-[10px] font-bold">14 Blocked</span>
           </button>
           <button
             onClick={handleExportCsv}
-            className="px-3.5 py-2 rounded-lg bg-[#F8F6F9] hover:bg-[#E8E0EA] border border-[#E8E0EA] text-[#170B1B] text-xs font-semibold flex items-center gap-2 transition-colors shadow-xs"
+            className="px-4 py-2 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs"
           >
             <span className="material-symbols-outlined text-[16px]">file_download</span>
             <span>Export CSV</span>
@@ -229,89 +219,84 @@ export default function Events({ showToast }: Props) {
       </div>
 
       {/* KPI metric cards grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         {/* Card 1: Total Events */}
-        <div className="bg-white border border-[#E8E0EA] p-4 rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-medium text-[#827787] uppercase tracking-wider">TOTAL EVENTS (24H)</span>
-            <span className="material-symbols-outlined text-[#827787] text-[18px]">receipt_long</span>
+        <div className="kpi-card glow-primary">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">TOTAL EVENTS (24H)</span>
+            <span className="material-symbols-outlined text-[20px] text-[#74537a]">receipt_long</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold text-[#170B1B] font-mono">1,428</span>
-            <span className="text-xs text-secondary font-mono">+12.4% vs yday</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">1,428</span>
+            <span className="badge badge-purple">+12.4% yday</span>
           </div>
-          <div className="mt-3 flex items-center gap-1.5">
-            <div className="w-full bg-[#F8F6F9] h-1.5 rounded-full overflow-hidden">
-              <div className="bg-secondary h-full" style={{ width: '78%' }}></div>
-            </div>
-            <span className="text-xs text-[#827787] font-mono">Normal</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>Normal cadence</span>
+            <Sparkline data={[1100, 1250, 1300, 1428]} color="purple" width={48} height={16} />
           </div>
-          <div className="absolute right-0 top-0 bottom-0 w-1 bg-secondary rounded-r"></div>
         </div>
 
         {/* Card 2: Security Denials */}
-        <div className="bg-white border border-[#E8E0EA] p-4 rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-medium text-error uppercase tracking-wider">SECURITY DENIALS</span>
-            <span className="material-symbols-outlined text-error text-[18px]">gpp_bad</span>
+        <div className="kpi-card glow-danger">
+          <div className="flex items-center justify-between text-rose-700 text-xs">
+            <span className="font-semibold tracking-wide">SECURITY DENIALS</span>
+            <span className="material-symbols-outlined text-[20px] text-rose-600">gpp_bad</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold text-error font-mono">14</span>
-            <span className="text-xs text-error font-mono">blocked attempts</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-rose-700 font-mono">14</span>
+            <span className="badge badge-rose">Blocked</span>
           </div>
-          <div className="mt-3 flex items-center justify-between text-xs text-[#827787]">
-            <span>Neutron SG + eBPF drop</span>
-            <span className="font-mono text-error font-medium">100% Mitigated</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span className="text-rose-700 font-semibold">100% Mitigated</span>
+            <Sparkline data={[2, 4, 8, 12, 14]} color="rose" width={48} height={16} />
           </div>
-          <div className="absolute right-0 top-0 bottom-0 w-1 bg-error rounded-r"></div>
         </div>
 
         {/* Card 3: Gateway VRRP Shifts */}
-        <div className="bg-white border border-[#E8E0EA] p-4 rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-medium text-[#827787] uppercase tracking-wider">GATEWAY STATE SHIFTS</span>
-            <span className="material-symbols-outlined text-secondary text-[18px]">swap_horiz</span>
+        <div className="kpi-card glow-healthy">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">GATEWAY STATE SHIFTS</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">swap_horiz</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold text-[#170B1B] font-mono">2</span>
-            <span className="text-xs text-[#827787] font-mono">VRRP heartbeat shifts</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">2</span>
+            <span className="badge badge-emerald">VRRP Sync OK</span>
           </div>
-          <div className="mt-3 flex items-center justify-between text-xs text-[#827787]">
-            <span>Current VIP owner</span>
-            <span className="font-mono text-secondary font-medium">gw1 (MASTER)</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>VIP on gw1 (MASTER)</span>
+            <Sparkline data={[1, 1, 2, 2, 2]} color="emerald" width={48} height={16} />
           </div>
-          <div className="absolute right-0 top-0 bottom-0 w-1 bg-secondary-container rounded-r"></div>
         </div>
 
         {/* Card 4: IPAM Lifecycle */}
-        <div className="bg-white border border-[#E8E0EA] p-4 rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[11px] font-medium text-[#827787] uppercase tracking-wider">IPAM LIFECYCLE EVENTS</span>
-            <span className="material-symbols-outlined text-[#827787] text-[18px]">lan</span>
+        <div className="kpi-card glow-info">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">IPAM LIFECYCLE</span>
+            <span className="material-symbols-outlined text-[20px] text-blue-600">lan</span>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold text-[#170B1B] font-mono">68</span>
-            <span className="text-xs text-[#827787] font-mono">leases/quarantines</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">68</span>
+            <span className="badge badge-blue">Allocations</span>
           </div>
-          <div className="mt-3 flex items-center justify-between text-xs text-[#827787]">
-            <span>Pool Subnet 10.20.10.0/24</span>
-            <span className="font-mono text-secondary">2 in cooldown</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>2 in cooldown</span>
+            <Sparkline data={[45, 52, 60, 68]} color="blue" width={48} height={16} />
           </div>
-          <div className="absolute right-0 top-0 bottom-0 w-1 bg-[#E8E0EA] rounded-r"></div>
         </div>
       </div>
 
-      {/* Dense filter bar */}
-      <div className="bg-white border border-[#E8E0EA] p-3 rounded-xl shadow-xs flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
-        {/* Left filters */}
+      {/* Filter Bar */}
+      <div className="card-elevated p-4 flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3.5">
         <div className="flex flex-wrap items-center gap-2">
-          {/* Range pill */}
-          <div className="inline-flex p-1 bg-[#F8F6F9] border border-[#E8E0EA] rounded-lg text-xs font-mono">
+          {/* Range pills */}
+          <div className="inline-flex p-1 bg-[#F8F6F9] rounded-xl text-xs font-mono">
             {(['1h', '24h', '7d'] as const).map(r => (
               <button
                 key={r}
                 onClick={() => setRange(r)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${range === r ? 'bg-white text-[#170B1B] shadow-xs font-semibold' : 'text-[#827787] hover:text-[#170B1B]'}`}
+                className={`px-3 py-1 rounded-lg transition-all duration-200 cursor-pointer ${
+                  range === r ? 'bg-white text-[#170B1B] shadow-xs font-bold' : 'text-[#827787] hover:text-[#170B1B]'
+                }`}
               >
                 {r}
               </button>
@@ -322,7 +307,7 @@ export default function Events({ showToast }: Props) {
           <select
             value={severityFilter}
             onChange={e => setSeverityFilter(e.target.value)}
-            className="bg-[#F8F6F9] hover:bg-[#E8E0EA] border border-[#E8E0EA] text-[#170B1B] rounded-lg px-3 py-1.5 text-xs font-medium cursor-pointer focus:outline-none"
+            className="bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] rounded-xl px-3 py-1.5 text-xs font-semibold cursor-pointer focus:outline-none transition-all"
           >
             <option value="ALL">Severity: All Levels</option>
             <option value="CRITICAL">Critical &amp; Denials</option>
@@ -334,7 +319,7 @@ export default function Events({ showToast }: Props) {
           <select
             value={categoryFilter}
             onChange={e => setCategoryFilter(e.target.value)}
-            className="bg-[#F8F6F9] hover:bg-[#E8E0EA] border border-[#E8E0EA] text-[#170B1B] rounded-lg px-3 py-1.5 text-xs font-medium cursor-pointer focus:outline-none"
+            className="bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] rounded-xl px-3 py-1.5 text-xs font-semibold cursor-pointer focus:outline-none transition-all"
           >
             <option value="ALL">Category: All Components</option>
             <option value="SECURITY">Security Block</option>
@@ -347,271 +332,124 @@ export default function Events({ showToast }: Props) {
           {/* Actor filter button */}
           <button
             onClick={cycleActor}
-            className="px-3 py-1.5 rounded-lg bg-[#F8F6F9] hover:bg-[#E8E0EA] border border-[#E8E0EA] text-[#170B1B] text-xs font-medium flex items-center gap-1.5 transition-colors"
+            className="px-3.5 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px] text-[#827787]">person_search</span>
-            <span>Actor: <strong className="font-mono text-secondary">{actorFilter === 'ALL' ? 'Any' : actorFilter}</strong></span>
+            <span className="material-symbols-outlined text-[15px] text-[#74537a]">account_circle</span>
+            <span>Actor: {actorFilter}</span>
           </button>
         </div>
 
-        {/* Right search box */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1 lg:w-72">
-            <span className="material-symbols-outlined text-[18px] text-[#827787] absolute left-3 top-2 pointer-events-none">search</span>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search IPs, CIDRs, sandboxes..."
-              className="w-full bg-[#F8F6F9] text-[#170B1B] placeholder-[#827787] text-xs pl-9 pr-3 py-1.5 rounded-lg border border-[#E8E0EA] focus:outline-none focus:border-[#2D0035] transition-all"
-            />
-          </div>
-          <button
-            onClick={() => {
-              setSeverityFilter('ALL')
-              setCategoryFilter('ALL')
-              setActorFilter('ALL')
-              setSearchQuery('')
-            }}
-            title="Reset Filters"
-            className="p-1.5 text-[#827787] hover:text-[#170B1B] rounded-lg hover:bg-[#F8F6F9] border border-[#E8E0EA] transition-colors"
-          >
-            <span className="material-symbols-outlined text-[18px]">restart_alt</span>
-          </button>
+        {/* Search */}
+        <div className="relative min-w-[240px]">
+          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
+            <span className="material-symbols-outlined text-[17px]">search</span>
+          </span>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Search audit trail by actor, IP, or type…"
+            className="w-full pl-9 pr-3.5 py-1.5 bg-[#F8F6F9] focus:bg-white text-xs rounded-xl text-[#170B1B] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all shadow-xs"
+          />
         </div>
       </div>
 
-      {/* Main audit event stream table */}
-      <div className="bg-white border border-[#E8E0EA] rounded-xl shadow-xs overflow-hidden flex flex-col">
-        {/* Table header status bar */}
-        <div className="px-5 py-3 bg-[#F8F6F9] border-b border-[#E8E0EA] flex items-center justify-between text-[#827787] text-xs font-mono">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-[15px] text-secondary">history_toggle_off</span>
-            <span>BUFFERED LOG ENTRIES: <strong className="text-[#170B1B]">{filteredRows.length} of 1,428 visible</strong></span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1 font-mono text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-error"></span> 1 Security Denied
-            </span>
-            <span className="flex items-center gap-1 font-mono text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-amber-500"></span> 1 IPAM Cooldown
-            </span>
-            <span className="flex items-center gap-1 font-mono text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-secondary"></span> 3 Operative
-            </span>
-          </div>
-        </div>
-
-        {/* Table structure */}
+      {/* Audit Log Table (Spacious table-modern) */}
+      <div className="card-elevated overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="table-modern">
             <thead>
-              <tr className="bg-[#F8F6F9] text-[#827787] text-[11px] uppercase tracking-wider font-mono border-b border-[#E8E0EA]">
-                <th className="py-3 px-4">Timestamp (UTC)</th>
-                <th className="py-3 px-4">Actor</th>
-                <th className="py-3 px-4">Action Type</th>
-                <th className="py-3 px-4">Target Object</th>
-                <th className="py-3 px-4">Severity</th>
-                <th className="py-3 px-4">Details &amp; Verdict</th>
-                <th className="py-3 px-4 text-right">Inspect</th>
+              <tr>
+                <th>Timestamp</th>
+                <th>Actor</th>
+                <th>Action &amp; Target</th>
+                <th>Severity</th>
+                <th>Details</th>
+                <th className="text-right">Expand</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[#E8E0EA]">
+            <tbody>
               {filteredRows.map(row => {
                 const isExpanded = !!expandedRows[row.id]
                 return (
-                  <tr key={row.id} className="contents">
-                    <tr
-                      onClick={() => toggleRow(row.id)}
-                      className="hover:bg-[#F8F6F9] transition-colors cursor-pointer"
-                    >
-                      <td className="py-3.5 px-4 font-mono text-[#827787] whitespace-nowrap">
-                        {row.time}
-                        <span className="block text-[10px] text-gray-400">{row.timeAgo}</span>
-                      </td>
-                      <td className="py-3.5 px-4 font-mono whitespace-nowrap">
-                        <span className="px-2 py-0.5 rounded bg-[#F8F6F9] border border-[#E8E0EA] text-secondary font-semibold">
-                          {row.actor}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-mono font-semibold ${
-                          row.severity === 'CRITICAL' ? 'bg-error text-white' : row.severity === 'WARNING' ? 'bg-amber-100 text-amber-900 border border-amber-200' : 'bg-[#F8F6F9] border border-[#E8E0EA] text-[#170B1B]'
-                        }`}>
-                          {row.action}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 font-mono whitespace-nowrap text-[#170B1B] font-semibold">
-                        {row.target}
-                      </td>
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <span className={`badge ${row.severity === 'CRITICAL' ? 'badge-rose' : row.severity === 'WARNING' ? 'badge-amber' : 'badge-blue'}`}>
-                          {row.severity}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-[#4e444d] max-w-md truncate">
-                        {row.details}
-                      </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <button
-                          onClick={e => { e.stopPropagation(); toggleRow(row.id); }}
-                          className="p-1 rounded bg-[#F8F6F9] hover:bg-[#E8E0EA] text-[#170B1B] transition-colors"
-                        >
-                          <span className={`material-symbols-outlined text-[18px] transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
-                            expand_more
-                          </span>
-                        </button>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr className="bg-[#F8F6F9]/60">
-                        <td colSpan={7} className="p-4 border-l-4 border-secondary">
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
-                            <div className="p-3 bg-white border border-[#E8E0EA] rounded-lg shadow-xs space-y-1">
-                              <span className="text-[#827787] text-[10px] uppercase font-bold">{row.accordion.panel1Title}</span>
-                              {row.accordion.panel1Lines.map((l, idx) => (
-                                <div key={idx} className="text-[#170B1B]">{l}</div>
-                              ))}
-                            </div>
-                            <div className="p-3 bg-white border border-[#E8E0EA] rounded-lg shadow-xs space-y-1">
-                              <span className="text-[#827787] text-[10px] uppercase font-bold">{row.accordion.panel2Title}</span>
-                              {row.accordion.panel2Lines.map((l, idx) => (
-                                <div key={idx} className="text-[#170B1B]">{l}</div>
-                              ))}
-                            </div>
-                            <div className="p-3 bg-white border border-[#E8E0EA] rounded-lg shadow-xs flex flex-col justify-between gap-2">
-                              <div>
-                                <span className="text-[#827787] text-[10px] uppercase font-bold">{row.accordion.panel3Title}</span>
-                                <p className="font-sans text-xs text-[#4e444d] mt-1">{row.accordion.panel3Desc}</p>
-                              </div>
-                              {row.accordion.actionBtnText && (
-                                <button
-                                  onClick={() => showToast('Action Dispatched', `${row.accordion.actionBtnText} initiated via OpenStack control plane.`, 'info')}
-                                  className={`px-3 py-1 rounded text-xs font-sans font-semibold self-start ${
-                                    row.accordion.actionBtnType === 'error' ? 'bg-error text-white hover:opacity-90' : 'bg-[#2D0035] text-white hover:bg-[#3D0346]'
-                                  }`}
-                                >
-                                  {row.accordion.actionBtnText}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
+                  <tr key={row.id} className="cursor-pointer" onClick={() => toggleRow(row.id)}>
+                    <td className="whitespace-nowrap font-mono text-xs text-[#827787]">
+                      <div className="font-semibold text-[#170B1B]">{row.time}</div>
+                      <div className="text-[10px] text-[#827787]">{row.timeAgo}</div>
+                    </td>
+                    <td className="font-mono text-xs font-semibold text-[#74537a] whitespace-nowrap">
+                      {row.actor}
+                    </td>
+                    <td>
+                      <div className="font-bold text-[#170B1B] text-xs">{row.action}</div>
+                      <div className="font-mono text-[11px] text-[#827787] mt-0.5">{row.target}</div>
+                    </td>
+                    <td className="whitespace-nowrap">
+                      <span className={`badge ${
+                        row.severity === 'CRITICAL' ? 'badge-rose' : row.severity === 'WARNING' ? 'badge-amber' : 'badge-emerald'
+                      }`}>
+                        {row.severity}
+                      </span>
+                    </td>
+                    <td className="text-xs text-[#170B1B] max-w-md truncate">
+                      {row.details}
+                    </td>
+                    <td className="text-right whitespace-nowrap">
+                      <span className={`material-symbols-outlined text-[18px] text-[#827787] transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}>
+                        expand_more
+                      </span>
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
-
-        {/* Pagination bar */}
-        <div className="px-5 py-3 bg-[#F8F6F9] border-t border-[#E8E0EA] flex items-center justify-between text-xs text-[#827787]">
-          <div className="flex items-center gap-2 font-mono">
-            <span className="font-semibold text-[#170B1B]">1 - {filteredRows.length}</span>
-            <span>of</span>
-            <span className="font-semibold text-[#170B1B]">1,428</span>
-            <span>audit frames</span>
-          </div>
-          <div className="flex items-center gap-2 font-mono">
-            <button disabled className="px-2.5 py-1 rounded bg-white border border-[#E8E0EA] text-[#827787] opacity-50 cursor-not-allowed">
-              Prev
-            </button>
-            <span className="font-semibold text-[#170B1B]">Page 1 / 286</span>
-            <button
-              onClick={() => showToast('Telemetry Bus', 'Viewing buffered records from live telemetry stream.', 'info')}
-              className="px-2.5 py-1 rounded bg-white border border-[#E8E0EA] hover:bg-slate-50 text-[#170B1B] font-semibold"
-            >
-              Next
-            </button>
-          </div>
-        </div>
       </div>
 
-      {/* Security drawer sub panel */}
+      {/* Security Drawer Modal */}
       {showSecurityDrawer && (
-        <div className="bg-white border border-[#E8E0EA] rounded-xl shadow-xs p-6 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-[#E8E0EA] gap-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-error text-white flex items-center justify-center shadow-xs">
-                <span className="material-symbols-outlined text-[22px]">shield_with_heart</span>
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm animate-fade-in" onClick={() => setShowSecurityDrawer(false)}>
+          <div
+            className="absolute right-0 top-0 h-full w-[480px] bg-white rounded-l-3xl shadow-2xl p-7 overflow-y-auto space-y-6"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3.5 border-b border-purple-900/5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 flex items-center justify-center text-rose-600">
+                  <span className="material-symbols-outlined text-[20px]">shield</span>
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-[#170B1B]">Cluster Security Audit</h3>
+                  <p className="text-xs text-[#827787]">eBPF &amp; Neutron Firewall Traps</p>
+                </div>
               </div>
-              <div>
-                <h2 className="text-base font-bold text-[#170B1B]">Security Policy Blocks &amp; Lateral Drops</h2>
-                <span className="text-xs text-[#827787] font-mono">Neutron SG Rule Evaluation &amp; Gateway Port Protections</span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-1 rounded-full bg-rose-50 text-error font-mono text-xs font-semibold border border-rose-200">
-                14 Total Blocks in 24h
-              </span>
               <button
                 onClick={() => setShowSecurityDrawer(false)}
-                className="p-1 rounded-lg text-[#827787] hover:text-[#170B1B] hover:bg-[#F8F6F9]"
+                className="w-8 h-8 rounded-xl text-[#827787] hover:text-[#170B1B] hover:bg-[#F5F3F7] flex items-center justify-center cursor-pointer"
               >
-                <span className="material-symbols-outlined text-[20px]">close</span>
+                <span className="material-symbols-outlined text-[18px]">close</span>
               </button>
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Panel 1 */}
-            <div className="p-4 bg-[#F8F6F9] border border-[#E8E0EA] rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#170B1B] flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-error">alt_route</span>
-                  Cross-Sandbox Lateral Traffic
-                </span>
-                <span className="px-2 py-0.5 rounded bg-error text-white font-mono text-[10px] font-bold">11 DROPPED</span>
+            <div className="space-y-3">
+              <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200/50 space-y-2">
+                <span className="badge badge-rose">Active Enforcement</span>
+                <div className="font-bold text-rose-900 text-xs">Port 8000 Scan Drops: 14 Events</div>
+                <p className="text-xs text-rose-800 leading-relaxed">
+                  Tenant sandboxes blocked from probing HAProxy management port 8000 and internal control plane RPC endpoints.
+                </p>
               </div>
-              <p className="text-xs text-[#827787]">
-                Attempts by sandboxes to initiate direct point-to-point connections with neighboring sandbox VLAN namespaces without going through approved ingress proxies.
-              </p>
-              <div className="space-y-2 font-mono text-xs pt-1">
-                <div className="p-2.5 bg-white border border-[#E8E0EA] rounded-lg flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-[#170B1B]">sb-analytics → sb-finance-db</div>
-                    <span className="text-[10px] text-[#827787]">Rule ID: cstam-iso-strict-91</span>
-                  </div>
-                  <span className="text-error font-bold">TCP 5432 REJECT</span>
-                </div>
-                <div className="p-2.5 bg-white border border-[#E8E0EA] rounded-lg flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-[#170B1B]">sb-crawler-02 → sb-internal-auth</div>
-                    <span className="text-[10px] text-[#827787]">Rule ID: cstam-iso-strict-91</span>
-                  </div>
-                  <span className="text-error font-bold">TCP 6379 REJECT</span>
-                </div>
-              </div>
-            </div>
 
-            {/* Panel 2 */}
-            <div className="p-4 bg-[#F8F6F9] border border-[#E8E0EA] rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#170B1B] flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[16px] text-error">router</span>
-                  Gateway Infrastructure Management Probes
-                </span>
-                <span className="px-2 py-0.5 rounded bg-error text-white font-mono text-[10px] font-bold">3 DROPPED</span>
-              </div>
-              <p className="text-xs text-[#827787]">
-                Tenant VMs targeting CSTAM VIP management listeners, OpenStack API daemons, or Keepalived control sockets directly.
-              </p>
-              <div className="space-y-2 font-mono text-xs pt-1">
-                <div className="p-2.5 bg-white border border-[#E8E0EA] rounded-lg flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-[#170B1B]">10.20.10.14 → gw1:8000 (REST API)</div>
-                    <span className="text-[10px] text-[#827787]">Rule ID: cstam-sg-isolated-04</span>
-                  </div>
-                  <span className="text-error font-bold">DROP_SILENT</span>
+              <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2 text-xs">
+                <div className="font-bold text-[#170B1B]">Security Group Policies Active</div>
+                <div className="flex justify-between text-[#827787]">
+                  <span>cstam-sg-isolated-04:</span>
+                  <span className="font-mono font-bold text-emerald-700">ENFORCED</span>
                 </div>
-                <div className="p-2.5 bg-white border border-[#E8E0EA] rounded-lg flex items-center justify-between">
-                  <div>
-                    <div className="font-semibold text-[#170B1B]">10.20.10.42 → gw1:22 (SSH Probe)</div>
-                    <span className="text-[10px] text-[#827787]">Rule ID: cstam-mgmt-deny-all</span>
-                  </div>
-                  <span className="text-error font-bold">TCP RST</span>
+                <div className="flex justify-between text-[#827787]">
+                  <span>Anti-Spoof ARP Shield:</span>
+                  <span className="font-mono font-bold text-emerald-700">ENABLED</span>
                 </div>
               </div>
             </div>

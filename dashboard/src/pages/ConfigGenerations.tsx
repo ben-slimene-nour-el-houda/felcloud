@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { triggerSync, triggerRollback } from '../api'
+import { Sparkline } from '../components/Sparkline'
 
 interface Props {
   onOpenDiff: (from: string, to: string) => void
@@ -26,7 +27,7 @@ defaults
     timeout server  50000ms
 
 frontend cstam_fe
-    bind 10.20.20.246:443 ssl crt /etc/ssl/cstam-west.pem alpn h2,http/1.1
+    bind 203.0.113.10:443 ssl crt /etc/ssl/cstam-west.pem alpn h2,http/1.1
     mode http
     acl is_quarantine src -f /etc/haproxy/quarantine_ips.lst
     http-request deny if is_quarantine
@@ -73,7 +74,7 @@ backend sandbox_be
 
   function triggerRollbackDemo() {
     const originalCode = code
-    setCode(`frontend cstam_fe\n    bind 10.20.20.246:443\n    backend sandbox_be\n    balance invalid_weight_algorithm_corrupt`)
+    setCode(`frontend cstam_fe\n    bind 203.0.113.10:443\n    backend sandbox_be\n    balance invalid_weight_algorithm_corrupt`)
     showToast('Corrupt Config Injection', 'Corrupt clause injected into test worker node...', 'warning')
 
     setTimeout(async () => {
@@ -110,7 +111,7 @@ backend sandbox_be
   return (
     <div className="space-y-6">
       {/* Screen header & actions ribbon */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 bg-white p-6 rounded-xl border border-[#E8E0EA] shadow-xs">
+      <div className="card-elevated p-6 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div className="space-y-1.5">
           <div className="flex items-center gap-2 text-xs font-mono text-[#827787]">
             <span>Cluster CSTAM-West</span>
@@ -118,29 +119,29 @@ backend sandbox_be
             <span className="text-[#2D0035] font-semibold">Config Generations</span>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-[22px] font-bold text-[#170B1B] tracking-tight">HAProxy Data Plane Config Generations</h1>
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-secondary-container text-on-secondary-container text-xs font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-surface-tint animate-pulse"></span>
+            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">HAProxy Data Plane Config Generations</h1>
+            <span className="badge badge-emerald">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               SYNCED
             </span>
           </div>
-          <p className="text-xs text-[#827787] max-w-3xl">
+          <p className="text-xs text-[#827787] max-w-3xl leading-relaxed">
             Immutable state transitions with sub-second atomic reload, synthetic parsing tests, and self-healing rollbacks across edge nodes.
           </p>
         </div>
 
         {/* Action buttons */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={triggerRollbackDemo}
-            className="h-9 px-3.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 text-xs font-semibold hover:bg-rose-100 transition-colors flex items-center gap-1.5 shadow-xs"
+            className="px-3.5 py-2 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 shadow-xs cursor-pointer border border-rose-200/50"
           >
             <span className="material-symbols-outlined text-[16px]">history_toggle_off</span>
-            <span>Test Corrupt Config (Auto-Rollback)</span>
+            <span>Test Corrupt Config</span>
           </button>
           <button
             onClick={() => showToast('Config Tree Exported', 'Downloaded CSTAM 3.0 configuration bundle (JSON + HAProxy templates).', 'info')}
-            className="h-9 px-3.5 rounded-lg bg-white border border-[#E8E0EA] hover:bg-slate-50 text-[#170B1B] text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-xs"
+            className="px-3.5 py-2 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 shadow-xs cursor-pointer"
           >
             <span className="material-symbols-outlined text-[16px]">schema</span>
             <span>Export Config Tree</span>
@@ -150,7 +151,7 @@ backend sandbox_be
               const el = document.getElementById('haproxy-editor')
               if (el) el.focus()
             }}
-            className="h-9 px-4 rounded-lg bg-[#2D0035] hover:bg-[#3D0346] text-white text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-xs"
+            className="px-4 py-2 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all duration-200 flex items-center gap-1.5 shadow-md hover:shadow-lg cursor-pointer"
           >
             <span className="material-symbols-outlined text-[16px]">add_circle</span>
             <span>Apply New Config</span>
@@ -159,80 +160,76 @@ backend sandbox_be
       </div>
 
       {/* KPI metric cards grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         {/* KPI 1 */}
-        <div className="p-4 bg-white border border-[#E8E0EA] rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between text-[#827787]">
-            <span className="text-[11px] font-medium uppercase tracking-wider">Current Active Generation</span>
-            <span className="material-symbols-outlined text-[18px] text-surface-tint">verified</span>
+        <div className="kpi-card glow-healthy">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Active Generation</span>
+            <span className="material-symbols-outlined text-[20px] text-emerald-600">verified</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono tracking-tight">{activeGen}</span>
-            <span className="text-xs text-on-secondary-container bg-secondary-container px-2 py-0.5 rounded font-mono">Live</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">{activeGen}</span>
+            <span className="badge badge-emerald">Live</span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-[#827787] pt-2 border-t border-[#E8E0EA]">
-            <span>Active Nodes:</span>
-            <span className="font-mono text-[#170B1B] font-semibold">gw1 &amp; gw2</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>Active: <strong className="text-[#170B1B]">gw1 &amp; gw2</strong></span>
+            <Sparkline data={[1, 1, 1, 1, 1]} color="emerald" width={48} height={16} />
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-surface-tint"></div>
         </div>
 
         {/* KPI 2 */}
-        <div className="p-4 bg-white border border-[#E8E0EA] rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between text-[#827787]">
-            <span className="text-[11px] font-medium uppercase tracking-wider">Rollback Latency</span>
-            <span className="material-symbols-outlined text-[18px] text-secondary">speed</span>
+        <div className="kpi-card glow-primary">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Rollback Latency</span>
+            <span className="material-symbols-outlined text-[20px] text-[#74537a]">speed</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono tracking-tight">410 ms</span>
-            <span className="text-xs text-secondary font-mono">Mean</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">410 ms</span>
+            <span className="badge badge-purple">Mean</span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-[#827787] pt-2 border-t border-[#E8E0EA]">
-            <span>SLA Threshold:</span>
-            <span className="font-mono text-[#170B1B] font-medium">&lt; 1000 ms</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>SLA: &lt; 1000 ms</span>
+            <Sparkline data={[420, 415, 412, 410]} color="purple" width={48} height={16} />
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-secondary"></div>
         </div>
 
         {/* KPI 3 */}
-        <div className="p-4 bg-white border border-[#E8E0EA] rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between text-[#827787]">
-            <span className="text-[11px] font-medium uppercase tracking-wider">Total Generations</span>
-            <span className="material-symbols-outlined text-[18px] text-on-secondary-container">layers</span>
+        <div className="kpi-card glow-info">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Total Generations</span>
+            <span className="material-symbols-outlined text-[20px] text-blue-600">layers</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono tracking-tight">28</span>
-            <span className="text-xs text-[#827787] font-mono">Revisions</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">28</span>
+            <span className="badge badge-blue">Revisions</span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-[#827787] pt-2 border-t border-[#E8E0EA]">
-            <span>Ledger Horizon:</span>
-            <span className="font-mono text-[#170B1B] font-medium">Last 14 days</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>Last 14 days ledger</span>
+            <Sparkline data={[20, 22, 25, 27, 28]} color="blue" width={48} height={16} />
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-outline-variant"></div>
         </div>
 
         {/* KPI 4 */}
-        <div className="p-4 bg-white border border-[#E8E0EA] rounded-xl shadow-xs flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between text-[#827787]">
-            <span className="text-[11px] font-medium uppercase tracking-wider">Auto-Rejection Rate</span>
-            <span className="material-symbols-outlined text-[18px] text-error">shield_lock</span>
+        <div className="kpi-card glow-warning">
+          <div className="flex items-center justify-between text-[#827787] text-xs">
+            <span className="font-semibold tracking-wide">Auto-Rejection Rate</span>
+            <span className="material-symbols-outlined text-[20px] text-amber-600">shield_lock</span>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono tracking-tight">0.4%</span>
-            <span className="text-xs text-error bg-error-container px-2 py-0.5 rounded font-mono">Guarded</span>
+          <div className="mt-3 flex items-baseline justify-between">
+            <span className="text-2xl font-bold text-[#170B1B] font-mono">0.4%</span>
+            <span className="badge badge-amber">Guarded</span>
           </div>
-          <div className="mt-2 flex items-center justify-between text-xs text-[#827787] pt-2 border-t border-[#E8E0EA]">
-            <span>Rejected in flight:</span>
-            <span className="font-mono text-[#170B1B] font-medium">Data Plane API</span>
+          <div className="mt-4 flex items-center justify-between text-xs text-[#827787]">
+            <span>Safe Hot-Reload</span>
+            <Sparkline data={[1, 0, 0, 1, 0]} color="amber" width={48} height={16} />
           </div>
-          <div className="absolute bottom-0 left-0 right-0 h-1 bg-error"></div>
         </div>
       </div>
 
       {/* Main operational workspace grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left / Main Column: Vertical audit timeline (7 cols) */}
-        <section className="lg:col-span-7 flex flex-col gap-4">
+        {/* Left Column: Vertical audit timeline (7 cols) */}
+        <section className="lg:col-span-7 space-y-4">
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-2">
               <span className="material-symbols-outlined text-[20px] text-[#2D0035]">timeline</span>
@@ -241,14 +238,14 @@ backend sandbox_be
             <span className="text-xs text-[#827787] font-mono">Immutable Hash Chain</span>
           </div>
 
-          <div className="flex flex-col gap-3">
+          <div className="space-y-4">
             {/* Gen 412: Live Active */}
-            <div className="p-5 bg-white border border-[#E8E0EA] rounded-xl shadow-xs relative overflow-hidden">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3">
+            <div className="card-elevated p-6 space-y-4 relative overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-purple-900/5">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="w-3 h-3 rounded-full bg-surface-tint"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
                   <span className="text-sm font-bold text-[#170B1B] font-mono">gen-412</span>
-                  <span className="px-2 py-0.5 rounded bg-secondary-container text-on-secondary-container text-xs font-semibold">Active Live</span>
+                  <span className="badge badge-emerald">Active Live</span>
                   <span className="text-xs text-[#827787] font-mono">SHA: e8f44d1</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-[#827787] font-mono">
@@ -256,12 +253,12 @@ backend sandbox_be
                   <span>Applied 8m ago</span>
                 </div>
               </div>
-              <p className="text-xs text-[#170B1B] mt-1">
+              <p className="text-xs text-[#170B1B] leading-relaxed">
                 +2 ingress routes configured for sandboxes; burst ratelimit elevated to 45,000 req/sec across cluster VIP.
               </p>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 pt-3 bg-[#F8F6F9] border border-[#E8E0EA] p-3 rounded-lg">
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-[#F8F6F9] rounded-2xl">
                 <div className="flex items-center gap-2 text-xs text-[#827787] font-mono">
-                  <span className="material-symbols-outlined text-[16px] text-secondary">person</span>
+                  <span className="material-symbols-outlined text-[16px] text-[#74537a]">person</span>
                   <span>s.chen@eng</span>
                   <span>•</span>
                   <span>gw1, gw2 synced</span>
@@ -269,30 +266,27 @@ backend sandbox_be
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => onOpenDiff('gen-412', 'gen-411')}
-                    className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-[#170B1B] border border-[#E8E0EA] text-xs font-medium transition-colors flex items-center gap-1 shadow-xs"
+                    className="px-3 py-1.5 rounded-xl bg-white text-[#170B1B] text-xs font-semibold shadow-xs transition-all cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[15px]">difference</span>
-                    <span>Inspect Diff</span>
+                    Inspect Diff
                   </button>
                   <button
                     onClick={() => downloadCfg('gen-412')}
-                    className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-[#170B1B] border border-[#E8E0EA] text-xs font-medium transition-colors flex items-center gap-1 shadow-xs"
+                    className="px-3 py-1.5 rounded-xl bg-white text-[#170B1B] text-xs font-semibold shadow-xs transition-all cursor-pointer"
                   >
-                    <span className="material-symbols-outlined text-[15px]">download</span>
-                    <span>Download haproxy.cfg</span>
+                    Download .cfg
                   </button>
                 </div>
               </div>
-              <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-surface-tint"></div>
             </div>
 
             {/* Gen 411: Stable Candidate */}
-            <div className="p-5 bg-white border border-[#E8E0EA] rounded-xl shadow-xs relative overflow-hidden">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3">
+            <div className="card-elevated p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-purple-900/5">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="w-3 h-3 rounded-full bg-outline-variant"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>
                   <span className="text-sm font-bold text-[#170B1B] font-mono">gen-411</span>
-                  <span className="px-2 py-0.5 rounded bg-surface-container-high text-[#170B1B] text-xs font-semibold">Stable Candidate</span>
+                  <span className="badge badge-blue">Stable Candidate</span>
                   <span className="text-xs text-[#827787] font-mono">SHA: b0991c2</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-[#827787] font-mono">
@@ -300,80 +294,56 @@ backend sandbox_be
                   <span>Applied 3h ago</span>
                 </div>
               </div>
-              <p className="text-xs text-[#170B1B] mt-1">
-                Initial dual-spine VIP binding to 10.20.20.246 and health check path stabilization for upstream pods.
+              <p className="text-xs text-[#170B1B] leading-relaxed">
+                Initial dual-spine VIP binding to 203.0.113.10 and health check path stabilization for upstream pods.
               </p>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 pt-3 bg-[#F8F6F9] border border-[#E8E0EA] p-3 rounded-lg">
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-[#F8F6F9] rounded-2xl">
                 <div className="flex items-center gap-2 text-xs text-[#827787] font-mono">
-                  <span className="material-symbols-outlined text-[16px] text-secondary">person</span>
+                  <span className="material-symbols-outlined text-[16px] text-[#74537a]">person</span>
                   <span>a.kumar@eng</span>
                   <span>•</span>
                   <span>Verified in Staging 48h</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => executeRollback('gen-411')}
-                    className="px-3.5 py-1.5 rounded-lg bg-[#2D0035] text-white hover:bg-[#3D0346] text-xs font-semibold transition-colors flex items-center gap-1.5 shadow-xs"
-                  >
-                    <span className="material-symbols-outlined text-[15px]">undo</span>
-                    <span>One-Click Rollback</span>
-                  </button>
-                </div>
+                <button
+                  onClick={() => executeRollback('gen-411')}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <span className="material-symbols-outlined text-[15px]">undo</span>
+                  <span>One-Click Rollback</span>
+                </button>
               </div>
-              <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-outline-variant"></div>
             </div>
 
-            {/* Gen 410: Auto-Rolled Back Alert */}
-            <div className="p-5 bg-white border border-[#E8E0EA] rounded-xl shadow-xs relative overflow-hidden">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3">
+            {/* Gen 410: Auto-Rolled Back */}
+            <div className="card-elevated p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-purple-900/5">
                 <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="w-3 h-3 rounded-full bg-error animate-ping"></span>
+                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
                   <span className="text-sm font-bold text-[#170B1B] font-mono">gen-410</span>
-                  <span className="px-2 py-0.5 rounded bg-error-container text-on-error-container text-xs font-semibold">Auto-Rolled Back</span>
+                  <span className="badge badge-rose">Auto-Rolled Back</span>
                   <span className="text-xs text-[#827787] font-mono">SHA: 77a119f</span>
                 </div>
-                <div className="flex items-center gap-1.5 text-xs text-error font-mono">
+                <div className="flex items-center gap-1.5 text-xs text-rose-700 font-mono font-semibold">
                   <span className="material-symbols-outlined text-[16px]">warning</span>
                   <span>5h ago (Automated CI)</span>
                 </div>
               </div>
-              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 mt-1">
-                <div className="flex items-start gap-2">
-                  <span className="material-symbols-outlined text-[18px] text-error shrink-0 mt-0.5">error</span>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-bold font-mono">RELOAD_ABORTED: Syntax error on backend balance clause</span>
-                    <p className="text-xs">
-                      Keyword &apos;balance roundrobin_weighted&apos; unrecognized by HAProxy 2.8. Self-healing roll-back cleanly executed in 380ms. Zero dropped connections on active traffic flow.
-                    </p>
-                  </div>
-                </div>
+              <div className="p-4 rounded-2xl bg-rose-50/70 border border-rose-200/50 text-rose-900 space-y-1">
+                <div className="text-xs font-bold font-mono">RELOAD_ABORTED: Syntax error on backend balance clause</div>
+                <p className="text-xs text-rose-800 leading-relaxed">
+                  Keyword &apos;balance roundrobin_weighted&apos; unrecognized by HAProxy 2.8. Self-healing rollback cleanly executed in 380ms. Zero dropped connections on active traffic flow.
+                </p>
               </div>
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 pt-3 bg-[#F8F6F9] border border-[#E8E0EA] p-3 rounded-lg">
-                <div className="flex items-center gap-2 text-xs text-[#827787] font-mono">
-                  <span className="material-symbols-outlined text-[16px]">smart_toy</span>
-                  <span>ci-pipeline-worker-9</span>
-                  <span>•</span>
-                  <span className="text-error font-semibold">Triage Ticket #ENG-9104</span>
-                </div>
-                <button
-                  onClick={() => onOpenDiff('gen-410', 'gen-409')}
-                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-slate-50 text-[#170B1B] border border-[#E8E0EA] text-xs font-medium transition-colors flex items-center gap-1 shadow-xs"
-                >
-                  <span className="material-symbols-outlined text-[15px]">search</span>
-                  <span>View Failure Trace</span>
-                </button>
-              </div>
-              <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-error"></div>
             </div>
 
-            {/* Historical generations accordion */}
-            <div className="p-4 bg-[#F8F6F9] border border-[#E8E0EA] rounded-xl shadow-xs space-y-2">
+            {/* Archived Generations Accordion */}
+            <div className="card-elevated p-5 space-y-2">
               <button
                 onClick={() => setShowHistory(!showHistory)}
-                className="flex items-center justify-between w-full text-left text-xs font-semibold text-[#170B1B]"
+                className="flex items-center justify-between w-full text-left text-xs font-bold text-[#170B1B] cursor-pointer"
               >
                 <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-[18px] text-surface-tint">history</span>
+                  <span className="material-symbols-outlined text-[18px] text-[#74537a]">history</span>
                   <span>Archived Generations (Revisions 409 down to 385)</span>
                 </div>
                 <span className={`material-symbols-outlined text-[18px] transition-transform ${showHistory ? 'rotate-180' : ''}`}>
@@ -381,19 +351,19 @@ backend sandbox_be
                 </span>
               </button>
               {showHistory && (
-                <div className="space-y-2 pt-2">
+                <div className="space-y-2 pt-3">
                   {[
                     { id: 'gen-409', sha: 'a1029c', time: '12h ago', author: 'r.vance@eng' },
                     { id: 'gen-408', sha: 'c9928b', time: '1d ago', author: 's.chen@eng' },
                     { id: 'gen-407', sha: 'f4400a', time: '2d ago', author: 'd.lin@eng' },
                   ].map(h => (
-                    <div key={h.id} className="p-3 bg-white border border-[#E8E0EA] rounded-lg flex items-center justify-between text-xs">
+                    <div key={h.id} className="p-3 bg-[#F8F6F9] rounded-xl flex items-center justify-between text-xs">
                       <div className="flex items-center gap-3 font-mono">
-                        <span className="font-semibold text-[#170B1B]">{h.id}</span>
+                        <span className="font-bold text-[#170B1B]">{h.id}</span>
                         <span className="text-[#827787]">SHA: {h.sha}</span>
                         <span className="text-[#827787]">• Applied {h.time} by {h.author}</span>
                       </div>
-                      <span className="px-2 py-0.5 rounded bg-[#F8F6F9] border border-[#E8E0EA] text-[#827787] text-[11px]">Archived</span>
+                      <span className="badge badge-gray">Archived</span>
                     </div>
                   ))}
                 </div>
@@ -402,46 +372,46 @@ backend sandbox_be
           </div>
         </section>
 
-        {/* Right Column: Interactive Config Editor & Atomic Protocol (5 cols) */}
-        <section className="lg:col-span-5 flex flex-col gap-4">
-          {/* Atomic protocol banner */}
-          <div className="p-4 bg-[#2D0035] text-white rounded-xl shadow-xs space-y-3">
+        {/* Right Column: Interactive Studio (5 cols) */}
+        <section className="lg:col-span-5 space-y-5">
+          {/* Protocol Banner */}
+          <div className="p-5 bg-[#2D0035] text-white rounded-2xl shadow-md space-y-3">
             <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[20px] text-primary-fixed-dim">lock_clock</span>
-              <span className="text-sm font-semibold text-white">3-Phase Atomic Reload Protocol</span>
+              <span className="material-symbols-outlined text-[20px] text-amber-300">lock_clock</span>
+              <span className="text-sm font-bold text-white">3-Phase Atomic Reload Protocol</span>
             </div>
-            <p className="text-xs text-purple-200">
+            <p className="text-xs text-purple-200 leading-relaxed">
               Data plane updates maintain persistent socket handoffs without dropping existing keep-alive sessions.
             </p>
-            <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-xs text-center">
-              <div className="p-2 rounded bg-white/10 flex flex-col items-center">
-                <span className="font-bold text-secondary-container">1. VALIDATE</span>
-                <span className="text-[10px] text-purple-200 mt-0.5">haproxy -c</span>
+            <div className="grid grid-cols-3 gap-2 pt-2 font-mono text-xs text-center">
+              <div className="p-2.5 rounded-xl bg-white/10">
+                <span className="font-bold text-amber-300 text-[11px] block">1. VALIDATE</span>
+                <span className="text-[10px] text-purple-200">haproxy -c</span>
               </div>
-              <div className="p-2 rounded bg-white/10 flex flex-col items-center">
-                <span className="font-bold text-secondary-container">2. COMMIT</span>
-                <span className="text-[10px] text-purple-200 mt-0.5">Socket Transfer</span>
+              <div className="p-2.5 rounded-xl bg-white/10">
+                <span className="font-bold text-emerald-300 text-[11px] block">2. COMMIT</span>
+                <span className="text-[10px] text-purple-200">Socket Transfer</span>
               </div>
-              <div className="p-2 rounded bg-white/10 flex flex-col items-center">
-                <span className="font-bold text-secondary-container">3. VERIFY</span>
-                <span className="text-[10px] text-purple-200 mt-0.5">Drain Procs</span>
+              <div className="p-2.5 rounded-xl bg-white/10">
+                <span className="font-bold text-blue-300 text-[11px] block">3. VERIFY</span>
+                <span className="text-[10px] text-purple-200">Drain Procs</span>
               </div>
             </div>
           </div>
 
-          {/* Interactive editor card */}
-          <div className="p-5 bg-white border border-[#E8E0EA] rounded-xl shadow-xs space-y-3">
-            <div className="flex items-center justify-between pb-2 border-b border-[#E8E0EA]">
+          {/* Interactive Editor Card */}
+          <div className="card-elevated p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-purple-900/5">
               <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-[18px] text-secondary">terminal</span>
+                <span className="material-symbols-outlined text-[18px] text-[#74537a]">terminal</span>
                 <span className="text-sm font-bold text-[#170B1B]">Data Plane Config Studio</span>
               </div>
-              <span className="text-[11px] text-[#827787] font-mono">haproxy.cfg (Live Staging)</span>
+              <span className="badge badge-purple font-mono">haproxy.cfg (Live Staging)</span>
             </div>
-            <div className="relative rounded-lg overflow-hidden bg-[#170B1B] text-gray-200 p-3 font-mono text-xs">
+            <div className="rounded-2xl overflow-hidden bg-[#170B1B] text-gray-200 p-4 font-mono text-xs">
               <div className="flex items-center justify-between pb-2 text-[11px] text-gray-400 border-b border-white/10 mb-2">
-                <span>ACTIVE SYNTAX: HAProxy 2.8-LTS</span>
-                <span className="text-secondary-fixed">Uncommitted Draft</span>
+                <span>SYNTAX: HAProxy 2.8-LTS</span>
+                <span className="text-amber-300 font-semibold">Uncommitted Draft</span>
               </div>
               <textarea
                 id="haproxy-editor"
@@ -452,17 +422,18 @@ backend sandbox_be
                 className="w-full bg-transparent text-gray-100 font-mono text-xs leading-relaxed resize-none focus:outline-none border-none p-0 selection:bg-purple-800"
               />
             </div>
-            {/* Editor actions */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+
+            {/* Editor Actions */}
+            <div className="space-y-3 pt-2">
               <div className="flex items-center gap-2 text-xs font-mono text-[#827787]">
                 <span className={`w-2 h-2 rounded-full ${isParsing ? 'bg-amber-500 animate-ping' : 'bg-emerald-500'}`}></span>
-                <span className="truncate max-w-[200px]">{syntaxStatus}</span>
+                <span className="truncate">{syntaxStatus}</span>
               </div>
-              <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="flex items-center gap-2.5">
                 <button
                   onClick={validateSyntax}
                   disabled={isParsing}
-                  className="flex-1 sm:flex-none px-3.5 py-2 rounded-lg bg-[#F8F6F9] hover:bg-[#E8E0EA] text-[#170B1B] text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  className="flex-1 py-2 px-3 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   <span className="material-symbols-outlined text-[16px]">checklist_rtl</span>
                   <span>Validate Syntax</span>
@@ -470,31 +441,12 @@ backend sandbox_be
                 <button
                   onClick={commitTransaction}
                   disabled={isParsing}
-                  className="flex-1 sm:flex-none px-4 py-2 rounded-lg bg-[#2D0035] hover:bg-[#3D0346] text-white text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 shadow-xs"
+                  className="flex-1 py-2 px-3 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
                 >
                   <span className="material-symbols-outlined text-[16px]">published_with_changes</span>
                   <span>Commit Transaction</span>
                 </button>
               </div>
-            </div>
-          </div>
-
-          {/* Telemetry footprint */}
-          <div className="p-4 bg-white border border-[#E8E0EA] rounded-xl shadow-xs space-y-2">
-            <span className="text-xs font-bold text-[#170B1B]">Data Plane Telemetry Teleport</span>
-            <div className="flex items-center justify-between text-xs font-mono pt-1 text-[#827787]">
-              <span>VIP Master Gateway</span>
-              <span className="text-[#170B1B] font-semibold">10.20.20.241 (gw1)</span>
-            </div>
-            <div className="flex items-center justify-between text-xs font-mono text-[#827787]">
-              <span>Standby Synchronizer</span>
-              <span className="text-[#170B1B] font-semibold">10.20.20.242 (gw2)</span>
-            </div>
-            <div className="flex items-center justify-between text-xs font-mono text-[#827787]">
-              <span>Dynamic BGP Route Announce</span>
-              <span className="text-on-secondary-container bg-secondary-container px-1.5 py-0.5 rounded font-bold text-[11px]">
-                ESTABLISHED
-              </span>
             </div>
           </div>
         </section>
