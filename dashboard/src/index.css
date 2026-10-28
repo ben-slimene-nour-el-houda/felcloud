@@ -42,6 +42,8 @@ html, body {
   background-color: #F8F6F9;
   color: #170B1B;
   font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
 }
@@ -121,17 +123,40 @@ html, body {
   background: radial-gradient(circle at 92% 12%, rgba(59, 130, 246, 0.10) 0%, transparent 65%), #ffffff;
 }
 
-/* ─── Pill Badges (Modern, rounded-full, soft contrast) ─── */
+/* ─── Standard Input & Form Controls ─── */
+.input-field-modern {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  border-radius: 0.75rem;
+  background-color: #F8F6F9;
+  border: 1px solid rgba(45, 0, 53, 0.08);
+  color: #170B1B;
+  transition: all 0.2s ease-in-out;
+}
+.input-field-modern:focus {
+  background-color: #ffffff;
+  outline: none;
+  border-color: #2D0035;
+  box-shadow: 0 0 0 3px rgba(45, 0, 53, 0.08);
+}
+.input-field-modern::placeholder {
+  color: #827787;
+  opacity: 0.8;
+}
+
+/* ─── Pill Badges (Modern, rounded-full, standard text-xs) ─── */
 .badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 11px;
+  padding: 4px 12px;
   border-radius: 9999px;
   font-family: var(--font-sans);
-  font-size: 11px;
+  font-size: 12px; /* text-xs */
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
   letter-spacing: 0.01em;
   white-space: nowrap;
   transition: all 0.15s ease-in-out;
@@ -153,12 +178,12 @@ html, body {
 .badge-dark-rose    { background: rgba(244,63,94,0.18);   color: #fda4af; border: 1px solid rgba(251,113,133,0.3); }
 
 /* ─── Status Dots ─────────────────────────── */
-.status-dot-online  { width:8px; height:8px; border-radius:50%; background:#10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.15), 0 0 10px rgba(16,185,129,0.4); }
-.status-dot-standby { width:8px; height:8px; border-radius:50%; background:#3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15), 0 0 10px rgba(59,130,246,0.4); }
-.status-dot-offline { width:8px; height:8px; border-radius:50%; background:#ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.15), 0 0 10px rgba(239,68,68,0.4); }
-.status-dot-warn    { width:8px; height:8px; border-radius:50%; background:#f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,0.15), 0 0 10px rgba(245,158,11,0.4); }
+.status-dot-online  { width:9px; height:9px; border-radius:50%; background:#10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.15), 0 0 10px rgba(16,185,129,0.4); }
+.status-dot-standby { width:9px; height:9px; border-radius:50%; background:#3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15), 0 0 10px rgba(59,130,246,0.4); }
+.status-dot-offline { width:9px; height:9px; border-radius:50%; background:#ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.15), 0 0 10px rgba(239,68,68,0.4); }
+.status-dot-warn    { width:9px; height:9px; border-radius:50%; background:#f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,0.15), 0 0 10px rgba(245,158,11,0.4); }
 
-/* ─── Tables (Spacious, Uniform Rows, No Outer Harsh Cadres) ─── */
+/* ─── Tables (Spacious py-4 px-6, Standard text-sm, No Outer Harsh Cadres) ─── */
 .table-modern {
   width: 100%;
   border-collapse: separate;
@@ -166,24 +191,25 @@ html, body {
 }
 .table-modern th {
   padding: 1rem 1.5rem; /* py-4 px-6 */
-  font-size: 0.72rem;
+  font-size: 0.75rem; /* text-xs */
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #74537a;
-  background: rgba(248, 246, 249, 0.6);
-  border-bottom: 1px solid rgba(45, 0, 53, 0.05);
+  background: rgba(248, 246, 249, 0.7);
+  border-bottom: 1px solid rgba(45, 0, 53, 0.06);
 }
 .table-modern td {
-  padding: 1.1rem 1.5rem; /* py-4 px-6 spacious */
-  font-size: 0.8125rem;
+  padding: 1.15rem 1.5rem; /* py-4 px-6 spacious */
+  font-size: 0.875rem; /* standard text-sm */
+  line-height: 1.5;
   color: #170B1B;
-  border-bottom: 1px solid rgba(45, 0, 53, 0.035);
+  border-bottom: 1px solid rgba(45, 0, 53, 0.04);
   background: #ffffff;
   transition: background-color 0.15s ease-in-out;
 }
 .table-modern tr:hover td {
-  background-color: rgba(45, 0, 53, 0.022);
+  background-color: rgba(45, 0, 53, 0.025);
 }
 .table-modern tr:last-child td {
   border-bottom: none;
@@ -236,33 +262,3 @@ html, body {
 ::-webkit-scrollbar-thumb:hover { background: #a593a6; }
 .dark-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.16); }
 .dark-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.28); }
-
-/* ─── Login Backgrounds & Glass ───────────── */
-.login-stars {
-  background-image:
-    radial-gradient(1px 1px at 20% 30%, rgba(200,150,255,0.6) 0%, transparent 100%),
-    radial-gradient(1px 1px at 80% 10%, rgba(180,120,255,0.5) 0%, transparent 100%),
-    radial-gradient(1px 1px at 60% 70%, rgba(160,100,255,0.4) 0%, transparent 100%),
-    radial-gradient(1px 1px at 10% 80%, rgba(200,150,255,0.3) 0%, transparent 100%),
-    radial-gradient(1px 1px at 90% 60%, rgba(180,120,255,0.4) 0%, transparent 100%),
-    radial-gradient(1px 1px at 45% 15%, rgba(220,180,255,0.5) 0%, transparent 100%),
-    radial-gradient(1px 1px at 70% 85%, rgba(200,150,255,0.3) 0%, transparent 100%),
-    radial-gradient(1px 1px at 30% 55%, rgba(160,100,255,0.4) 0%, transparent 100%);
-  background-size: 100% 100%;
-}
-.login-grid {
-  background-image:
-    linear-gradient(rgba(130, 80, 200, 0.12) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(130, 80, 200, 0.12) 1px, transparent 1px);
-  background-size: 48px 48px;
-}
-.glass-card {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow:
-    0 0 0 1px rgba(167, 139, 250, 0.12),
-    0 24px 64px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
-}

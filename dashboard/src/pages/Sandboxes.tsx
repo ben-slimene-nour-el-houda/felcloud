@@ -168,28 +168,28 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
       <div className="card-elevated p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">Sandboxes &amp; Private IPs</h1>
+            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">Sandboxes &amp; Private IPs</h1>
             <span className="badge badge-purple font-mono">10.20.10.0/24 Subnet</span>
             <span className={`badge ${activeCount > 0 ? 'badge-emerald' : 'badge-amber'}`}>
               <span className={`w-2 h-2 rounded-full ${activeCount > 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
               {activeCount > 0 ? `${activeCount} Running Active` : `${issueCount} Attention Needed`}
             </span>
           </div>
-          <p className="text-xs text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
+          <p className="text-sm text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
             Dynamic IPAM allocation for hackathon teams on OpenStack Nova &amp; Neutron with Keepalived/HAProxy routing.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap flex-shrink-0">
+        <div className="flex items-center gap-3 flex-wrap flex-shrink-0">
           <RefreshButton
             onRefresh={() => { refresh(); showToast('Refreshed', 'Synced live sandbox state from control plane.', 'info') }}
             label="Refresh"
           />
           <button
             onClick={onOpenProvision}
-            className="flex items-center gap-2 px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
+            className="flex items-center gap-2 px-5 py-2.5 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]">add_circle</span>
+            <span className="material-symbols-outlined text-[18px]">add_circle</span>
             <span>Provision Sandbox</span>
           </button>
         </div>
@@ -199,16 +199,16 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
         {/* Card 1: Active Instances */}
         <div className="kpi-card glow-healthy">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Active Teams</span>
             <span className="material-symbols-outlined text-emerald-600 text-[20px]">groups</span>
           </div>
           <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">{activeCount || 4}</span>
-            <span className="text-xs text-[#827787] font-semibold">/ 10 Max</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">{activeCount || 4}</span>
+            <span className="text-sm text-[#827787] font-medium">/ 10 Max</span>
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-[11px] text-emerald-700 font-semibold">
+            <div className="flex items-center gap-1.5 text-xs text-emerald-700 font-semibold">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span>100% Ingress Ready</span>
             </div>
@@ -218,39 +218,39 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
 
         {/* Card 2: IPAM Leased */}
         <div className="kpi-card glow-info">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">IPAM Leased</span>
             <span className="material-symbols-outlined text-blue-600 text-[20px]">layers</span>
           </div>
           <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">{rawList.length}</span>
-            <span className="text-xs text-[#827787] font-semibold">/ 250 Pool</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">{rawList.length}</span>
+            <span className="text-sm text-[#827787] font-medium">/ 250 Pool</span>
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <span className="text-[11px] text-blue-700 font-semibold">{250 - rawList.length} Available</span>
+            <span className="text-xs text-blue-700 font-semibold">{250 - rawList.length} Available</span>
             <Sparkline data={[4, 5, 5, 6, 6, rawList.length]} color="blue" width={56} height={20} />
           </div>
         </div>
 
         {/* Card 3: Issues / Expired */}
         <div className="kpi-card glow-warning">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Quarantined / Issues</span>
             <span className="material-symbols-outlined text-amber-600 text-[20px]">warning</span>
           </div>
           <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">{issueCount || 0}</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">{issueCount || 0}</span>
             <span className="badge badge-amber">{issueCount === 0 ? 'Clean' : 'Needs Reset'}</span>
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <span className="text-[11px] text-amber-800 font-semibold">180s Cooldown Active</span>
+            <span className="text-xs text-amber-800 font-semibold">180s Cooldown Active</span>
             <Sparkline data={[1, 2, 1, 0, issueCount || 0]} color="amber" width={56} height={20} />
           </div>
         </div>
 
         {/* Card 4: Sub-second Ingress */}
         <div className="kpi-card glow-primary">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Ingress Proxy</span>
             <span className="material-symbols-outlined text-[#74537a] text-[20px]">router</span>
           </div>
@@ -259,7 +259,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             <span className="badge badge-emerald">Live Sync</span>
           </div>
           <div className="mt-3 flex items-center justify-between">
-            <span className="text-[11px] text-purple-900 font-semibold">VIP 203.0.113.10</span>
+            <span className="text-xs text-purple-900 font-semibold">VIP 203.0.113.10</span>
             <Sparkline data={[1, 1, 1, 1, 1]} color="purple" width={56} height={20} />
           </div>
         </div>
@@ -270,27 +270,27 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
         {/* Search */}
         <div className="relative flex-1 min-w-[240px]">
           <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
-            <span className="material-symbols-outlined text-[18px]">search</span>
+            <span className="material-symbols-outlined text-[20px]">search</span>
           </span>
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search by team, IP, or subdomain…"
-            className="w-full pl-10 pr-9 py-2 bg-[#F8F6F9] hover:bg-[#F3EEF5] focus:bg-white rounded-xl text-xs text-[#170B1B] font-medium placeholder-[#827787] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all duration-200"
+            className="w-full pl-11 pr-10 py-2.5 bg-[#F8F6F9] hover:bg-[#F3EEF5] focus:bg-white rounded-xl text-sm text-[#170B1B] font-medium placeholder-[#827787] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all duration-200"
           />
           {searchQuery && (
             <button
               onClick={() => setSearchQuery('')}
               className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#827787] hover:text-[#170B1B] cursor-pointer"
             >
-              <span className="material-symbols-outlined text-[16px]">cancel</span>
+              <span className="material-symbols-outlined text-[18px]">cancel</span>
             </button>
           )}
         </div>
 
         {/* Tab Selector (Pill style) */}
-        <div className="flex items-center gap-2 overflow-x-auto text-xs">
+        <div className="flex items-center gap-2 overflow-x-auto text-sm">
           {[
             { id: 'ACTIVE',   label: 'Active & Prov', count: activeCount || 4 },
             { id: 'ALL',      label: 'All Teams',     count: rawList.length },
@@ -300,14 +300,14 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             <button
               key={tab.id}
               onClick={() => setFilterMode(tab.id as any)}
-              className={`px-3.5 py-1.5 rounded-full font-bold transition-all duration-200 flex items-center gap-1.5 cursor-pointer flex-shrink-0 ${
+              className={`px-4 py-2 rounded-full font-semibold transition-all duration-200 flex items-center gap-2 cursor-pointer flex-shrink-0 ${
                 filterMode === tab.id
                   ? 'bg-[#2D0035] text-white shadow-xs'
                   : 'bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B]'
               }`}
             >
               <span>{tab.label}</span>
-              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
                 filterMode === tab.id ? 'bg-white/20 text-white' : 'bg-white text-[#74537a]'
               }`}>
                 {tab.count}
@@ -317,7 +317,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
         </div>
 
         {/* Hide test instances toggle */}
-        <label className="flex items-center gap-2 text-xs font-semibold text-[#170B1B] cursor-pointer select-none px-3 py-1.5 bg-[#F8F6F9] rounded-xl flex-shrink-0">
+        <label className="flex items-center gap-2 text-sm font-medium text-[#170B1B] cursor-pointer select-none px-4 py-2 bg-[#F8F6F9] rounded-xl flex-shrink-0">
           <input
             type="checkbox"
             checked={hideReleasedTests}
