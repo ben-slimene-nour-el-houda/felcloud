@@ -161,7 +161,10 @@ func gatewayProbeTimeout() time.Duration {
 			return time.Duration(n) * time.Second
 		}
 	}
-	return 8 * time.Second
+	// The probe uses Ansible through the bastion and may take several seconds
+	// even when SSH and become both work. Keep the default above that normal
+	// latency so a healthy gateway is not marked unreachable on a busy host.
+	return 15 * time.Second
 }
 
 func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
@@ -169,7 +172,7 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 	script := fmt.Sprintf(
 		"echo haproxy=$(systemctl is-active haproxy 2>/dev/null || echo inactive);"+
 			"echo keepalived=$(cat /run/keepalived/state 2>/dev/null | tr -d '[:space:]' || echo UNKNOWN);"+
-			"echo vip=$(ip addr show 2>/dev/null | grep -c %q || echo 0)",
+			"if ip addr show 2>/dev/null | grep -q %q; then echo vip=1; else echo vip=0; fi",
 		vip,
 	)
 

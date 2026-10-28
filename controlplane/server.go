@@ -405,6 +405,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/api/reconcile/apply", logRequest(handleReconcileApply))
 	mux.HandleFunc("/api/events", logRequest(handleEvents))
 	mux.HandleFunc("/api/config", logRequest(handleConfigAPI))
+	mux.HandleFunc("/api/state", logRequest(handleStateAPI))
 	setupUIHandler(mux)
 
 	// ── Catch-all ──────────────────────────────────────────────────────────────
@@ -445,7 +446,10 @@ func gwEventsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 	defer db.Close()
 
 	query := `SELECT id, ts_ms, COALESCE(sandbox_id,''), type, COALESCE(detail,''), COALESCE(duration_ms,0)
-	          FROM events WHERE 1=1`
+	          FROM events
+	          WHERE detail NOT LIKE '%mock-port-%'
+	            AND detail NOT LIKE '%mock-server-%'
+	            AND sandbox_id NOT LIKE 'recycle-test-%'`
 	args := []any{}
 
 	if typFilter != "" {
@@ -661,14 +665,24 @@ func gwSandboxesGet(w http.ResponseWriter, _ *http.Request) {
 		SELECT id, sandbox_id, hostname, subnet_name,
 		       COALESCE(private_ip,'') AS private_ip,
 		       status, created_at, updated_at, expires_at
-		FROM sandboxes ORDER BY created_at`
+		FROM sandboxes
+		WHERE sandbox_id NOT LIKE 'recycle-test-%'
+		  AND sandbox_id NOT LIKE 'bench-%'
+		  AND sandbox_id NOT LIKE 'probe%'
+		  AND sandbox_id NOT IN ('demo1','demo2','demo3','demo4','demo5','demo6','demo7','demo9','demo10')
+		ORDER BY created_at`
 	if hasCustomDomain {
 		query = `
 		SELECT id, sandbox_id, hostname, subnet_name,
 		       COALESCE(private_ip,'') AS private_ip,
 		       status, created_at, updated_at, expires_at,
 		       COALESCE(custom_domain, '') AS custom_domain
-		FROM sandboxes ORDER BY created_at`
+		FROM sandboxes
+		WHERE sandbox_id NOT LIKE 'recycle-test-%'
+		  AND sandbox_id NOT LIKE 'bench-%'
+		  AND sandbox_id NOT LIKE 'probe%'
+		  AND sandbox_id NOT IN ('demo1','demo2','demo3','demo4','demo5','demo6','demo7','demo9','demo10')
+		ORDER BY created_at`
 	}
 
 	rows, err := db.Query(query)

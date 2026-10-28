@@ -13,7 +13,10 @@ import (
 )
 
 var teardownLocks sync.Map
-var teardownTimeout = 120 * time.Second
+
+// 180 s: gateway route sync via Ansible can take up to 120 s; extra 60 s
+// covers VM deletion and any Ansible SSH overhead.
+var teardownTimeout = 180 * time.Second
 var teardownConcurrency = 4
 
 var errTeardownInProgress = errors.New("sandbox teardown is already in progress")
@@ -348,22 +351,41 @@ func verifySandboxResourcesGone(ctx context.Context, p Provisioner, serverID, po
 		return errors.New("provisioner is not configured")
 	}
 	if serverID != "" {
-		status, err := p.GetServer(ctx, serverID)
-		if err != nil && !errors.Is(err, ErrOpenStackNotFound) {
-			return fmt.Errorf("verify Nova server: %w", err)
-		}
-		if err == nil && !strings.EqualFold(status, "DELETED") {
-			return fmt.Errorf("Nova server %s still exists with status %s", serverID, status)
+		for {
+			status, err := p.GetServer(ctx, serverID)
+			if errors.Is(err, ErrOpenStackNotFound) || (err == nil && strings.EqualFold(status, "DELETED")) {
+				break
+			}
+			if err != nil && !errors.Is(err, ErrOpenStackNotFound) {
+				return fmt.Errorf("verify Nova server: %w", err)
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("Nova server %s still exists with status %s (timeout)", serverID, status)
+			case <-time.After(time.Second):
+			}
 		}
 	}
 	if portID != "" {
-		ports, err := p.ListSandboxPorts(ctx)
-		if err != nil {
-			return fmt.Errorf("list Neutron sandbox ports: %w", err)
-		}
-		for _, port := range ports {
-			if port.ID == portID {
+		for {
+			ports, err := p.ListSandboxPorts(ctx)
+			if err != nil {
+				return fmt.Errorf("list Neutron sandbox ports: %w", err)
+			}
+			found := false
+			for _, port := range ports {
+				if port.ID == portID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				break
+			}
+			select {
+			case <-ctx.Done():
 				return fmt.Errorf("Neutron port %s still exists", portID)
+			case <-time.After(time.Second):
 			}
 		}
 	}

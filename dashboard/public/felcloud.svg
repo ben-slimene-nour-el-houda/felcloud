@@ -1,15 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 154 100" fill="none">
-  <!-- FelCloud Signature Yellow Cloud Logo -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 110" fill="none">
+  <!-- FelCloud Official Signature Yellow Cloud Logo -->
   <g stroke="#FFD200" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
-    <!-- 1. Left Stadium Loop with top shelf & bottom left segment -->
-    <!-- Top shelf: (55, 35) to (34, 35) -> arc to (16, 53) -> arc to (34, 89) -> to (55, 89) -->
-    <path d="M 55 35 L 35 35 A 27 27 0 0 0 16 58 A 27 27 0 0 0 35 88 L 54 88" />
-    
-    <!-- 2. Bottom Right Line + Cloud Body -->
-    <!-- Starts after slit at (64, 88) -> right to (118, 88) -> arc up right to (136, 68) -> arc to (124, 46) -> arc to (98, 30) -> main dome to (56, 35) -->
-    <path d="M 64 88 L 116 88 C 132 88 138 78 138 66 C 138 52 128 44 122 42 C 122 34 116 26 102 26 C 96 26 92 28 88 32 C 84 18 72 10 57 18 C 50 23 48 29 48 35" />
-    
-    <!-- 3. Inner Center Ring / Lens inside left loop -->
-    <circle cx="35" cy="61" r="9" stroke="#FFD200" stroke-width="6" fill="none" />
+    <!-- Left Capsule Loop -->
+    <path d="M 58 40 L 40 40 A 23 23 0 0 0 17 63 A 23 23 0 0 0 40 86 L 56 86" />
+    <!-- Bottom Base + Cloud Body -->
+    <path d="M 68 86 L 118 86 C 134 86 142 75 142 63 C 142 51 133 43 126 42 C 126 33 118 24 104 24 C 95 24 88 28 84 32 C 78 17 66 17 58 26" />
+    <!-- Inner Lens Ring -->
+    <circle cx="40" cy="63" r="8" stroke="#FFD200" stroke-width="7" fill="none" />
   </g>
 </svg>

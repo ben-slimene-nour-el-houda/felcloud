@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -239,36 +240,69 @@ func sshHealthProbeAttempt(ctx context.Context, ip string, cfg healthProbeSSHCon
 		return "", fmt.Errorf("gateway SSH probe is not configured")
 	}
 	remoteCommand := "curl -m 3 -s -o /dev/null -w '%{http_code}' http://" + ip + ":80/"
+
+	type probeRes struct {
+		name    string
+		result  string
+		failure string
+	}
+
+	resChan := make(chan probeRes, len(cfg.Gateways))
+	var wg sync.WaitGroup
+	for _, gateway := range cfg.Gateways {
+		wg.Add(1)
+		go func(gw healthProbeGateway) {
+			defer wg.Done()
+			args := []string{
+				"-i", cfg.Key, "-J", cfg.Jump,
+				"-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+				"-o", "StrictHostKeyChecking=accept-new",
+				"-o", "UserKnownHostsFile=" + cfg.KnownHosts,
+				"--", cfg.User + "@" + gw.Host, remoteCommand,
+			}
+			cmd := exec.CommandContext(ctx, "ssh", args...)
+			var stdout, stderr strings.Builder
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				parts := []string{err.Error()}
+				if result := strings.TrimSpace(stdout.String()); result != "" {
+					parts = append(parts, "remote result: "+result)
+				}
+				if diagnostic := strings.TrimSpace(stderr.String()); diagnostic != "" {
+					parts = append(parts, diagnostic)
+				}
+				resChan <- probeRes{
+					name:    gw.Name,
+					result:  "000",
+					failure: gw.Name + ": " + strings.Join(parts, "; "),
+				}
+				return
+			}
+			result := strings.TrimSpace(stdout.String())
+			if probeHTTPStatusOK(result) {
+				resChan <- probeRes{name: gw.Name, result: result}
+			} else {
+				resChan <- probeRes{
+					name:    gw.Name,
+					result:  result,
+					failure: gw.Name + ": HTTP " + result,
+				}
+			}
+		}(gateway)
+	}
+	wg.Wait()
+	close(resChan)
+
 	healthy := 0
 	lastFailed := ""
 	var failures []string
-	for _, gateway := range cfg.Gateways {
-		args := []string{
-			"-i", cfg.Key, "-J", cfg.Jump,
-			"-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-			"-o", "StrictHostKeyChecking=accept-new",
-			"-o", "UserKnownHostsFile=" + cfg.KnownHosts,
-			"--", cfg.User + "@" + gateway.Host, remoteCommand,
-		}
-		cmd := exec.CommandContext(ctx, "ssh", args...)
-		var stdout, stderr strings.Builder
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = err.Error()
-			}
-			failures = append(failures, gateway.Name+": "+message)
-			lastFailed = "000"
-			continue
-		}
-		result := strings.TrimSpace(stdout.String())
-		if probeHTTPStatusOK(result) {
+	for r := range resChan {
+		if probeHTTPStatusOK(r.result) {
 			healthy++
 		} else {
-			lastFailed = result
-			failures = append(failures, gateway.Name+": HTTP "+result)
+			lastFailed = r.result
+			failures = append(failures, r.failure)
 		}
 	}
 	if cfg.Require == "any" && healthy > 0 || cfg.Require == "all" && healthy == len(cfg.Gateways) {

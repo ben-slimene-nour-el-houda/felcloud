@@ -1,4 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { fetchSharedState, type SharedState } from './api'
+
+/** Shared cluster state polled at regular interval. */
+export function useSharedState(intervalMs = 4000) {
+  const fetcher = useCallback(() => fetchSharedState(), [])
+  return usePolling<SharedState>(fetcher, intervalMs)
+}
 
 /** Countdown that ticks every second. Returns remaining seconds. */
 export function useCountdown(expiresAt: number | null): number {

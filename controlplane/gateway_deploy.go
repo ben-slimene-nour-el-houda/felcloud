@@ -32,10 +32,16 @@ type gatewayDeployment struct {
 }
 
 // gatewayDeploymentRunner is the active config-push implementation.
-// Default: DPA REST API (no Ansible/SSH required for config changes).
-// Set to runTransactionalGatewayDeploy to fall back to Ansible-based push.
+// Default: Ansible-based transactional push (runTransactionalGatewayDeploy),
+// which routes cleanly through the bastion to the private gateway network.
+// If GATEWAY_DEPLOY_MODE=dpa and DPA_PASS is set, DPA REST API is used.
 var gatewayDeploymentRunner = func(genID, snapshot, active, standby string) (gatewayDeployment, error) {
-	return runDPAGatewayDeploy(genID, snapshot, active, standby)
+	if os.Getenv("GATEWAY_DEPLOY_MODE") == "dpa" {
+		if _, _, err := dpaCredentials(); err == nil {
+			return runDPAGatewayDeploy(genID, snapshot, active, standby)
+		}
+	}
+	return runTransactionalGatewayDeploy(genID, snapshot, active, standby)
 }
 var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
@@ -270,12 +276,12 @@ func liveGatewayHealthCheck(ctx context.Context, store *gatewayStore) (gatewayHe
 // and returns a map of "host/backend/server" → status strings.
 // Falls back to the Ansible socket probe when DPA_PASS is not set.
 func readGatewayBackendStates(ctx context.Context) (map[string]string, error) {
-	_, _, dpaErr := dpaCredentials()
-	if dpaErr != nil {
-		// DPA not configured — fall back to Ansible stats socket probe.
-		return readGatewayBackendStatesViaAnsible(ctx)
+	if os.Getenv("GATEWAY_DEPLOY_MODE") == "dpa" {
+		if _, _, dpaErr := dpaCredentials(); dpaErr == nil {
+			return readGatewayBackendStatesViaDPA(ctx)
+		}
 	}
-	return readGatewayBackendStatesViaDPA(ctx)
+	return readGatewayBackendStatesViaAnsible(ctx)
 }
 
 // readGatewayBackendStatesViaDPA queries the HAProxy Data Plane API /stats endpoint.
@@ -316,11 +322,11 @@ func readGatewayBackendStatesViaDPA(ctx context.Context) (map[string]string, err
 
 // readGatewayBackendStatesViaAnsible is the legacy fallback (Ansible → UNIX socket).
 func readGatewayBackendStatesViaAnsible(ctx context.Context) (map[string]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	bastion := envOr("BASTION_IP", "197.5.133.77")
 	statsCommand := `python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect("/run/haproxy/admin.sock"); s.sendall(b"show stat\n"); s.shutdown(socket.SHUT_WR); print(s.recv(1048576).decode())'`
-	args := []string{"-i", resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml"), "gateways", "-m", "shell", "-a", statsCommand, "-b", "--vault-password-file", resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass"), "-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o BatchMode=yes -o IPQoS=none'", bastion)}
+	args := []string{"-i", resolveRepoFilePath("ANSIBLE_INVENTORY", "ansible/inventory/hosts.yml"), "gateways", "-m", "shell", "-a", statsCommand, "-b", "--vault-password-file", resolveRepoFilePath("ANSIBLE_VAULT_PASS", "ansible/.vault_pass"), "-e", fmt.Sprintf("ansible_ssh_common_args='-o ProxyJump=ansible@%s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -o IPQoS=none'", bastion)}
 	cmd := exec.CommandContext(ctx, "ansible", args...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -408,20 +414,28 @@ func healthWindow() (time.Duration, error) {
 	return time.Duration(seconds) * time.Second, nil
 }
 
-func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot) error {
+func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot, candidateCfg string) error {
 	window, err := healthWindow()
 	if err != nil {
 		return err
 	}
 	deadline := time.Now().Add(window)
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		after, checkErr := gatewayHealthCheck(ctx, store)
 		cancel()
 		if checkErr != nil {
 			return checkErr
 		}
 		for backend, beforeStatus := range before.Backends {
+			parts := strings.Split(backend, "/")
+			if len(parts) >= 2 {
+				backendName := parts[1]
+				if candidateCfg != "" && !strings.Contains(candidateCfg, "backend "+backendName) {
+					// Deliberately removed from configuration (e.g. sandbox teardown/expiry)
+					continue
+				}
+			}
 			afterStatus, exists := after.Backends[backend]
 			if !strings.HasPrefix(beforeStatus, "DOWN") && (!exists || strings.HasPrefix(afterStatus, "DOWN")) {
 				return fmt.Errorf("backend %s became DOWN (before=%q after=%q)", backend, beforeStatus, afterStatus)
@@ -435,7 +449,7 @@ func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot
 }
 
 func loadActiveAndStandby(store *gatewayStore) (string, string, gatewayHealthSnapshot, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	snapshot, err := gatewayHealthCheck(ctx, store)
 	if err != nil {
@@ -506,7 +520,7 @@ func rollbackConfigWithOptions(targetGeneration, trigger, reason string) (genera
 	if _, err = gatewayDeploymentRunner(rollbackID, snapshot, active, standby); err != nil {
 		return "", time.Since(started).Milliseconds(), err
 	}
-	if err = verifyGatewayHealthWindow(store, baseline); err != nil {
+	if err = verifyGatewayHealthWindow(store, baseline, snapshot); err != nil {
 		return "", time.Since(started).Milliseconds(), fmt.Errorf("rollback health check failed: %w", err)
 	}
 	db, err = getDBConnection()

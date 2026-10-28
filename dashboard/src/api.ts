@@ -76,6 +76,51 @@ export interface ConfigResponse {
   provisioner: string
 }
 
+export interface SharedState {
+  config: {
+    routing_domain: string
+    vip_address: string
+    version: string
+    provisioner: string
+  }
+  gateways: {
+    status: Record<string, GatewayInfo>
+    vip: string
+    vip_holder: string
+    latest_generation: string
+    nodes: {
+      gw1: { cpu: number; mem: number; conns: number; rps: number; role: string }
+      gw2: { cpu: number; mem: number; conns: number; rps: number; role: string }
+    }
+  }
+  sandboxes: {
+    items: Sandbox[]
+    active_count: number
+    provisioning_count: number
+    failed_count: number
+    total_count: number
+  }
+  ipam: {
+    subnet: string
+    total: number
+    leased: number
+    free: number
+    quarantined: number
+    reserved: number
+    utilization_pct: number
+  }
+  benchmarks: {
+    last_failover_ms: number
+    last_rollback_ms: number
+    provision_p95_sec?: number
+    stress_success_pct?: number
+    measured: boolean
+  }
+  claims: Record<string, { backed: boolean; label: string; note?: string; status?: string }>
+}
+
+export const fetchSharedState = () => api.get<SharedState>('/api/state')
+
 export interface GatewayInfo {
   reachable: boolean
   haproxy: string
@@ -233,4 +278,27 @@ export const provisionSandbox = (team: string) =>
 
 export const teardownSandbox = (id: string) =>
   api.delete<{ success: boolean }>(`/api/sandboxes/${id}`)
+
+export interface GenerationItem {
+  id: number
+  generation_id: string
+  status: string
+  created_at: string
+  backend_count: number
+  gw1_backup: string
+  gw2_backup: string
+}
+
+export const fetchGenerations = (limit = 20) =>
+  api.get<{ generations: GenerationItem[]; count: number }>(`/api/gateways/generations?limit=${limit}`)
+
+export interface ReconcileReport {
+  db_lease_without_neutron_port: Array<{ sandbox_id: string; ip: string }>
+  neutron_port_without_db_lease: Array<{ sandbox_id: string; neutron_ip: string; port_id: string; port_name: string }>
+  ip_mismatch: Array<any>
+  provisioned_server_missing: Array<any>
+  nova_server_without_db_lease: Array<any>
+}
+
+export const fetchReconcile = () => api.get<ReconcileReport>('/api/reconcile')
 

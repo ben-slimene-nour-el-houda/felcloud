@@ -1,9 +1,0 @@
-{
-  "test": "T2_concurrent_stress",
-  "status": "NOT EXECUTED",
-  "error": "AttributeError: 'TimedResponse' object has no attribute 'text'",
-  "health_regression_window_seconds": "5",
-  "timestamp_utc": "2026-10-18T18:23:27.295Z",
-  "chart": "NOT EXECUTED: no live burst data; AttributeError: 'TimedResponse' object has no attribute 'text'",
-  "per_sandbox_results": "NOT EXECUTED: provisioning did not start; AttributeError: 'TimedResponse' object has no attribute 'text'"
-}

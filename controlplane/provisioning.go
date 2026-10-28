@@ -61,7 +61,7 @@ func (m *provisionNameLockMap) Len() int {
 var provisionNameLocks = newProvisionNameLockMap()
 var gatewaySyncFunc = func(dryRun bool) (bool, string) { return syncHAProxyDualGateways(dryRun) }
 var healthProbeTimeout = 90 * time.Second
-var healthProbeRetryInterval = 500 * time.Millisecond
+var healthProbeRetryInterval = 2 * time.Second
 var provisionHealthProbe = runHealthProbe
 
 func runHealthProbe(ctx context.Context, ip string) (bool, string) {
@@ -360,7 +360,7 @@ func markProvisionFailed(team, ip, step string, cause error) error {
 	return tx.Commit()
 }
 
-func persistActive(team string, r *SandboxResources, durationMs int64) error {
+func persistActive(team string, r *SandboxResources, durationMs int64, ttlSeconds int64) error {
 	db, err := getDBConnection()
 	if err != nil {
 		return err
@@ -371,7 +371,8 @@ func persistActive(team string, r *SandboxResources, durationMs int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE sandboxes SET status='ACTIVE',server_id=?,port_id=?,fixed_ip=?,private_ip=?,provisioned_at=?,updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=? AND status='PROVISIONING'`, r.ServerID, r.PortID, r.FixedIP, r.FixedIP, time.Now().UTC().Unix(), team)
+	now := time.Now().UTC().Unix()
+	res, err := tx.Exec(`UPDATE sandboxes SET status='ACTIVE',server_id=?,port_id=?,fixed_ip=?,private_ip=?,provisioned_at=?,expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE sandbox_id=? AND status='PROVISIONING'`, r.ServerID, r.PortID, r.FixedIP, r.FixedIP, now, team)
 	if err != nil {
 		return err
 	}
@@ -491,11 +492,13 @@ func provisionSandbox(w http.ResponseWriter, r *http.Request, req CreateReq) {
 	resources := &SandboxResources{FixedIP: lease.IPAddress}
 	fail := func(code int, step string, cause error) {
 		timings["total"] = time.Since(start).Milliseconds()
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cleanupErr := provisioner.DeleteSandbox(cleanupCtx, resources.ServerID, resources.PortID)
 		cleanupCancel()
 		stateErr := markProvisionFailed(team, lease.IPAddress, step, cause)
-		syncCtx, syncCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// 150 s: must exceed GATEWAY_DEPLOY_TIMEOUT_SECONDS (default 120 s) so
+		// the Ansible-based route sync always has time to complete.
+		syncCtx, syncCancel := context.WithTimeout(context.Background(), 150*time.Second)
 		syncOK, syncMessage := runCoalescedProvisionSync(syncCtx)
 		syncCancel()
 		if cleanupErr != nil {
@@ -634,7 +637,7 @@ serverActive:
 		return
 	}
 	recordEventForSandbox(team, "HEALTH_OK", msg, healthMs)
-	if err := persistActive(team, resources, activeMs); err != nil {
+	if err := persistActive(team, resources, activeMs, req.TTL); err != nil {
 		fail(http.StatusBadGateway, "database", err)
 		return
 	}
@@ -663,6 +666,14 @@ serverActive:
 		}
 		fail(code, "gateway_sync", errors.New(syncMsg))
 		return
+	}
+	effectiveTTL := req.TTL
+	if effectiveTTL <= 0 {
+		effectiveTTL = defaultTTLSeconds
+	}
+	if db, dbErr := getDBConnection(); dbErr == nil {
+		_, _ = db.Exec("UPDATE sandboxes SET expires_at=? WHERE sandbox_id=?", time.Now().UTC().Unix()+effectiveTTL, team)
+		db.Close()
 	}
 	response := provisionResponse{SandboxID: team, Team: team, FixedIP: resources.FixedIP, ServerID: resources.ServerID, PortID: resources.PortID, Hostname: host, State: "ACTIVE", Timings: map[string]int64{"allocate": allocMs, "port": portMs, "server_active": activeMs, "health": healthMs, "sync": syncMs, "total": time.Since(start).Milliseconds()}}
 	sendJSON(w, http.StatusCreated, response)

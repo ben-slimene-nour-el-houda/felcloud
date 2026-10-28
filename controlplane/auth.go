@@ -91,7 +91,7 @@ func setupAPISecurity(next http.Handler, config apiSecurityConfig) http.Handler 
 			w.Header().Add("Vary", "Origin")
 		}
 
-		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && (r.URL.Path == "/health" || r.URL.Path == "/api/config" || r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/")) {
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) && (r.URL.Path == "/health" || r.URL.Path == "/api/config" || r.URL.Path == "/api/state" || r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/")) {
 			next.ServeHTTP(w, r)
 			return
 		}

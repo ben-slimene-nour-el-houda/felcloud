@@ -1,315 +1,272 @@
-import { useState, useEffect, type FormEvent } from 'react'
+import Icon from '../components/Icon'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { persistToken, fetchGatewayStatus, ApiError } from '../api'
+import FelcloudLogo from '../components/FelcloudLogo'
 
-const TYPED_STRINGS = [
-  'Keepalived VRRP dual-gateway cluster…',
-  'HAProxy Data Plane API v2.8…',
-  'OpenStack Neutron IPAM 10.20.10.0/24…',
-  'Sub-second config transaction rollback…',
-]
-
-function useTypingEffect(strings: string[], speed = 40, pause = 2000) {
-  const [display, setDisplay] = useState('')
-  const [strIdx, setStrIdx] = useState(0)
-  const [charIdx, setCharIdx] = useState(0)
-  const [deleting, setDeleting] = useState(false)
-
-  useEffect(() => {
-    const current = strings[strIdx]
-    if (!deleting && charIdx < current.length) {
-      const t = setTimeout(() => setCharIdx(c => c + 1), speed)
-      return () => clearTimeout(t)
-    }
-    if (!deleting && charIdx === current.length) {
-      const t = setTimeout(() => setDeleting(true), pause)
-      return () => clearTimeout(t)
-    }
-    if (deleting && charIdx > 0) {
-      const t = setTimeout(() => setCharIdx(c => c - 1), speed / 2)
-      return () => clearTimeout(t)
-    }
-    if (deleting && charIdx === 0) {
-      setDeleting(false)
-      setStrIdx(i => (i + 1) % strings.length)
-    }
-  }, [charIdx, deleting, strIdx, strings, speed, pause])
-
-  useEffect(() => {
-    setDisplay(strings[strIdx].slice(0, charIdx))
-  }, [charIdx, strIdx, strings])
-
-  return display
-}
+const DEMO_TOKEN = 'felcloud-test-token-cstam-2026'
 
 export default function Login({ onLogin }: { onLogin: () => void }) {
-  const [token, setToken] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [mounted, setMounted] = useState(false)
+  const [token, setToken]             = useState('')
+  const [showKey, setShowKey]         = useState(false)
+  const [error, setError]             = useState('')
+  const [loading, setLoading]         = useState(false)
+  const [demoLoading, setDemoLoading] = useState(false)
+  const [online, setOnline]           = useState<boolean | null>(null)
+  const [shake, setShake]             = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
 
-  const demoToken = 'felcloud-test-token-cstam-2026'
-  const typed = useTypingEffect(TYPED_STRINGS)
+  // Health check — drives the status dot. Unauthenticated endpoint.
+  useEffect(() => {
+    fetch('/health')
+      .then(r => setOnline(r.ok))
+      .catch(() => setOnline(false))
+  }, [])
 
-  useEffect(() => { setMounted(true) }, [])
+  function triggerShake() {
+    setShake(true)
+    setTimeout(() => setShake(false), 600)
+  }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    const cleanToken = token.trim()
-    if (!cleanToken) {
-      setError('A valid administrator bearer token is required.')
+  async function handleAuth(tokenToUse: string, isDemo = false) {
+    const clean = tokenToUse.trim()
+    if (!clean) {
+      setError('Please paste your access key.')
+      triggerShake()
+      inputRef.current?.focus()
       return
     }
-    setLoading(true)
+    isDemo ? setDemoLoading(true) : setLoading(true)
     setError('')
     try {
-      persistToken(cleanToken)
+      persistToken(clean)
       await fetchGatewayStatus()
       onLogin()
     } catch (err: any) {
       if (err instanceof ApiError && err.status === 401) {
-        setError('Invalid token — rejected by control plane security gateway.')
+        setError("That key isn't valid. Check it and try again.")
       } else {
-        if (cleanToken.length >= 6) { onLogin(); return }
-        setError(err.message || 'Unable to reach control plane.')
+        // Network error but token looks long enough — let through (competition mode)
+        if (clean.length >= 6) { onLogin(); return }
+        setError(err.message || 'Unable to reach the control plane.')
       }
+      triggerShake()
+      inputRef.current?.focus()
     } finally {
       setLoading(false)
+      setDemoLoading(false)
     }
   }
 
-  function fillDemoCredentials() { setToken(demoToken); setError('') }
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    handleAuth(token)
+  }
+
+  function handleDemo() {
+    setToken(DEMO_TOKEN)
+    handleAuth(DEMO_TOKEN, true)
+  }
+
+  const busy = loading || demoLoading
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#070010] relative overflow-hidden select-none">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#120417] via-[#1b0621] to-[#0a020d] text-white p-4 font-sans select-none relative overflow-hidden">
 
-      {/* ── Ambient background orbs ── */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-        {/* Large orbs */}
-        <div className="absolute -top-60 -left-60 w-[500px] h-[500px] rounded-full bg-violet-950/60 blur-[130px] animate-pulse-slow" />
-        <div className="absolute -bottom-40 -right-40 w-[450px] h-[450px] rounded-full bg-purple-950/50 blur-[120px] animate-pulse-slow2" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-indigo-950/20 blur-[150px] animate-pulse-slow3" />
+      {/* Atmospheric background */}
+      <div className="absolute w-[700px] h-[700px] bg-purple-600/15 rounded-full blur-[160px] pointer-events-none -top-40 left-1/2 -translate-x-1/2" aria-hidden="true" />
+      <div className="absolute w-[400px] h-[400px] bg-indigo-600/10 rounded-full blur-[120px] pointer-events-none -bottom-20 -right-20" aria-hidden="true" />
+      <div className="absolute inset-0 bg-[radial-gradient(#ffffff09_1px,transparent_1px)] [background-size:24px_24px] pointer-events-none opacity-40" aria-hidden="true" />
 
-        {/* Fine grid */}
-        <div className="absolute inset-0 login-grid opacity-100" />
+      {/* Card wrapper — fade + rise entrance */}
+      <div className="relative z-10 w-full max-w-[440px] my-auto animate-login-enter">
 
-        {/* Starfield dots */}
-        <div className="absolute inset-0 login-stars" />
-
-        {/* Scan line */}
-        <div
-          className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-purple-400/30 to-transparent animate-scan pointer-events-none"
-          style={{ top: 0 }}
-        />
-      </div>
-
-      {/* ── Top header bar ── */}
-      <header className={`relative z-10 flex items-center justify-between px-8 pt-7 pb-0 max-w-7xl mx-auto w-full transition-all duration-700 ${mounted ? 'opacity-100' : 'opacity-0'}`}>
-        <div className="flex items-center gap-3">
-          <div className="relative">
-            <div className="w-11 h-11 rounded-2xl bg-[#1a0028] border border-yellow-500/20 flex items-center justify-center shadow-lg shadow-yellow-500/10 p-2">
-              <img src="/felcloud-logo.png" alt="FelCloud" className="w-full h-full object-contain filter drop-shadow-[0_0_8px_rgba(255,214,0,0.5)]" />
-            </div>
-            <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 border-2 border-[#070010] animate-pulse" />
+        {/* ── Brand header ── */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-b from-[#3d0f4d] to-[#200628] border border-purple-400/40 shadow-xl shadow-purple-950/60 mb-5 transition-transform hover:scale-105">
+            <FelcloudLogo size={38} glow={true} />
           </div>
-          <div>
-            <div className="text-white font-bold text-[18px] tracking-tight leading-none flex items-center gap-2">
-              <span>FelCloud</span>
-              <span className="text-[9px] text-yellow-400 font-mono font-medium px-1.5 py-0.5 rounded bg-yellow-400/10 border border-yellow-400/25">CSTAM 3.0</span>
-            </div>
-            <div className="text-purple-300/70 font-mono text-[10px] tracking-[0.15em] uppercase mt-1">Cluster Control Plane</div>
+          <h1 className="text-[32px] font-black text-white tracking-tight leading-none">felcloud</h1>
+          <p className="text-purple-200 mt-2 text-base leading-snug">
+            Sign in to manage your cloud sandboxes and gateways.
+          </p>
+
+          {/* System status dot — real /health */}
+          <div className="inline-flex items-center gap-2 mt-3 text-[13px] font-medium" aria-live="polite">
+            {online === null && (
+              <span className="text-purple-300/60">Checking system…</span>
+            )}
+            {online === true && (
+              <>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-emerald-300">System online</span>
+              </>
+            )}
+            {online === false && (
+              <>
+                <span className="w-2 h-2 rounded-full bg-rose-400" />
+                <span className="text-rose-300">System unreachable</span>
+              </>
+            )}
           </div>
         </div>
 
-        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-          </span>
-          <span className="text-[11px] font-mono text-emerald-300/90">
-            Control Plane <span className="text-emerald-400 font-bold">ONLINE</span>
-            <span className="text-white/30 mx-1.5">·</span>
-            <span className="text-white/50">VIP 10.20.20.246</span>
-          </span>
-        </div>
-      </header>
+        {/* ── Auth card ── */}
+        <div className="bg-[#1e0a27]/90 backdrop-blur-xl border border-white/15 rounded-2xl p-8 shadow-2xl shadow-black/70">
 
-      {/* ── Center auth area ── */}
-      <div className="relative z-10 flex-1 flex items-center justify-center px-4 py-16">
-        <div className={`w-full max-w-[420px] transition-all duration-700 delay-150 ${mounted ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+          <h2 className="text-xl font-extrabold text-white mb-1">Sign in</h2>
+          <p className="text-[14px] text-purple-200/80 mb-6">Enter your access key below, or try the live demo.</p>
 
-          {/* Badge + Logo + Heading */}
-          <div className="text-center mb-8 space-y-3">
-            {/* Prominent Center Logo */}
-            <div className="flex justify-center mb-2">
-              <div className="relative group">
-                <div className="absolute inset-0 bg-yellow-400/20 blur-xl rounded-full scale-125 animate-pulse" />
-                <div className="w-20 h-14 relative z-10 flex items-center justify-center">
-                  <img
-                    src="/felcloud-logo.png"
-                    alt="FelCloud Logo"
-                    className="w-full h-full object-contain filter drop-shadow-[0_0_12px_rgba(255,214,0,0.7)] transition-transform duration-300 group-hover:scale-105"
-                  />
-                </div>
-              </div>
-            </div>
+          <form onSubmit={handleSubmit} noValidate>
 
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-yellow-500/30 bg-yellow-950/20 text-yellow-300 text-[10px] font-mono tracking-[0.15em] uppercase">
-              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
-              CSTAM 3.0 · FelCloud Telemetry &amp; Access
-            </div>
-
-            <h1 className="text-4xl font-bold text-white tracking-tight">
-              Operator Access
-            </h1>
-
-            {/* Typewriter */}
-            <div className="h-5 flex items-center justify-center">
-              <span className="text-[13px] font-mono text-purple-300/60">
-                {typed}
-                <span className="inline-block w-0.5 h-3.5 bg-purple-400/80 ml-0.5 align-middle animate-pulse" />
-              </span>
-            </div>
-          </div>
-
-          {/* Glass card */}
-          <div className="glass-card rounded-2xl p-8 relative overflow-hidden">
-            {/* Top shimmer line */}
-            <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-purple-400/50 to-transparent" />
-            {/* Bottom shimmer */}
-            <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/5 to-transparent" />
-
-            <form onSubmit={handleSubmit} className="space-y-5">
-              {/* Token input */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label htmlFor="admin-token" className="text-[11px] font-semibold text-purple-300/80 uppercase tracking-[0.12em] font-mono">
-                    Bearer Token
-                  </label>
-                  <button
-                    type="button"
-                    onClick={fillDemoCredentials}
-                    className="text-[11px] font-mono text-purple-400/70 hover:text-purple-300 transition-colors cursor-pointer"
-                  >
-                    Use Demo Token ↗
-                  </button>
-                </div>
-
-                <div className="relative">
-                  <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-purple-400/60">
-                    <span className="material-symbols-outlined text-[18px]">key</span>
-                  </span>
-                  <input
-                    id="admin-token"
-                    type={showPassword ? 'text' : 'password'}
-                    value={token}
-                    onChange={e => setToken(e.target.value)}
-                    placeholder="felcloud-admin-token-…"
-                    autoFocus
-                    autoComplete="current-password"
-                    className="input-dark w-full pl-11 pr-12 py-3 rounded-xl text-[13px] font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-4 flex items-center text-white/25 hover:text-white/60 cursor-pointer transition-colors"
-                  >
-                    <span className="material-symbols-outlined text-[17px]">
-                      {showPassword ? 'visibility_off' : 'visibility'}
-                    </span>
-                  </button>
-                </div>
+            {/* Access key field */}
+            <div className="mb-4">
+              <div className="flex items-baseline justify-between mb-2">
+                <label htmlFor="access-key" className="text-[14px] font-semibold text-purple-100">
+                  Access key
+                </label>
+                <span className="text-[12px] text-purple-300/60 font-mono" title="Also called Admin Bearer Token">
+                  Bearer token
+                </span>
               </div>
 
-              {/* Error */}
+              <div className={`relative transition-transform duration-150 ${shake ? 'animate-shake' : ''}`}>
+                <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-purple-300/70" aria-hidden="true">
+                  <Icon name="key" size={20} />
+                </span>
+                <input
+                  ref={inputRef}
+                  id="access-key"
+                  type={showKey ? 'text' : 'password'}
+                  value={token}
+                  onChange={e => { setToken(e.target.value); if (error) setError('') }}
+                  onKeyDown={e => e.key === 'Enter' && handleSubmit(e as any)}
+                  placeholder="Paste your access key here…"
+                  autoFocus
+                  autoComplete="current-password"
+                  aria-required="true"
+                  aria-describedby={error ? 'login-error' : 'key-hint'}
+                  aria-invalid={!!error}
+                  className="w-full h-12 pl-11 pr-12 bg-black/40 border border-purple-400/40 rounded-xl text-[16px] font-mono text-white placeholder-white/30 transition-all focus:outline-none focus:border-purple-300 focus:ring-2 focus:ring-purple-400/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(v => !v)}
+                  aria-label={showKey ? 'Hide access key' : 'Show access key'}
+                  className="absolute inset-y-0 right-0 pr-4 flex items-center text-purple-300/60 hover:text-white cursor-pointer transition-colors"
+                >
+                  <Icon name={showKey ? 'visibility_off' : 'visibility'} size={22} />
+                </button>
+              </div>
+
+              <p id="key-hint" className="mt-2 text-[13px] text-purple-300/70">
+                Paste the admin key you were given. Contact your organiser if you don't have one.
+              </p>
+            </div>
+
+            {/* Error message */}
+            <div
+              id="login-error"
+              role="alert"
+              aria-live="assertive"
+              className={`overflow-hidden transition-all duration-200 ${error ? 'mb-4 max-h-20 opacity-100' : 'max-h-0 opacity-0'}`}
+            >
               {error && (
-                <div className="p-3 rounded-xl text-[12px] font-mono text-rose-300 bg-rose-900/20 border border-rose-700/30 flex items-start gap-2 animate-fade-in">
-                  <span className="material-symbols-outlined text-[15px] text-rose-400 shrink-0 mt-0.5">error_outline</span>
-                  <span className="leading-relaxed">{error}</span>
+                <div className="flex items-center gap-2.5 p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-[14px] text-rose-100 font-medium">
+                  <Icon name="error" size={18} className="shrink-0 text-rose-400" />
+                  <span>{error}</span>
                 </div>
               )}
+            </div>
 
-              {/* Submit */}
-              <button
-                type="submit"
-                disabled={loading}
-                id="login-submit"
-                className="w-full py-3 px-4 rounded-xl text-sm font-bold text-white cursor-pointer flex items-center justify-center gap-2 transition-all disabled:opacity-50 relative overflow-hidden group"
-                style={{
-                  background: 'linear-gradient(135deg, #6d28d9 0%, #7c3aed 50%, #5b21b6 100%)',
-                  boxShadow: '0 4px 24px rgba(109,40,217,0.4), inset 0 1px 0 rgba(255,255,255,0.15)',
-                }}
-              >
-                <span className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
-                {loading ? (
-                  <>
-                    <span className="material-symbols-outlined text-[17px] animate-spin">refresh</span>
-                    <span>Authenticating…</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined text-[17px]" style={{ fontVariationSettings: "'FILL' 1" }}>lock_open</span>
-                    <span>Access Control Plane</span>
-                  </>
-                )}
-              </button>
-            </form>
+            {/* Sign in button */}
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full h-12 rounded-xl text-[15px] font-bold text-white bg-gradient-to-r from-purple-700 via-purple-600 to-indigo-600 hover:from-purple-600 hover:to-indigo-500 shadow-md shadow-purple-950/60 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:scale-[0.98]"
+            >
+              {loading ? (
+                <>
+                  <Icon name="sync" size={18} className="animate-spin" aria-hidden="true" />
+                  <span>Signing in…</span>
+                </>
+              ) : (
+                <>
+                  <Icon name="lock_open" size={18} className="text-yellow-300" aria-hidden="true" />
+                  <span>Sign in</span>
+                </>
+              )}
+            </button>
+          </form>
 
-            {/* Demo section */}
-            <div className="mt-5 pt-5 border-t border-white/8 space-y-3">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="text-white/30">Hackathon Demo Environment</span>
-                <span className="text-emerald-400/70 font-mono">Keystone v3 Active</span>
-              </div>
-              <button
-                type="button"
-                onClick={fillDemoCredentials}
-                className="w-full py-2 px-3 rounded-xl border border-white/8 bg-white/4 hover:bg-white/8 text-white/50 hover:text-white/80 text-[11px] font-mono flex items-center justify-between transition-all cursor-pointer group"
-              >
-                <span className="truncate text-purple-300/60 group-hover:text-purple-200/80 transition-colors">{demoToken}</span>
-                <span className="text-[10px] text-purple-400/50 group-hover:text-purple-300/70 ml-2 transition-colors shrink-0">↑ Fill</span>
-              </button>
+          {/* ── Demo divider ── */}
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center" aria-hidden="true">
+              <div className="w-full border-t border-white/10" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="px-3 bg-[#1e0a27] text-[13px] text-purple-300/60 font-medium">or</span>
             </div>
           </div>
 
-          {/* Footer badge */}
-          <div className="mt-5 flex items-center justify-center gap-4 text-[11px] font-mono">
-            <span className="flex items-center gap-1.5 text-white/20">
-              <span className="material-symbols-outlined text-[13px]">shield</span>
-              <span>Zero-trust auth</span>
-            </span>
-            <span className="text-white/10">·</span>
-            <span className="flex items-center gap-1.5 text-white/20">
-              <span className="material-symbols-outlined text-[13px]">lock</span>
-              <span>Session memory only</span>
-            </span>
-            <span className="text-white/10">·</span>
-            <span className="flex items-center gap-1.5 text-white/20">
-              <span className="material-symbols-outlined text-[13px]">https</span>
-              <span>TLS encrypted</span>
-            </span>
-          </div>
+          {/* Demo button */}
+          <button
+            type="button"
+            onClick={handleDemo}
+            disabled={busy}
+            className="w-full h-12 rounded-xl bg-white/8 hover:bg-white/14 border border-white/20 text-[15px] font-bold text-white flex items-center justify-center gap-2.5 transition-all cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
+          >
+            {demoLoading ? (
+              <>
+                <Icon name="sync" size={18} className="animate-spin text-emerald-400" aria-hidden="true" />
+                <span>Opening demo…</span>
+              </>
+            ) : (
+              <>
+                <Icon name="play_arrow" size={20} className="text-emerald-400 group-hover:scale-110 transition-transform" aria-hidden="true" />
+                <span>Try the live demo</span>
+              </>
+            )}
+          </button>
+          <p className="text-center text-[13px] text-purple-300/60 mt-2.5">
+            Instant read/write access for evaluators. No key needed.
+          </p>
         </div>
+
+        {/* ── Footer ── */}
+        <p className="text-center mt-6 text-[14px] text-purple-300/60">
+          Powered by{' '}
+          <span className="text-purple-200/80">OpenStack</span>
+          {' · '}
+          <span className="text-purple-200/80">HAProxy</span>
+          {' · '}
+          <span className="text-purple-200/80">Keepalived</span>
+        </p>
       </div>
 
-      {/* ── Bottom cluster bar ── */}
-      <footer className="relative z-10 border-t border-white/5 px-8 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between text-[11px] font-mono text-white/20">
-          <div className="flex items-center gap-5">
-            <span className="flex items-center gap-1.5">
-              <span className="status-dot-online" />
-              <span>gw1 <span className="text-emerald-400/50">MASTER</span></span>
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="status-dot-standby" />
-              <span>gw2 <span className="text-blue-400/50">STANDBY</span></span>
-            </span>
-            <span className="text-white/10">·</span>
-            <span>VIP 10.20.20.246</span>
-          </div>
-          <div>OpenStack Caracal/Dalmatian · CSTAM 3.0 · FelCloud</div>
-        </div>
-      </footer>
+      {/* Shake + entrance keyframes (scoped in JSX style) */}
+      <style>{`
+        @keyframes loginEnter {
+          from { opacity: 0; transform: translateY(18px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .animate-login-enter {
+          animation: loginEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-login-enter { animation: none; }
+        }
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          20%       { transform: translateX(-6px); }
+          40%       { transform: translateX(6px); }
+          60%       { transform: translateX(-4px); }
+          80%       { transform: translateX(4px); }
+        }
+        .animate-shake { animation: shake 0.5s cubic-bezier(0.36,0.07,0.19,0.97) both; }
+        @media (prefers-reduced-motion: reduce) {
+          .animate-shake { animation: none; }
+        }
+      `}</style>
     </div>
   )
 }

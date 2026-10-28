@@ -1,4 +1,5 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react'
+import Icon from './Icon'
 
 interface Props {
   children: ReactNode
@@ -29,7 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="min-h-screen flex items-center justify-center p-6 bg-[#F8F6F9] text-[#170B1B]">
           <div className="max-w-lg w-full rounded-2xl p-8 border border-rose-300 bg-white shadow-xl">
             <div className="flex items-center gap-3 text-rose-700 mb-4">
-              <span className="material-symbols-outlined text-[28px]">error</span>
+              <Icon name="warning" size={28} className="text-rose-600" />
               <h2 className="text-lg font-bold">CloudPulse Console Runtime Error</h2>
             </div>
             <p className="text-xs text-[#827787] mb-4">

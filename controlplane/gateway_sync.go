@@ -357,7 +357,7 @@ func syncHAProxyDualGatewaysTimed(dryRun bool, trigger string) (bool, string, in
 
 	deployment, err := gatewayDeploymentRunner(genID, candidateCfg, active, standby)
 	if err == nil {
-		err = verifyGatewayHealthWindow(store, baseline)
+		err = verifyGatewayHealthWindow(store, baseline, candidateCfg)
 	}
 	if err != nil {
 		msg := err.Error()

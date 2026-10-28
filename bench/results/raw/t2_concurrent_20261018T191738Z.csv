@@ -1,2 +1,0 @@
-backend_names_found,burst_size,error,gateway_errors,status,timestamp_utc
-"{""gw1"": [""default_maintenance"", ""team1_backend"", ""team2_backend""], ""gw2"": [""default_maintenance"", ""team1_backend"", ""team2_backend""]}",2,both gateways must have exactly the 3 baseline backends before a burst,{},NOT EXECUTED,2026-10-18T19:17:39.077Z

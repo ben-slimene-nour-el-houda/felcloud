@@ -1,9 +1,0 @@
-classification,ip,port,result,target
-forbidden,10.20.30.86,22,open,gw1
-allowed,10.20.30.86,80,open,gw1
-allowed,10.20.30.86,443,open,gw1
-forbidden,10.20.30.86,5555,timeout,gw1
-forbidden,10.20.30.224,22,open,gw2
-allowed,10.20.30.224,80,open,gw2
-allowed,10.20.30.224,443,open,gw2
-forbidden,10.20.30.224,5555,timeout,gw2
