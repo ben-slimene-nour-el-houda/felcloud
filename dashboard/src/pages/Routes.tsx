@@ -137,12 +137,12 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
           { label: 'Base Routing Wildcard', val: `*.${domain}`, icon: 'language', glow: 'glow-warning', color: 'amber' as const, sub: 'ACME Wildcard' },
         ].map((s, i) => (
           <div key={i} className={`kpi-card ${s.glow} space-y-3`}>
-            <div className="flex items-center justify-between text-[#827787] text-xs">
+            <div className="flex items-center justify-between text-[#827787] text-sm">
               <span className="font-semibold tracking-wide">{s.label}</span>
               <span className="material-symbols-outlined text-[20px] text-[#74537a]">{s.icon}</span>
             </div>
-            <div className="font-mono font-bold text-xl text-[#170B1B] truncate">{s.val}</div>
-            <div className="flex items-center justify-between text-[11px] text-[#827787]">
+            <div className="font-mono font-bold text-2xl text-[#170B1B] truncate">{s.val}</div>
+            <div className="flex items-center justify-between text-xs text-[#827787] font-medium">
               <span>{s.sub}</span>
               <Sparkline data={[10, 12, 14, 15, 18]} color={s.color} width={48} height={16} />
             </div>
@@ -155,29 +155,29 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
         {/* Table header bar */}
         <div className="p-5 border-b border-purple-900/5 bg-[#F8F6F9] flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-purple-100 flex items-center justify-center text-[#2D0035] flex-shrink-0">
-              <span className="material-symbols-outlined text-[20px]">alt_route</span>
+            <div className="w-10 h-10 rounded-2xl bg-purple-100 flex items-center justify-center text-[#2D0035] flex-shrink-0">
+              <span className="material-symbols-outlined text-[22px]">alt_route</span>
             </div>
             <div>
-              <h2 className="text-sm font-bold text-[#170B1B]">
+              <h2 className="text-base font-bold text-[#170B1B]">
                 HAProxy Frontend Subdomain Routing Table
               </h2>
-              <div className="text-xs text-[#827787] font-mono">
+              <div className="text-xs text-[#827787] font-mono mt-0.5">
                 Matching rules against <strong className="text-[#2D0035]">*.{domain}</strong>
               </div>
             </div>
           </div>
 
-          {/* Search bar */}
-          <div className="relative min-w-[240px]">
+          {/* Unclipped Search bar with pl-11 */}
+          <div className="relative min-w-[260px] md:min-w-[320px]">
             <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
-              <span className="material-symbols-outlined text-[17px]">search</span>
+              <span className="material-symbols-outlined text-[19px]">search</span>
             </span>
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search routes by team or IP…"
-              className="w-full pl-9 pr-3.5 py-2 text-xs rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 text-[#170B1B] font-medium transition-all shadow-xs"
+              className="w-full pl-11 pr-4 py-2.5 text-sm rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 text-[#170B1B] font-medium transition-all shadow-xs"
             />
           </div>
         </div>
@@ -202,15 +202,15 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
                 const lim = rateLimits[s.sandbox_id] || 120
 
                 return (
-                  <tr key={s.sandbox_id}>
+                  <tr key={s.sandbox_id} className="hover:bg-purple-900/[0.02] transition-colors">
                     {/* Subdomain */}
                     <td className="min-w-[200px]">
                       <div className="flex items-center gap-2.5">
                         <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)] flex-shrink-0" />
-                        <span className="font-mono font-bold text-[#170B1B] text-xs">{routeUrl}</span>
+                        <span className="font-mono font-bold text-[#170B1B] text-sm">{routeUrl}</span>
                       </div>
                       {s.custom_domain && (
-                        <div className="text-[11px] font-mono text-emerald-800 font-semibold pl-5 mt-0.5">
+                        <div className="text-xs font-mono text-emerald-800 font-semibold pl-5 mt-0.5">
                           Alias: {s.custom_domain}
                         </div>
                       )}
@@ -218,7 +218,7 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
 
                     {/* Backend Target */}
                     <td className="font-mono whitespace-nowrap">
-                      <span className="px-2.5 py-1 rounded-lg bg-[#F8F6F9] text-[#170B1B] font-bold text-xs">
+                      <span className="px-3 py-1.5 rounded-xl bg-[#F8F6F9] text-[#170B1B] font-bold text-sm">
                         {s.ip_address || '10.20.10.x'}:8080
                       </span>
                     </td>
@@ -233,13 +233,13 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
                     {/* TLS */}
                     <td className="whitespace-nowrap">
                       <span className="badge badge-emerald">
-                        <span className="material-symbols-outlined text-[13px]">lock</span>
+                        <span className="material-symbols-outlined text-[14px]">lock</span>
                         Let's Encrypt (Auto)
                       </span>
                     </td>
 
                     {/* Rate Limit */}
-                    <td className="font-mono text-[#170B1B] font-bold whitespace-nowrap text-xs">
+                    <td className="font-mono text-[#170B1B] font-bold whitespace-nowrap text-sm">
                       {lim} req/min
                     </td>
 
@@ -247,7 +247,7 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
                     <td className="text-right whitespace-nowrap">
                       <button
                         onClick={() => handleEditLimit(s.sandbox_id)}
-                        className="px-3 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] text-xs font-semibold transition-all cursor-pointer"
+                        className="px-3.5 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] text-xs font-semibold transition-all cursor-pointer"
                       >
                         Edit Limit
                       </button>
@@ -276,22 +276,22 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
 
             <button
               onClick={handleSpike}
-              className="px-3.5 py-1.5 rounded-xl bg-purple-700/80 hover:bg-purple-600 text-white font-mono text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-md"
+              className="px-4 py-2 rounded-xl bg-purple-700/80 hover:bg-purple-600 text-white font-mono text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md"
             >
               <span className="material-symbols-outlined text-[16px]">bolt</span>
               <span>Inject Traffic Spike</span>
             </button>
           </div>
 
-          <div ref={streamRef} className="space-y-2.5 max-h-[300px] overflow-y-auto font-mono text-xs pr-1 dark-scroll">
+          <div ref={streamRef} className="space-y-2 max-h-[300px] overflow-y-auto font-mono text-xs pr-1 dark-scroll">
             {logs.map((l, i) => (
               <div
                 key={i}
                 className="p-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 flex items-center justify-between transition-colors duration-150"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-purple-300/70 text-[11px] font-semibold">[{l.time}]</span>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                  <span className="text-purple-300/70 text-xs font-semibold">[{l.time}]</span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-bold ${
                     l.code >= 500 ? 'bg-rose-900/60 text-rose-300' : 'bg-emerald-900/60 text-emerald-300'
                   }`}>
                     {l.code}
@@ -301,7 +301,7 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
                     <strong className="text-purple-300">{l.subdomain}</strong>{l.path}
                   </span>
                 </div>
-                <div className="flex items-center gap-3 font-semibold text-purple-200/80 text-[11px] flex-shrink-0">
+                <div className="flex items-center gap-3 font-semibold text-purple-200/80 text-xs flex-shrink-0">
                   <span className="text-emerald-400">{l.latency}</span>
                   <span className="text-white/40">via {l.gw}</span>
                 </div>
@@ -316,10 +316,10 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
             <div className="w-9 h-9 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-700">
               <span className="material-symbols-outlined text-[20px]">lock</span>
             </div>
-            <h3 className="text-sm font-bold text-[#170B1B]">TLS &amp; Certificate Profile</h3>
+            <h3 className="text-base font-bold text-[#170B1B]">TLS &amp; Certificate Profile</h3>
           </div>
 
-          <div className="space-y-2.5 text-xs">
+          <div className="space-y-3 text-sm">
             <div className="flex justify-between py-1.5 border-b border-purple-900/5">
               <span className="text-[#827787] font-medium">Provider:</span>
               <span className="font-bold text-[#170B1B]">Let's Encrypt Wildcard ACME</span>
@@ -339,10 +339,10 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
           </div>
 
           <div className="pt-3 border-t border-purple-900/5">
-            <div className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono mb-2.5">
+            <div className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono mb-2.5">
               HAProxy Config Snapshot
             </div>
-            <div className="p-3.5 rounded-2xl bg-[#F8F6F9] space-y-2 text-xs font-mono">
+            <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2 text-sm font-mono">
               <div className="flex justify-between text-[#170B1B]">
                 <span className="text-[#827787]">Default Rate Limit:</span>
                 <span className="font-bold">120 req/min</span>
@@ -358,6 +358,11 @@ export default function Routes({ onOpenCustomDomain, showToast }: Props) {
               <div className="flex justify-between text-[#170B1B]">
                 <span className="text-[#827787]">Timeout Connect:</span>
                 <span className="font-bold">5s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
               </div>
             </div>
           </div>

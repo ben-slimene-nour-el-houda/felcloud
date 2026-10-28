@@ -31,10 +31,10 @@ export function RefreshButton({
       onClick={handleClick}
       disabled={spinning}
       title="Fetch latest telemetry"
-      className={`inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/90 hover:bg-white text-[#2D0035] rounded-xl text-xs font-semibold shadow-xs hover:shadow-sm border border-purple-900/5 transition-all duration-200 cursor-pointer disabled:opacity-70 ${className}`}
+      className={`inline-flex items-center gap-2 px-3.5 py-2 bg-white/90 hover:bg-white text-[#2D0035] rounded-xl text-sm font-semibold shadow-xs hover:shadow-sm border border-purple-900/5 transition-all duration-200 cursor-pointer disabled:opacity-70 ${className}`}
     >
       <span
-        className={`material-symbols-outlined text-[16px] transition-transform duration-700 ease-in-out ${
+        className={`material-symbols-outlined text-[18px] transition-transform duration-700 ease-in-out ${
           spinning ? 'animate-spin text-[#7e4c83]' : 'text-[#827787]'
         }`}
       >

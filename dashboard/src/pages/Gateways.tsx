@@ -110,24 +110,24 @@ export default function Gateways({ showToast }: Props) {
           <div>
             <div className="flex items-center gap-3 flex-wrap">
               <span className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-              <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">
+              <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">
                 Gateway High Availability
               </h1>
               <span className="badge badge-emerald">2/2 NODES HEALTHY</span>
             </div>
-            <p className="text-xs text-[#827787] mt-1.5 leading-relaxed max-w-2xl">
+            <p className="text-sm text-[#827787] mt-1.5 leading-relaxed max-w-2xl">
               Active-Passive VRRP cluster delivering sub-second failover for all student team routing without TCP termination.
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="flex items-center gap-3 flex-shrink-0">
             <RefreshButton onRefresh={refresh} label="Refresh" />
             <button
               onClick={handleRoleSwap}
               disabled={failingOver}
-              className="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-md hover:shadow-lg transition-all duration-200 flex items-center gap-2 cursor-pointer bg-[#2D0035] hover:bg-[#43134c] disabled:opacity-50"
+              className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white shadow-md hover:shadow-lg transition-all duration-200 flex items-center gap-2 cursor-pointer bg-[#2D0035] hover:bg-[#43134c] disabled:opacity-50"
             >
-              <span className="material-symbols-outlined text-[16px]">sync_alt</span>
+              <span className="material-symbols-outlined text-[18px]">sync_alt</span>
               <span>{failingOver ? 'Switching VIP…' : 'Swap Active Gateway'}</span>
             </button>
           </div>
@@ -136,34 +136,34 @@ export default function Gateways({ showToast }: Props) {
         {/* Floating VIP Hero Strip */}
         <div className="pt-5 border-t border-purple-900/5 grid grid-cols-1 sm:grid-cols-3 gap-6 text-center sm:text-left">
           <div className="sm:border-r sm:border-purple-900/5 sm:pr-6">
-            <div className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
+            <div className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
               Virtual IP (VIP)
             </div>
-            <div className="text-2xl font-mono font-bold text-[#2D0035] mt-1">
+            <div className="text-3xl font-mono font-bold text-[#2D0035] mt-1">
               {vip}
             </div>
-            <div className="text-xs text-[#827787] mt-0.5">Floating across eth0.50 via VRRP</div>
+            <div className="text-sm text-[#827787] mt-1">Floating across eth0.50 via VRRP</div>
           </div>
 
           <div className="sm:border-r sm:border-purple-900/5 sm:px-6">
-            <div className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
+            <div className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
               Current Active Node
             </div>
-            <div className="text-lg font-bold text-[#170B1B] mt-1 flex items-center justify-center sm:justify-start gap-2">
+            <div className="text-xl font-bold text-[#170B1B] mt-1 flex items-center justify-center sm:justify-start gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
               <span>{isGw1Master ? 'Gateway 01 (gw1)' : 'Gateway 02 (gw2)'}</span>
             </div>
-            <div className="text-xs text-emerald-700 font-semibold mt-0.5">Holding 100% of ingress connections</div>
+            <div className="text-sm text-emerald-700 font-semibold mt-1">Holding 100% of ingress connections</div>
           </div>
 
           <div className="sm:pl-6">
-            <div className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
+            <div className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
               Heartbeat &amp; SLA
             </div>
-            <div className="text-lg font-mono font-bold text-[#170B1B] mt-1">
-              412 ms <span className="text-xs text-emerald-700 font-semibold font-sans">(Zero Drops)</span>
+            <div className="text-xl font-mono font-bold text-[#170B1B] mt-1">
+              412 ms <span className="text-sm text-emerald-700 font-semibold font-sans">(Zero Drops)</span>
             </div>
-            <div className="text-xs text-[#827787] mt-0.5">VRRP Interval: 1.0s unicast</div>
+            <div className="text-sm text-[#827787] mt-1">VRRP Interval: 1.0s unicast</div>
           </div>
         </div>
       </div>
@@ -295,13 +295,13 @@ export default function Gateways({ showToast }: Props) {
           Split-Brain &amp; HA Safeguards
         </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-1.5">
             <div className="font-bold text-[#170B1B] flex items-center gap-1.5">
               <span className="material-symbols-outlined text-emerald-600 text-[18px]">verified</span>
               <span>SHA-256 Auth</span>
             </div>
-            <p className="text-[#827787] text-[11px] leading-relaxed">
+            <p className="text-[#827787] text-xs leading-relaxed">
               VRRP advertisements authenticated on isolated Neutron subnet.
             </p>
           </div>
@@ -311,7 +311,7 @@ export default function Gateways({ showToast }: Props) {
               <span className="material-symbols-outlined text-emerald-600 text-[18px]">verified</span>
               <span>Preempt Delay (30s)</span>
             </div>
-            <p className="text-[#827787] text-[11px] leading-relaxed">
+            <p className="text-[#827787] text-xs leading-relaxed">
               Prevents route flapping when recovered primary node boots up.
             </p>
           </div>
@@ -321,7 +321,7 @@ export default function Gateways({ showToast }: Props) {
               <span className="material-symbols-outlined text-emerald-600 text-[18px]">verified</span>
               <span>Health Scripts</span>
             </div>
-            <p className="text-[#827787] text-[11px] leading-relaxed">
+            <p className="text-[#827787] text-xs leading-relaxed">
               VRRP weight drops immediately if HAProxy socket dies.
             </p>
           </div>
@@ -331,7 +331,7 @@ export default function Gateways({ showToast }: Props) {
               <span className="material-symbols-outlined text-emerald-600 text-[18px]">verified</span>
               <span>Gratuitous ARP</span>
             </div>
-            <p className="text-[#827787] text-[11px] leading-relaxed">
+            <p className="text-[#827787] text-xs leading-relaxed">
               Sub-second ARP broadcast updates router MAC tables instantly.
             </p>
           </div>
@@ -342,7 +342,7 @@ export default function Gateways({ showToast }: Props) {
           <div className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono mb-3">
             Recent Failover Events
           </div>
-          <div className="divide-y divide-purple-900/5 text-xs">
+          <div className="divide-y divide-purple-900/5 text-sm">
             {failoverLog.map((f, i) => (
               <div key={i} className="py-3 flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -354,7 +354,7 @@ export default function Gateways({ showToast }: Props) {
                   </span>
                   <span className="text-[#827787] font-medium">{f.cause}</span>
                 </div>
-                <span className="text-[#827787] font-mono text-[11px]">{f.time}</span>
+                <span className="text-[#827787] font-mono text-xs">{f.time}</span>
               </div>
             ))}
           </div>

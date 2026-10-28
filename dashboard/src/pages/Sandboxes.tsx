@@ -370,34 +370,34 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                           key={s.sandbox_id}
                           onClick={() => setSelectedId(s.sandbox_id)}
                           className={`cursor-pointer transition-colors duration-150 ${
-                            isSelected ? 'bg-purple-900/[0.04]' : ''
+                            isSelected ? 'bg-purple-900/[0.04]' : 'hover:bg-purple-900/[0.02]'
                           }`}
                         >
                           {/* Team Name */}
-                          <td className="min-w-[150px]">
-                            <div className="font-bold text-[#170B1B] text-sm flex items-center gap-2">
+                          <td className="min-w-[160px]">
+                            <div className="font-bold text-[#170B1B] text-base flex items-center gap-2">
                               {teamName}
                               {!isMock && <span className="w-2 h-2 rounded-full bg-[#74537a]" />}
                             </div>
-                            <div className="text-[11px] text-[#827787] font-mono truncate max-w-[160px]" title={s.sandbox_id}>
+                            <div className="text-xs text-[#827787] font-mono truncate max-w-[160px]" title={s.sandbox_id}>
                               {cleanLabel(s.sandbox_id)}
                             </div>
                           </td>
 
                           {/* IP Address */}
                           <td className="font-mono whitespace-nowrap">
-                            <span className="px-2.5 py-1 rounded-lg bg-[#F8F6F9] text-[#170B1B] font-bold text-xs">
+                            <span className="px-3 py-1.5 rounded-xl bg-[#F8F6F9] text-[#170B1B] font-bold text-sm">
                               {s.ip_address || '10.20.10.x'}:8080
                             </span>
                           </td>
 
                           {/* Subdomain */}
-                          <td className="min-w-[190px] max-w-[260px]">
-                            <div className="font-mono text-xs font-semibold text-[#2D0035] truncate" title={sub}>
+                          <td className="min-w-[200px] max-w-[280px]">
+                            <div className="font-mono text-sm font-semibold text-[#2D0035] truncate" title={sub}>
                               {sub}
                             </div>
                             {s.custom_domain && (
-                              <div className="text-[10px] text-emerald-800 font-mono font-bold truncate">
+                              <div className="text-xs text-emerald-800 font-mono font-medium truncate mt-0.5">
                                 Alias: {s.custom_domain}
                               </div>
                             )}
@@ -417,7 +417,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                               </span>
                             ) : isFailed ? (
                               <span className="badge badge-rose">
-                                <span className="material-symbols-outlined text-[13px]">warning</span>
+                                <span className="material-symbols-outlined text-[14px]">warning</span>
                                 {s.status === 'TEARDOWN_FAILED' ? 'FAILED' : s.status}
                               </span>
                             ) : (
@@ -428,7 +428,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                           </td>
 
                           {/* Lease TTL */}
-                          <td className="font-mono text-xs whitespace-nowrap">
+                          <td className="font-mono text-sm whitespace-nowrap">
                             {isActive && s.expires_at ? (
                               <span className="font-bold text-[#170B1B]">
                                 {formatDuration(Math.max(0, s.expires_at - Math.floor(Date.now() / 1000)))}
@@ -446,14 +446,14 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                               <button
                                 onClick={() => handleRecoverOrReprovision(s)}
                                 disabled={recoveringId === s.sandbox_id}
-                                className="px-3 py-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                                className="px-3.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
                               >
                                 {recoveringId === s.sandbox_id ? 'Booting…' : 'Re-deploy'}
                               </button>
                             ) : isActive ? (
                               <button
                                 onClick={() => handleRenew(s.sandbox_id)}
-                                className="px-2.5 py-1 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold transition-all cursor-pointer"
+                                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold transition-all cursor-pointer"
                               >
                                 +1h
                               </button>
@@ -461,7 +461,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
 
                             <button
                               onClick={() => setSelectedId(s.sandbox_id)}
-                              className="px-3 py-1 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all cursor-pointer"
+                              className="px-3.5 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all cursor-pointer"
                             >
                               Inspect
                             </button>
@@ -469,7 +469,7 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
                             {s.status !== 'RELEASED' && (
                               <button
                                 onClick={() => handleTeardown(s.sandbox_id)}
-                                className="px-3 py-1 rounded-xl bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 text-xs font-semibold transition-all cursor-pointer"
+                                className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 text-xs font-semibold transition-all cursor-pointer"
                               >
                                 Teardown
                               </button>
@@ -518,16 +518,16 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             </div>
 
             {/* Target Card */}
-            <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2.5 text-xs">
+            <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-3 text-sm">
               <div className="flex justify-between items-center">
                 <span className="text-[#827787] font-medium">Private VM Target:</span>
-                <span className="font-mono font-bold text-[#170B1B] bg-white px-2 py-0.5 rounded-md shadow-xs">
+                <span className="font-mono font-bold text-[#170B1B] bg-white px-2.5 py-1 rounded-lg shadow-xs">
                   {selectedSandbox.ip_address || '10.20.10.x'}:8080
                 </span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-[#827787] font-medium">Subdomain:</span>
-                <span className="font-mono font-bold text-[#2D0035] truncate max-w-[190px]">
+                <span className="font-mono font-bold text-[#2D0035] truncate max-w-[200px]">
                   {getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id, selectedSandbox.custom_domain)}
                 </span>
               </div>
@@ -538,41 +538,41 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
             </div>
 
             {/* Security Isolation */}
-            <div className="space-y-2">
-              <span className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
+            <div className="space-y-2.5">
+              <span className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
                 Neutron Security Rules
               </span>
-              <div className="p-3.5 rounded-2xl bg-[#F8F6F9] space-y-2 text-xs">
-                <div className="flex items-center gap-2 text-emerald-800 font-semibold">
-                  <span className="material-symbols-outlined text-[16px]">check_circle</span>
+              <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2.5 text-sm">
+                <div className="flex items-center gap-2.5 text-emerald-800 font-semibold">
+                  <span className="material-symbols-outlined text-[18px]">check_circle</span>
                   <span>Ingress TCP 80/443 from Gateway VIP</span>
                 </div>
-                <div className="flex items-center gap-2 text-rose-800 font-semibold">
-                  <span className="material-symbols-outlined text-[16px]">block</span>
+                <div className="flex items-center gap-2.5 text-rose-800 font-semibold">
+                  <span className="material-symbols-outlined text-[18px]">block</span>
                   <span>Drop 10.20.10.0/24 (Inter-sandbox)</span>
                 </div>
-                <div className="flex items-center gap-2 text-rose-800 font-semibold">
-                  <span className="material-symbols-outlined text-[16px]">block</span>
+                <div className="flex items-center gap-2.5 text-rose-800 font-semibold">
+                  <span className="material-symbols-outlined text-[18px]">block</span>
                   <span>Drop Mgmt Port 8000</span>
                 </div>
               </div>
             </div>
 
             {/* Health cURL Command */}
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[#74537a] uppercase tracking-wider font-mono">
+                <span className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
                   Test Ingress Health
                 </span>
                 <button
                   onClick={() => copyCurl(`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`)}
-                  className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                  className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
                 >
-                  <span className="material-symbols-outlined text-[14px]">content_copy</span>
+                  <span className="material-symbols-outlined text-[16px]">content_copy</span>
                   {copyStatus}
                 </button>
               </div>
-              <pre className="p-3 rounded-2xl bg-[#170B1B] text-emerald-400 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all select-all">
+              <pre className="p-3.5 rounded-2xl bg-[#170B1B] text-emerald-400 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all select-all">
                 {`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`}
               </pre>
             </div>
@@ -582,16 +582,16 @@ export default function Sandboxes({ onOpenProvision, showToast }: Props) {
               <button
                 onClick={() => handleRecoverOrReprovision(selectedSandbox)}
                 disabled={recoveringId === selectedSandbox.sandbox_id}
-                className="py-2.5 px-3 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
+                className="py-3 px-4 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-50"
               >
-                <span className="material-symbols-outlined text-[16px]">rocket_launch</span>
+                <span className="material-symbols-outlined text-[18px]">rocket_launch</span>
                 <span>Deploy / Reset</span>
               </button>
               <button
                 onClick={() => handleTeardown(selectedSandbox.sandbox_id)}
-                className="py-2.5 px-3 rounded-xl bg-white hover:bg-rose-50 text-rose-700 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+                className="py-3 px-4 rounded-xl bg-white hover:bg-rose-50 text-rose-700 text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs border border-rose-200/50"
               >
-                <span className="material-symbols-outlined text-[16px]">delete</span>
+                <span className="material-symbols-outlined text-[18px]">delete</span>
                 <span>Teardown</span>
               </button>
             </div>

@@ -35,18 +35,18 @@ export default function Benchmarks({ showToast }: Props) {
       {/* Header bar */}
       <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-[#170B1B] tracking-tight">Performance Benchmarks &amp; SLAs</h2>
-          <p className="text-xs text-[#827787] mt-1.5 leading-relaxed">
+          <h2 className="text-3xl font-bold text-[#170B1B] tracking-tight">Performance Benchmarks &amp; SLAs</h2>
+          <p className="text-sm text-[#827787] mt-1.5 leading-relaxed">
             Simulated stress test telemetry for OpenStack Nova Compute, Neutron IPAM, and Keepalived/HAProxy Gateway.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
             onClick={runSuite}
             disabled={running}
-            className="px-4 py-2 bg-[#2D0035] text-white hover:bg-[#43134c] rounded-xl text-xs font-bold flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
+            className="px-5 py-2.5 bg-[#2D0035] text-white hover:bg-[#43134c] rounded-xl text-sm font-semibold flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
           >
-            <span className={`material-symbols-outlined text-[16px] ${running ? 'animate-spin' : ''}`}>
+            <span className={`material-symbols-outlined text-[18px] ${running ? 'animate-spin' : ''}`}>
               {running ? 'refresh' : 'play_arrow'}
             </span>
             <span>{running ? 'Executing Suite…' : 'Run Benchmark Suite'}</span>

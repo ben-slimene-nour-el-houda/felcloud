@@ -138,39 +138,39 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
       <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">The Resilient IP Optimizer</h1>
+            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">The Resilient IP Optimizer</h1>
             <span className={`badge ${masterGw.status === 'HEALTHY' ? 'badge-emerald' : 'badge-rose'}`}>
               <span className={`w-2 h-2 rounded-full ${masterGw.status === 'HEALTHY' ? 'bg-emerald-500' : 'bg-rose-500 animate-pulse'}`} />
               {masterGw.status === 'HEALTHY' ? 'STABLE CLUSTER' : 'DEGRADED / CRASHED'}
             </span>
             <span className="badge badge-purple font-mono">Shared VIP: {vip}</span>
           </div>
-          <p className="text-xs text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
+          <p className="text-sm text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
             Multi-tenant OpenStack orchestration, Keepalived/VRRP dual HAProxy gateways, and sub-second config transaction rollback.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
           <RefreshButton onRefresh={handleRefreshAll} label="Refresh" />
           <button
             onClick={handleRollback}
-            className="px-3.5 py-2 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-xs"
+            className="px-4 py-2.5 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-sm font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs"
           >
-            <span className="material-symbols-outlined text-[16px]">history</span>
+            <span className="material-symbols-outlined text-[18px]">history</span>
             <span>Rollback Config</span>
           </button>
           <button
             onClick={handleExportTopology}
-            className="px-3.5 py-2 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all duration-200 cursor-pointer shadow-xs"
+            className="px-4 py-2.5 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-sm font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs"
           >
-            <span className="material-symbols-outlined text-[16px]">download</span>
+            <span className="material-symbols-outlined text-[18px]">download</span>
             <span>Export Topology</span>
           </button>
           <button
             onClick={onOpenProvision}
-            className="px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
+            className="px-5 py-2.5 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-sm font-semibold flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]">add_circle</span>
+            <span className="material-symbols-outlined text-[18px]">add_circle</span>
             <span>Provision Sandbox</span>
           </button>
         </div>
@@ -180,16 +180,16 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         {/* KPI Card 1: HAProxy Gateways */}
         <div className="kpi-card glow-healthy">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">HAProxy Gateways</span>
             <span className="material-symbols-outlined text-[20px] text-emerald-600">router</span>
           </div>
           <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">2 / 2 Online</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">2 / 2 Online</span>
             <span className="badge badge-purple">{masterGw.id.toUpperCase()} MASTER</span>
           </div>
           <div className="mt-4 flex items-center justify-between">
-            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+            <div className="text-xs text-[#827787] flex items-center gap-1.5 font-medium">
               <span className="text-emerald-700 font-mono font-bold">VRRP Sync: 1.0s</span>
               <span>•</span>
               <span>VIP on {masterGw.id}</span>
@@ -201,16 +201,16 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
 
         {/* KPI Card 2: Active Sandboxes */}
         <div className="kpi-card glow-primary">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Active Sandboxes</span>
             <span className="material-symbols-outlined text-[20px] text-[#74537a]">dns</span>
           </div>
           <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">{activeCount} Teams</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">{activeCount} Teams</span>
             <span className="badge badge-emerald">100% Up</span>
           </div>
           <div className="mt-4 flex items-center justify-between">
-            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+            <div className="text-xs text-[#827787] flex items-center gap-1.5 font-medium">
               <span className="font-mono text-[#2D0035] font-semibold">{totalLeased} leases</span>
               <span>•</span>
               <span className="text-amber-700 font-medium">2 quarantine</span>
@@ -222,16 +222,16 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
 
         {/* KPI Card 3: Private IP Pool */}
         <div className="kpi-card glow-info">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Private IP Pool (10.20.0.0/24)</span>
             <span className="material-symbols-outlined text-[20px] text-blue-600">pie_chart</span>
           </div>
           <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">2%</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">2%</span>
             <span className="badge badge-blue">{totalLeased} / 250 Used</span>
           </div>
           <div className="mt-4 flex items-center justify-between">
-            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+            <div className="text-xs text-[#827787] flex items-center gap-1.5 font-medium">
               <span className="font-semibold text-blue-700">244 IPs free</span>
               <span>•</span>
               <span>0 drift</span>
@@ -243,16 +243,16 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
 
         {/* KPI Card 4: Mean Failover Time */}
         <div className="kpi-card glow-healthy">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
+          <div className="flex items-center justify-between text-[#827787] text-sm">
             <span className="font-semibold tracking-wide">Mean Failover SLA</span>
             <span className="material-symbols-outlined text-[20px] text-emerald-600">timer</span>
           </div>
           <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">412 ms</span>
+            <span className="text-3xl font-bold text-[#170B1B] font-mono">412 ms</span>
             <span className="badge badge-emerald">Sub-second</span>
           </div>
           <div className="mt-4 flex items-center justify-between">
-            <div className="text-[11px] text-[#827787] flex items-center gap-1">
+            <div className="text-xs text-[#827787] flex items-center gap-1.5 font-medium">
               <span>Target &lt; 1000ms</span>
               <span>•</span>
               <span className="text-emerald-700 font-semibold">Zero TCP resets</span>
@@ -269,24 +269,24 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
           <div>
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-[22px] text-[#2D0035]">hub</span>
-              <h2 className="text-base font-bold text-[#170B1B]">Active Redundant Gateway Pair (Keepalived / VRRP)</h2>
+              <h2 className="text-lg font-bold text-[#170B1B]">Active Redundant Gateway Pair (Keepalived / VRRP)</h2>
             </div>
-            <p className="text-xs text-[#827787] mt-1 leading-relaxed">
+            <p className="text-sm text-[#827787] mt-1 leading-relaxed">
               Both spine instances run HAProxy + Keepalived. The active MASTER holds virtual IP{' '}
-              <code className="font-mono text-[#2D0035] bg-purple-50 px-2 py-0.5 rounded-lg font-bold">{vip}</code>.
+              <code className="font-mono text-[#2D0035] bg-purple-50 px-2.5 py-1 rounded-lg font-bold text-xs">{vip}</code>.
             </p>
           </div>
           <div className="flex items-center gap-2.5 flex-wrap">
             <button
               onClick={handleQuickFailover}
-              className="px-3.5 py-1.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 cursor-pointer shadow-xs border border-rose-200/40"
+              className="px-4 py-2 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 cursor-pointer shadow-xs border border-rose-200/40"
             >
-              <span className="material-symbols-outlined text-[15px]">bolt</span>
+              <span className="material-symbols-outlined text-[16px]">bolt</span>
               <span>Simulate Crash</span>
             </button>
             <button
               onClick={handleResetNodes}
-              className="px-3.5 py-1.5 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer shadow-xs"
+              className="px-4 py-2 bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#2D0035] rounded-xl text-xs font-semibold transition-all duration-200 cursor-pointer shadow-xs"
             >
               Reset Nodes
             </button>
@@ -309,7 +309,7 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
                 <div className="flex items-start justify-between">
                   <div>
                     <div className="flex items-center gap-2.5">
-                      <span className="font-mono font-bold text-base text-[#170B1B]">{node.name} ({node.id})</span>
+                      <span className="font-mono font-bold text-lg text-[#170B1B]">{node.name} ({node.id})</span>
                       <span className={`w-2.5 h-2.5 rounded-full ${isCrashed ? 'bg-rose-500 animate-ping' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'}`} />
                     </div>
                     <div className="text-xs font-mono text-[#827787] mt-1">
@@ -322,17 +322,17 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
                 </div>
 
                 {/* Metrics Breakdown Box */}
-                <div className="p-4 rounded-xl bg-white shadow-xs space-y-2 text-xs">
+                <div className="p-4 rounded-xl bg-white shadow-xs space-y-2.5 text-sm">
                   <div className="flex justify-between items-center">
-                    <span className="text-[#827787]">HAProxy State:</span>
+                    <span className="text-[#827787] font-medium">HAProxy State:</span>
                     <span className={`font-mono font-bold ${isCrashed ? 'text-rose-700' : 'text-emerald-700'}`}>{node.haproxy}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-[#827787]">Data Plane API:</span>
+                    <span className="text-[#827787] font-medium">Data Plane API:</span>
                     <span className={`font-mono font-bold ${isCrashed ? 'text-rose-700' : 'text-purple-900'}`}>{node.dpApi}</span>
                   </div>
                   <div className="flex justify-between items-center">
-                    <span className="text-[#827787]">VIP Binding:</span>
+                    <span className="text-[#827787] font-medium">VIP Binding:</span>
                     <span className={`font-mono font-bold ${node.vipBound ? 'text-[#2D0035]' : 'text-gray-400'}`}>
                       {node.vipBound ? `${vip} (BOUND)` : 'Standby'}
                     </span>
@@ -340,9 +340,9 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
                 </div>
 
                 {/* CPU & RAM Sliders */}
-                <div className="space-y-2.5 text-xs">
+                <div className="space-y-3 text-xs">
                   <div>
-                    <div className="flex justify-between text-[#827787] mb-1">
+                    <div className="flex justify-between text-[#827787] mb-1 font-medium">
                       <span>CPU Usage</span>
                       <span className="font-mono font-semibold text-[#170B1B]">{node.cpu}%</span>
                     </div>
@@ -351,7 +351,7 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
                     </div>
                   </div>
                   <div>
-                    <div className="flex justify-between text-[#827787] mb-1">
+                    <div className="flex justify-between text-[#827787] mb-1 font-medium">
                       <span>Memory Allocated</span>
                       <span className="font-mono font-semibold text-[#170B1B]">{node.ram}%</span>
                     </div>
@@ -367,7 +367,7 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
 
         {/* ANIMATED TOPOLOGY FLOW DIAGRAM (Soft rounded pill container) */}
         <div className="p-4 bg-[#F8F6F9] rounded-2xl flex flex-col md:flex-row items-center justify-between text-xs text-[#827787] gap-3">
-          <div className="flex items-center gap-2 font-mono text-[11px] flex-wrap">
+          <div className="flex items-center gap-2 font-mono text-xs flex-wrap">
             <span className="px-3 py-1 bg-white rounded-xl text-[#170B1B] font-semibold shadow-xs">Client (*.cstam.felcloud.tn)</span>
             <span>→</span>
             <span className="px-3 py-1 bg-white rounded-xl text-[#2D0035] font-semibold shadow-xs">Designate DNS</span>
@@ -393,7 +393,7 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
           <div className="flex items-center justify-between pb-3 border-b border-purple-900/5">
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-[20px] text-[#2D0035]">sync_alt</span>
-              <h3 className="text-sm font-bold text-[#170B1B]">Live Traffic Sampling</h3>
+              <h3 className="text-base font-bold text-[#170B1B]">Live Traffic Sampling</h3>
             </div>
             <button
               onClick={() => onNavigate('traffic')}
@@ -402,14 +402,14 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
               Full Stream →
             </button>
           </div>
-          <div className="space-y-2 font-mono text-[11px]">
+          <div className="space-y-2 font-mono text-xs">
             {trafficLogs.map((l, i) => (
               <div
                 key={i}
-                className="p-3 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
+                className="p-3.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
               >
                 <div className="flex items-center gap-2.5 truncate">
-                  <span className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                  <span className={`px-2 py-0.5 rounded-md font-bold text-xs ${
                     l.code === 200 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
                   }`}>
                     {l.code}
@@ -428,7 +428,7 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
           <div className="flex items-center justify-between pb-3 border-b border-purple-900/5">
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-[20px] text-[#2D0035]">policy</span>
-              <h3 className="text-sm font-bold text-[#170B1B]">Audit &amp; Reconcile Stream</h3>
+              <h3 className="text-base font-bold text-[#170B1B]">Audit &amp; Reconcile Stream</h3>
             </div>
             <button
               onClick={() => onNavigate('audit')}
@@ -437,17 +437,17 @@ export default function Overview({ onNavigate, onOpenProvision, onTriggerFailove
               View All →
             </button>
           </div>
-          <div className="space-y-2 text-xs">
+          <div className="space-y-2 text-sm">
             {events.map((e, i) => (
               <div
                 key={i}
-                className="p-3 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
+                className="p-3.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F3EEF5] flex items-center justify-between transition-colors duration-150"
               >
                 <div className="truncate pr-3">
-                  <span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-purple-100 text-[#2D0035] font-bold">{e.event_type || 'EVENT'}</span>
+                  <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-purple-100 text-[#2D0035] font-bold">{e.event_type || 'EVENT'}</span>
                   <span className="text-[#170B1B] font-medium text-xs ml-2">{e.detail}</span>
                 </div>
-                <span className="text-[10px] text-[#827787] font-mono shrink-0 font-medium">{e.created_at || 'Just now'}</span>
+                <span className="text-xs text-[#827787] font-mono shrink-0 font-medium">{e.created_at || 'Just now'}</span>
               </div>
             ))}
           </div>

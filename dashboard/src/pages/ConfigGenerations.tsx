@@ -119,31 +119,31 @@ backend sandbox_be
             <span className="text-[#2D0035] font-semibold">Config Generations</span>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">HAProxy Data Plane Config Generations</h1>
+            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">HAProxy Data Plane Config Generations</h1>
             <span className="badge badge-emerald">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
               SYNCED
             </span>
           </div>
-          <p className="text-xs text-[#827787] max-w-3xl leading-relaxed">
+          <p className="text-sm text-[#827787] mt-1.5 max-w-3xl leading-relaxed">
             Immutable state transitions with sub-second atomic reload, synthetic parsing tests, and self-healing rollbacks across edge nodes.
           </p>
         </div>
 
         {/* Action buttons */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={triggerRollbackDemo}
-            className="px-3.5 py-2 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 shadow-xs cursor-pointer border border-rose-200/50"
+            className="px-4 py-2.5 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-sm font-semibold transition-all duration-200 flex items-center gap-2 shadow-xs cursor-pointer border border-rose-200/50"
           >
-            <span className="material-symbols-outlined text-[16px]">history_toggle_off</span>
+            <span className="material-symbols-outlined text-[18px]">history_toggle_off</span>
             <span>Test Corrupt Config</span>
           </button>
           <button
             onClick={() => showToast('Config Tree Exported', 'Downloaded CSTAM 3.0 configuration bundle (JSON + HAProxy templates).', 'info')}
-            className="px-3.5 py-2 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all duration-200 flex items-center gap-1.5 shadow-xs cursor-pointer"
+            className="px-4 py-2.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-sm font-semibold transition-all duration-200 flex items-center gap-2 shadow-xs cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]">schema</span>
+            <span className="material-symbols-outlined text-[18px]">schema</span>
             <span>Export Config Tree</span>
           </button>
           <button
@@ -151,9 +151,9 @@ backend sandbox_be
               const el = document.getElementById('haproxy-editor')
               if (el) el.focus()
             }}
-            className="px-4 py-2 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-xs font-bold transition-all duration-200 flex items-center gap-1.5 shadow-md hover:shadow-lg cursor-pointer"
+            className="px-5 py-2.5 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-sm font-semibold transition-all duration-200 flex items-center gap-2 shadow-md hover:shadow-lg cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]">add_circle</span>
+            <span className="material-symbols-outlined text-[18px]">add_circle</span>
             <span>Apply New Config</span>
           </button>
         </div>
@@ -385,16 +385,16 @@ backend sandbox_be
             </p>
             <div className="grid grid-cols-3 gap-2 pt-2 font-mono text-xs text-center">
               <div className="p-2.5 rounded-xl bg-white/10">
-                <span className="font-bold text-amber-300 text-[11px] block">1. VALIDATE</span>
-                <span className="text-[10px] text-purple-200">haproxy -c</span>
+                <span className="font-bold text-amber-300 text-xs block">1. VALIDATE</span>
+                <span className="text-xs text-purple-200">haproxy -c</span>
               </div>
               <div className="p-2.5 rounded-xl bg-white/10">
-                <span className="font-bold text-emerald-300 text-[11px] block">2. COMMIT</span>
-                <span className="text-[10px] text-purple-200">Socket Transfer</span>
+                <span className="font-bold text-emerald-300 text-xs block">2. COMMIT</span>
+                <span className="text-xs text-purple-200">Socket Transfer</span>
               </div>
               <div className="p-2.5 rounded-xl bg-white/10">
-                <span className="font-bold text-blue-300 text-[11px] block">3. VERIFY</span>
-                <span className="text-[10px] text-purple-200">Drain Procs</span>
+                <span className="font-bold text-blue-300 text-xs block">3. VERIFY</span>
+                <span className="text-xs text-purple-200">Drain Procs</span>
               </div>
             </div>
           </div>
@@ -409,7 +409,7 @@ backend sandbox_be
               <span className="badge badge-purple font-mono">haproxy.cfg (Live Staging)</span>
             </div>
             <div className="rounded-2xl overflow-hidden bg-[#170B1B] text-gray-200 p-4 font-mono text-xs">
-              <div className="flex items-center justify-between pb-2 text-[11px] text-gray-400 border-b border-white/10 mb-2">
+              <div className="flex items-center justify-between pb-2 text-xs text-gray-400 border-b border-white/10 mb-2">
                 <span>SYNTAX: HAProxy 2.8-LTS</span>
                 <span className="text-amber-300 font-semibold">Uncommitted Draft</span>
               </div>

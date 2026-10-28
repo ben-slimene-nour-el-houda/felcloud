@@ -42,46 +42,24 @@ export default function TrafficLogs() {
 
   return (
     <div className="space-y-6">
-      {/* Controls Card */}
-      <div className="card-elevated p-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Node selector */}
-          <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[#F8F6F9]">
-            {['gw1', 'gw2'].map(gw => (
-              <button
-                key={gw}
-                onClick={() => setGateway(gw)}
-                className={`px-4 py-1.5 rounded-xl text-xs font-bold font-mono transition-all duration-200 cursor-pointer ${
-                  gateway === gw
-                    ? 'bg-[#2D0035] text-white shadow-xs'
-                    : 'text-[#827787] hover:text-[#170B1B]'
-                }`}
-              >
-                {gw.toUpperCase()}
-              </button>
-            ))}
+      {/* ── Page Header ── */}
+      <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">Traffic &amp; Daemon Logs</h1>
+            <span className="badge badge-purple font-mono">{gateway.toUpperCase()}</span>
+            <span className="badge badge-emerald">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              Live Ingress
+            </span>
           </div>
-
-          {/* Source selector */}
-          <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[#F8F6F9]">
-            {['haproxy', 'keepalived'].map(s => (
-              <button
-                key={s}
-                onClick={() => setSource(s)}
-                className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all duration-200 cursor-pointer ${
-                  source === s
-                    ? 'bg-[#2D0035] text-white shadow-xs'
-                    : 'text-[#827787] hover:text-[#170B1B]'
-                }`}
-              >
-                {s.charAt(0).toUpperCase() + s.slice(1)}
-              </button>
-            ))}
-          </div>
+          <p className="text-sm text-[#827787] mt-1.5 leading-relaxed max-w-2xl">
+            Real-time streaming syslog output from HAProxy frontend routers and Keepalived VRRP daemons across cluster nodes.
+          </p>
         </div>
 
         <div className="flex items-center gap-4 flex-wrap">
-          <label className="flex items-center gap-2 text-xs font-semibold text-[#827787] cursor-pointer select-none">
+          <label className="flex items-center gap-2 text-sm font-medium text-[#827787] cursor-pointer select-none">
             <input
               type="checkbox"
               checked={autoRefresh}
@@ -93,6 +71,47 @@ export default function TrafficLogs() {
 
           <RefreshButton onRefresh={doFetch} label="Refresh" />
         </div>
+      </div>
+
+      {/* Controls Card */}
+      <div className="card-elevated p-5 flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-4">
+          {/* Node selector */}
+          <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-[#F8F6F9]">
+            {['gw1', 'gw2'].map(gw => (
+              <button
+                key={gw}
+                onClick={() => setGateway(gw)}
+                className={`px-5 py-2 rounded-xl text-sm font-bold font-mono transition-all duration-200 cursor-pointer ${
+                  gateway === gw
+                    ? 'bg-[#2D0035] text-white shadow-xs'
+                    : 'text-[#827787] hover:text-[#170B1B]'
+                }`}
+              >
+                {gw.toUpperCase()}
+              </button>
+            ))}
+          </div>
+
+          {/* Source selector */}
+          <div className="flex items-center gap-1.5 p-1.5 rounded-2xl bg-[#F8F6F9]">
+            {['haproxy', 'keepalived'].map(s => (
+              <button
+                key={s}
+                onClick={() => setSource(s)}
+                className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all duration-200 cursor-pointer ${
+                  source === s
+                    ? 'bg-[#2D0035] text-white shadow-xs'
+                    : 'text-[#827787] hover:text-[#170B1B]'
+                }`}
+              >
+                {s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <span className="text-xs text-[#827787] font-mono">{logs?.count ?? 0} log records streamed</span>
       </div>
 
       {error && (

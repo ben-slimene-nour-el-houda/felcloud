@@ -101,7 +101,7 @@ export default function Leases({ showToast }: Props) {
       <button
         onClick={onClick}
         title={`${ip} — ${status}`}
-        className={`h-9 w-full rounded-xl cursor-pointer flex items-center justify-center font-mono text-[11px] transition-all duration-200 hover:scale-105 ${cls} ${
+        className={`h-9 w-full rounded-xl cursor-pointer flex items-center justify-center font-mono text-xs font-semibold transition-all duration-200 hover:scale-105 ${cls} ${
           selectedIp === ip ? 'ring-2 ring-offset-2 ring-[#2D0035]' : ''
         }`}
       >
@@ -117,7 +117,7 @@ export default function Leases({ showToast }: Props) {
       <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight">IP Pool &amp; Leases</h1>
+            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">IP Pool &amp; Leases</h1>
             <span className="badge badge-emerald">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               {leasedIps.size} Leased
@@ -127,18 +127,18 @@ export default function Leases({ showToast }: Props) {
             )}
             <span className="badge badge-purple font-mono">10.20.10.0/24 Subnet</span>
           </div>
-          <p className="text-xs text-[#827787] mt-1.5 leading-relaxed max-w-2xl">
+          <p className="text-sm text-[#827787] mt-1.5 leading-relaxed max-w-2xl">
             Neutron subnet 10.20.10.0/24 · IPAM dynamic registry · 180s anti-poison quarantine cooldown.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
           <RefreshButton onRefresh={() => { refreshLeases(); refreshSb(); }} label="Refresh" />
           <button
             onClick={handleReconcile}
-            className="flex items-center gap-2 px-4 py-2 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
+            className="flex items-center gap-2 px-5 py-2.5 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
           >
-            <span className="material-symbols-outlined text-[16px]">sync</span>
+            <span className="material-symbols-outlined text-[18px]">sync</span>
             <span>Run OpenStack Reconcile</span>
           </button>
         </div>
@@ -153,12 +153,12 @@ export default function Leases({ showToast }: Props) {
           { label: 'Free Pool',     val: `${freeCount}`,           icon: 'check_circle', glow: 'glow-info',    color: 'blue' as const, sub: 'Available' },
         ].map((s, i) => (
           <div key={i} className={`kpi-card ${s.glow} space-y-3`}>
-            <div className="flex items-center justify-between text-[#827787] text-xs">
+            <div className="flex items-center justify-between text-[#827787] text-sm">
               <span className="font-semibold tracking-wide">{s.label}</span>
               <span className="material-symbols-outlined text-[20px] text-[#74537a]">{s.icon}</span>
             </div>
-            <div className="font-mono font-bold text-2xl text-[#170B1B] leading-tight">{s.val}</div>
-            <div className="flex items-center justify-between text-[11px] text-[#827787]">
+            <div className="font-mono font-bold text-3xl text-[#170B1B] leading-tight">{s.val}</div>
+            <div className="flex items-center justify-between text-xs text-[#827787] font-medium">
               <span>{s.sub}</span>
               <Sparkline data={[2, 3, 4, 5, 6]} color={s.color} width={48} height={16} />
             </div>
@@ -272,8 +272,8 @@ export default function Leases({ showToast }: Props) {
                   <div className="w-full bg-rose-200/50 h-2 rounded-full overflow-hidden">
                     <div className="h-full bg-rose-500 rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
                   </div>
-                  <div className="text-[11px] text-rose-700">{q.reason}</div>
-                  <div className="text-[10px] text-[#827787]">Released {q.releasedAt} · {q.team}</div>
+                  <div className="text-xs text-rose-700 font-medium">{q.reason}</div>
+                  <div className="text-xs text-[#827787]">Released {q.releasedAt} · {q.team}</div>
                   <button
                     onClick={() => handleReleaseEarly(q.ip)}
                     className="w-full text-xs font-semibold text-rose-800 hover:bg-rose-100/70 bg-white py-2 rounded-xl transition-colors cursor-pointer"

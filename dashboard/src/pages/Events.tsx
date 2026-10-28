@@ -193,26 +193,26 @@ export default function Events({ showToast }: Props) {
             <span className="badge badge-purple font-mono">CLUSTER AUDIT TRAIL</span>
             <span className="text-xs font-mono text-[#827787]">STREAM: cstam-w-sec-092</span>
           </div>
-          <h1 className="text-2xl font-bold text-[#170B1B] tracking-tight mt-1">Cluster Security &amp; Operations Audit Stream</h1>
-          <p className="text-xs text-[#827787] mt-1.5 max-w-3xl leading-relaxed">
+          <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight mt-1">Cluster Security &amp; Operations Audit Stream</h1>
+          <p className="text-sm text-[#827787] mt-1.5 max-w-3xl leading-relaxed">
             Deterministic immutable log of hypervisor events, network mutations, VRRP state-shifts, and eBPF/Neutron policy enforcement.
           </p>
         </div>
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
           <RefreshButton onRefresh={refresh} label="Refresh" />
           <button
             onClick={() => setShowSecurityDrawer(!showSecurityDrawer)}
-            className="px-4 py-2 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-xs font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs border border-rose-200/50"
+            className="px-4 py-2.5 rounded-xl bg-rose-50 text-rose-700 hover:bg-rose-100 text-sm font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs border border-rose-200/50"
           >
-            <span className="material-symbols-outlined text-[16px]">shield</span>
+            <span className="material-symbols-outlined text-[18px]">shield</span>
             <span>Security Summary</span>
-            <span className="px-2 py-0.5 bg-rose-600 text-white rounded-full font-mono text-[10px] font-bold">14 Blocked</span>
+            <span className="px-2 py-0.5 bg-rose-600 text-white rounded-full font-mono text-xs font-bold">14 Blocked</span>
           </button>
           <button
             onClick={handleExportCsv}
-            className="px-4 py-2 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs"
+            className="px-4 py-2.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-sm font-semibold flex items-center gap-2 transition-all duration-200 cursor-pointer shadow-xs"
           >
-            <span className="material-symbols-outlined text-[16px]">file_download</span>
+            <span className="material-symbols-outlined text-[18px]">file_download</span>
             <span>Export CSV</span>
           </button>
         </div>
@@ -340,16 +340,16 @@ export default function Events({ showToast }: Props) {
         </div>
 
         {/* Search */}
-        <div className="relative min-w-[240px]">
+        <div className="relative min-w-[260px] md:min-w-[320px]">
           <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
-            <span className="material-symbols-outlined text-[17px]">search</span>
+            <span className="material-symbols-outlined text-[19px]">search</span>
           </span>
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Search audit trail by actor, IP, or type…"
-            className="w-full pl-9 pr-3.5 py-1.5 bg-[#F8F6F9] focus:bg-white text-xs rounded-xl text-[#170B1B] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all shadow-xs"
+            className="w-full pl-11 pr-4 py-2.5 bg-[#F8F6F9] focus:bg-white text-sm rounded-xl text-[#170B1B] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all shadow-xs"
           />
         </div>
       </div>
@@ -372,17 +372,17 @@ export default function Events({ showToast }: Props) {
               {filteredRows.map(row => {
                 const isExpanded = !!expandedRows[row.id]
                 return (
-                  <tr key={row.id} className="cursor-pointer" onClick={() => toggleRow(row.id)}>
+                  <tr key={row.id} className="cursor-pointer hover:bg-purple-900/[0.02] transition-colors" onClick={() => toggleRow(row.id)}>
                     <td className="whitespace-nowrap font-mono text-xs text-[#827787]">
-                      <div className="font-semibold text-[#170B1B]">{row.time}</div>
-                      <div className="text-[10px] text-[#827787]">{row.timeAgo}</div>
+                      <div className="font-semibold text-[#170B1B] text-sm">{row.time}</div>
+                      <div className="text-xs text-[#827787]">{row.timeAgo}</div>
                     </td>
-                    <td className="font-mono text-xs font-semibold text-[#74537a] whitespace-nowrap">
+                    <td className="font-mono text-sm font-semibold text-[#74537a] whitespace-nowrap">
                       {row.actor}
                     </td>
                     <td>
-                      <div className="font-bold text-[#170B1B] text-xs">{row.action}</div>
-                      <div className="font-mono text-[11px] text-[#827787] mt-0.5">{row.target}</div>
+                      <div className="font-bold text-[#170B1B] text-sm">{row.action}</div>
+                      <div className="font-mono text-xs text-[#827787] mt-0.5">{row.target}</div>
                     </td>
                     <td className="whitespace-nowrap">
                       <span className={`badge ${
@@ -391,7 +391,7 @@ export default function Events({ showToast }: Props) {
                         {row.severity}
                       </span>
                     </td>
-                    <td className="text-xs text-[#170B1B] max-w-md truncate">
+                    <td className="text-sm text-[#170B1B] max-w-md truncate">
                       {row.details}
                     </td>
                     <td className="text-right whitespace-nowrap">
