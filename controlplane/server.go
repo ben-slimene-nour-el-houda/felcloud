@@ -406,6 +406,7 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 	mux.HandleFunc("/api/events", logRequest(handleEvents))
 	mux.HandleFunc("/api/config", logRequest(handleConfigAPI))
 	setupUIHandler(mux)
+	setupDashboardAPIRoutes(mux, store)
 
 	// ── Catch-all ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("/", logRequest(func(w http.ResponseWriter, r *http.Request) {
@@ -631,7 +632,7 @@ func gwGenerationsGet(w http.ResponseWriter, r *http.Request, _ *gatewayStore) {
 
 // ── /api/sandboxes GET ────────────────────────────────────────────────────────
 
-func gwSandboxesGet(w http.ResponseWriter, _ *http.Request) {
+func gwSandboxesGet(w http.ResponseWriter, r *http.Request) {
 	db, err := getDBConnection()
 	if err != nil {
 		errJSON(w, http.StatusInternalServerError, "db error", err.Error())
@@ -719,6 +720,29 @@ func gwSandboxesGet(w http.ResponseWriter, _ *http.Request) {
 	}
 	if sbs == nil {
 		sbs = []map[string]any{}
+	}
+	if r != nil && (r.URL.Query().Get("page_size") != "" || r.URL.Query().Get("page") != "" || r.URL.Query().Get("q") != "") {
+		items := make([]map[string]any, 0)
+		for _, m := range sbs {
+			id, _ := m["id"].(int)
+			sandboxID, _ := m["sandbox_id"].(string)
+			hostname, _ := m["hostname"].(string)
+			ip, _ := m["private_ip"].(string)
+			status, _ := m["status"].(string)
+			createdAt, _ := m["created_at"].(string)
+			var exp sql.NullInt64
+			if expVal, ok := m["expires_at"].(int64); ok && expVal > 0 {
+				exp = sql.NullInt64{Int64: expVal, Valid: true}
+			}
+			items = append(items, formatSandboxItem(id, sandboxID, hostname, ip, status, createdAt, exp))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":     items,
+			"total":     len(items),
+			"page":      1,
+			"page_size": 20,
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sandboxes": sbs, "count": len(sbs)})
 }

@@ -395,7 +395,33 @@ func finishTeardownRelease(db *sql.DB, id, ip string) error {
 
 func handleSandboxTeardown(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/sandboxes/")
-	if strings.HasSuffix(id, "/teardown") {
+	if r.Method == http.MethodGet {
+		db, err := getDBConnection()
+		if err != nil {
+			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		defer db.Close()
+		var sid int
+		var sandboxID, hostname, subnet, ip, status, createdAt, updatedAt string
+		var expiresAt sql.NullInt64
+		err = db.QueryRow(`
+			SELECT id, sandbox_id, hostname, subnet_name,
+			       COALESCE(private_ip, fixed_ip, '') AS private_ip,
+			       status, created_at, updated_at, expires_at
+			FROM sandboxes WHERE sandbox_id = ? OR id = ?`, id, id).
+			Scan(&sid, &sandboxID, &hostname, &subnet, &ip, &status, &createdAt, &updatedAt, &expiresAt)
+		if err == sql.ErrNoRows {
+			sendJSON(w, http.StatusNotFound, map[string]string{"error": "sandbox not found"})
+			return
+		}
+		if err != nil {
+			sendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, formatSandboxItem(sid, sandboxID, hostname, ip, status, createdAt, expiresAt))
+		return
+	} else if strings.HasSuffix(id, "/teardown") {
 		if r.Method != http.MethodPost {
 			sendJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method Not Allowed"})
 			return

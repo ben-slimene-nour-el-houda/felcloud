@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -92,6 +94,41 @@ func handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	if eventsList == nil {
 		eventsList = []map[string]interface{}{}
+	}
+
+	if r.URL.Query().Get("page_size") != "" || r.URL.Query().Get("page") != "" {
+		items := make([]map[string]any, 0)
+		for _, e := range eventsList {
+			id, _ := e["id"].(int)
+			tsMs, _ := e["ts_ms"].(int64)
+			sID, _ := e["sandbox_id"].(string)
+			typ, _ := e["type"].(string)
+			det, _ := e["detail"].(string)
+			resType := "sandbox"
+			if strings.Contains(typ, "gateway") || strings.Contains(typ, "failover") {
+				resType = "gateway"
+			}
+			items = append(items, map[string]any{
+				"id":       fmt.Sprintf("evt-%d", id),
+				"at":       time.UnixMilli(tsMs).UTC().Format(time.RFC3339),
+				"severity": "info",
+				"resource": map[string]any{
+					"type": resType,
+					"id":   sID,
+					"name": sID,
+				},
+				"message": fmt.Sprintf("%s: %s", typ, det),
+			})
+		}
+		var total int
+		_ = db.QueryRow("SELECT COUNT(*) FROM events").Scan(&total)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":     items,
+			"total":     total,
+			"page":      1,
+			"page_size": len(items),
+		})
+		return
 	}
 
 	sendJSON(w, http.StatusOK, eventsList)

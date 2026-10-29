@@ -1,148 +1,426 @@
-import { useState } from 'react'
-import { Sparkline } from '../components/Sparkline'
+import { Download } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import { useApi } from '../app-context';
+import { isApiError } from '../api/errors';
+import type { BenchmarkRun, BenchmarkSuite } from '../api/contracts';
+import { DataTable, type Column } from '../components/DataTable';
+import { ConfirmDialog, DetailPanel } from '../components/Modal';
+import { QueryView } from '../components/QueryView';
+import {
+  ActionButton,
+  Card,
+  CapabilityNote,
+  EmptyState,
+  OriginBadge,
+  PageHeader,
+  StatusBadge,
+  Timestamp,
+} from '../components/ui';
+import { useBenchmarkRuns, useBenchmarkSuites, useCapability } from '../hooks/queries';
+import { formatDuration, newKey } from '../lib/format';
+import { useOperations } from '../operations/OperationsProvider';
+import { Field } from './Sandboxes';
 
-interface Props {
-  showToast: (title: string, message: string, type?: 'info' | 'success' | 'warning' | 'error') => void
+function download(name: string, mime: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
-export default function Benchmarks({ showToast }: Props) {
-  const [running, setRunning] = useState(false)
-  const [history, setHistory] = useState([
-    { run: '#14 (Today)', failover: '412ms', rollback: '640ms', p95: '2.31s', success: '100%' },
-    { run: '#13 (Yesterday)', failover: '445ms', rollback: '710ms', p95: '2.45s', success: '96.7%' },
-    { run: '#12 (2d ago)', failover: '398ms', rollback: '620ms', p95: '2.20s', success: '100%' },
-  ])
+export function runsToCsv(runs: BenchmarkRun[]): string {
+  const head = [
+    'id',
+    'suite',
+    'status',
+    'origin',
+    'started_at',
+    'finished_at',
+    'attempted',
+    'succeeded',
+    'failed',
+    'p50_ms',
+    'p95_ms',
+    'p99_ms',
+    'failover_seconds',
+  ];
+  const rows = runs.map((r) => [
+    r.id,
+    r.suite_id,
+    r.status,
+    r.origin,
+    r.started_at,
+    r.finished_at ?? '',
+    r.metrics?.attempted ?? '',
+    r.metrics?.succeeded ?? '',
+    r.metrics?.failed ?? '',
+    r.metrics?.p50_ms ?? '',
+    r.metrics?.p95_ms ?? '',
+    r.metrics?.p99_ms ?? '',
+    r.metrics?.failover_seconds ?? '',
+  ]);
+  return [head, ...rows]
+    .map((row) => row.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+}
 
-  function runSuite() {
-    setRunning(true)
-    showToast('Benchmark Suite Running', 'Executing 10 parallel Nova VM provisions, VRRP failover probe, and config rollback check...', 'info')
-    setTimeout(() => {
-      setRunning(false)
-      const newRun = {
-        run: `#${history.length + 12} (Just now)`,
-        failover: `${Math.floor(Math.random() * 50 + 390)}ms`,
-        rollback: `${Math.floor(Math.random() * 60 + 590)}ms`,
-        p95: '2.14s',
-        success: '100%',
-      }
-      setHistory(prev => [newRun, ...prev])
-      showToast('Benchmarks Completed', 'All SLA gates passed: Failover < 1000ms, Provision < 5s, Zero dropped packets.', 'success')
-    }, 2200)
-  }
+const sameParams = (a: BenchmarkRun, b: BenchmarkRun) =>
+  a.suite_id === b.suite_id &&
+  JSON.stringify(Object.entries(a.parameters).sort()) ===
+    JSON.stringify(Object.entries(b.parameters).sort());
+
+export function Benchmarks() {
+  const suites = useBenchmarkSuites();
+  const runs = useBenchmarkRuns();
+  const runCap = useCapability('benchmark_run');
+  const [form, setForm] = useState<BenchmarkSuite | null>(null);
+  const [detail, setDetail] = useState<BenchmarkRun | null>(null);
+  const [compare, setCompare] = useState<string[]>([]);
+
+  const columns: Column<BenchmarkRun>[] = [
+    {
+      key: 'cmp',
+      header: 'Compare',
+      render: (r) => (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={compare.includes(r.id)}
+            onChange={(e) =>
+              setCompare((cur) =>
+                e.target.checked ? [...cur.slice(-1), r.id] : cur.filter((x) => x !== r.id),
+              )
+            }
+          />
+          <span className="sr-only">Select {r.id} to compare</span>
+        </label>
+      ),
+    },
+    { key: 'id', header: 'Run', render: (r) => <code>{r.id}</code> },
+    { key: 'suite', header: 'Suite', render: (r) => r.suite_id },
+    { key: 'origin', header: 'Source', render: (r) => <OriginBadge origin={r.origin} /> },
+    { key: 'status', header: 'Status', render: (r) => <StatusBadge status={r.status} /> },
+    { key: 'started', header: 'Started', render: (r) => <Timestamp value={r.started_at} /> },
+    { key: 'dur', header: 'Duration', render: (r) => formatDuration(r.started_at, r.finished_at) },
+    {
+      key: 'details',
+      header: 'Details',
+      render: (r) => (
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => setDetail(r)}
+          aria-label={`Details for run ${r.id}`}
+        >
+          View
+        </button>
+      ),
+    },
+  ];
 
   return (
-    <div className="space-y-6">
-      {/* Header bar */}
-      <div className="card-elevated p-6 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-3xl font-bold text-[#170B1B] tracking-tight">Performance Benchmarks &amp; SLAs</h2>
-          <p className="text-sm text-[#827787] mt-1.5 leading-relaxed">
-            Simulated stress test telemetry for OpenStack Nova Compute, Neutron IPAM, and Keepalived/HAProxy Gateway.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={runSuite}
-            disabled={running}
-            className="px-5 py-2.5 bg-[#2D0035] text-white hover:bg-[#43134c] rounded-xl text-sm font-semibold flex items-center gap-2 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 cursor-pointer"
-          >
-            <span className={`material-symbols-outlined text-[18px] ${running ? 'animate-spin' : ''}`}>
-              {running ? 'refresh' : 'play_arrow'}
-            </span>
-            <span>{running ? 'Executing Suite…' : 'Run Benchmark Suite'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* 4 Metric cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div className="kpi-card glow-primary space-y-3">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span className="font-semibold tracking-wide">Nova Provisioning p95</span>
-            <span className="material-symbols-outlined text-[20px] text-[#74537a]">speed</span>
-          </div>
-          <div className="text-2xl font-bold font-mono text-[#170B1B]">1.84s / 2.31s</div>
-          <div className="flex items-center justify-between">
-            <span className="badge badge-emerald">Under 5s SLA</span>
-            <Sparkline data={[2.4, 2.35, 2.3, 2.31]} color="emerald" width={48} height={16} />
-          </div>
-        </div>
-
-        <div className="kpi-card glow-healthy space-y-3">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span className="font-semibold tracking-wide">VRRP Failover SLA</span>
-            <span className="material-symbols-outlined text-[20px] text-emerald-600">timer</span>
-          </div>
-          <div className="text-2xl font-bold font-mono text-[#2D0035]">412 ms</div>
-          <div className="flex items-center justify-between">
-            <span className="badge badge-emerald">Zero TCP Drops</span>
-            <Sparkline data={[445, 420, 412, 412]} color="emerald" width={48} height={16} />
-          </div>
-        </div>
-
-        <div className="kpi-card glow-info space-y-3">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span className="font-semibold tracking-wide">Config Rollback Latency</span>
-            <span className="material-symbols-outlined text-[20px] text-blue-600">history</span>
-          </div>
-          <div className="text-2xl font-bold font-mono text-[#170B1B]">640 ms</div>
-          <div className="flex items-center justify-between">
-            <span className="badge badge-blue">Verified Atomic</span>
-            <Sparkline data={[710, 680, 650, 640]} color="blue" width={48} height={16} />
-          </div>
-        </div>
-
-        <div className="kpi-card glow-healthy space-y-3">
-          <div className="flex items-center justify-between text-[#827787] text-xs">
-            <span className="font-semibold tracking-wide">Concurrent Stress Test</span>
-            <span className="material-symbols-outlined text-[20px] text-emerald-600">groups</span>
-          </div>
-          <div className="text-2xl font-bold font-mono text-emerald-700">98.4%</div>
-          <div className="flex items-center justify-between">
-            <span className="badge badge-emerald">10 Teams Parallel</span>
-            <Sparkline data={[95, 96, 97, 98.4]} color="emerald" width={48} height={16} />
-          </div>
-        </div>
-      </div>
-
-      {/* Benchmark run history */}
-      <div className="card-elevated overflow-hidden">
-        <div className="p-5 border-b border-purple-900/5 bg-[#F8F6F9] flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-purple-100 flex items-center justify-center text-[#2D0035]">
-              <span className="material-symbols-outlined text-[18px]">history</span>
-            </div>
-            <h3 className="text-sm font-bold text-[#170B1B]">Benchmark Execution History</h3>
-          </div>
-          <span className="badge badge-purple font-mono">Strict SLA Enforcement</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="table-modern">
-            <thead>
-              <tr>
-                <th>Benchmark Run</th>
-                <th>Failover Duration</th>
-                <th>Rollback Duration</th>
-                <th>Provision P95</th>
-                <th className="text-right">Success Rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {history.map((h, i) => (
-                <tr key={i}>
-                  <td className="font-bold text-[#170B1B] text-xs">{h.run}</td>
-                  <td className="text-[#2D0035] font-mono font-bold text-xs">{h.failover}</td>
-                  <td className="text-blue-900 font-mono font-semibold text-xs">{h.rollback}</td>
-                  <td className="font-mono text-xs text-[#827787]">{h.p95}</td>
-                  <td className="text-right">
-                    <span className="badge badge-emerald">{h.success}</span>
-                  </td>
-                </tr>
+    <>
+      <PageHeader
+        title="Benchmarks"
+        subtitle="Reproducible measurements from the backend — never generated by this console."
+      />
+      <Card title="Test suites">
+        <CapabilityNote reason={runCap.reason} />
+        <QueryView
+          query={suites}
+          rows={2}
+          isEmpty={(d) => d.length === 0}
+          empty={
+            <EmptyState
+              title="No benchmark suites available"
+              message="The connected API does not expose benchmark suites. See docs/API_CONTRACT.md (GET /benchmarks/suites) for the required endpoint."
+            />
+          }
+        >
+          {(list) => (
+            <ul className="plain-list">
+              {list.map((s) => (
+                <li key={s.id} className="row spread suite">
+                  <div>
+                    <strong>{s.name}</strong>{' '}
+                    {s.disruptive && <StatusBadge status="warning" label="May disrupt traffic" />}
+                    <p className="muted">{s.description}</p>
+                  </div>
+                  <ActionButton
+                    variant="secondary"
+                    disabledReason={runCap.reason}
+                    onClick={() => setForm(s)}
+                    aria-label={`Run ${s.name}`}
+                  >
+                    Run…
+                  </ActionButton>
+                </li>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </ul>
+          )}
+        </QueryView>
+      </Card>
+
+      <Card
+        title="Run history"
+        description="Every run is labelled live, historical, imported or demo."
+        action={
+          runs.data && runs.data.length > 0 ? (
+            <div className="row">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() =>
+                  download(
+                    'benchmark-runs.json',
+                    'application/json',
+                    JSON.stringify(runs.data, null, 2),
+                  )
+                }
+              >
+                <Download size={16} aria-hidden /> JSON
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => download('benchmark-runs.csv', 'text/csv', runsToCsv(runs.data!))}
+              >
+                <Download size={16} aria-hidden /> CSV
+              </button>
+            </div>
+          ) : undefined
+        }
+      >
+        <QueryView
+          query={runs}
+          isEmpty={(d) => d.length === 0}
+          empty={
+            <EmptyState
+              title="No benchmark runs recorded"
+              message="The API has no persisted benchmark runs yet."
+            />
+          }
+        >
+          {(list) => (
+            <>
+              <DataTable
+                caption="Benchmark runs"
+                columns={columns}
+                rows={list}
+                rowKey={(r) => r.id}
+              />
+              <Comparison runs={list.filter((r) => compare.includes(r.id))} />
+            </>
+          )}
+        </QueryView>
+      </Card>
+      {form && <RunDialog suite={form} onClose={() => setForm(null)} />}
+      {detail && <RunDetail run={detail} onClose={() => setDetail(null)} />}
+    </>
+  );
+}
+
+function Comparison({ runs }: { runs: BenchmarkRun[] }) {
+  if (runs.length < 2) return <p className="muted">Select two runs to compare them.</p>;
+  const [a, b] = runs as [BenchmarkRun, BenchmarkRun];
+  if (!sameParams(a, b))
+    return (
+      <p className="callout callout-warning" role="note">
+        These runs use different suites or parameters, so their metrics are not comparable.
+      </p>
+    );
+  const rows: Array<[string, number | null | undefined, number | null | undefined]> = [
+    ['Succeeded', a.metrics?.succeeded, b.metrics?.succeeded],
+    ['Failed', a.metrics?.failed, b.metrics?.failed],
+    ['p50 (ms)', a.metrics?.p50_ms, b.metrics?.p50_ms],
+    ['p95 (ms)', a.metrics?.p95_ms, b.metrics?.p95_ms],
+    ['p99 (ms)', a.metrics?.p99_ms, b.metrics?.p99_ms],
+    ['Failover (s)', a.metrics?.failover_seconds, b.metrics?.failover_seconds],
+  ];
+  return (
+    <table className="compare-table" aria-label="Run comparison">
+      <thead>
+        <tr>
+          <th scope="col">Metric</th>
+          <th scope="col">{a.id}</th>
+          <th scope="col">{b.id}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows
+          .filter((r) => r[1] != null || r[2] != null)
+          .map(([m, x, y]) => (
+            <tr key={m}>
+              <th scope="row">{m}</th>
+              <td>{x ?? 'Not measured'}</td>
+              <td>{y ?? 'Not measured'}</td>
+            </tr>
+          ))}
+      </tbody>
+    </table>
+  );
+}
+
+function RunDialog({ suite, onClose }: { suite: BenchmarkSuite; onClose: () => void }) {
+  const api = useApi();
+  const { run } = useOperations();
+  const [values, setValues] = useState<Record<string, string>>(
+    Object.fromEntries(suite.parameters.map((p) => [p.key, String(p.default)])),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [confirmDisruptive, setConfirmDisruptive] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const key = useRef(newKey());
+
+  const parsed = useMemo(() => {
+    const errs: Record<string, string> = {};
+    const params: Record<string, number> = {};
+    for (const p of suite.parameters) {
+      const n = Number(values[p.key]);
+      if (values[p.key]?.trim() === '' || !Number.isFinite(n) || n < p.min || n > p.max)
+        errs[p.key] = `Enter a number between ${p.min} and ${p.max}.`;
+      else params[p.key] = n;
+    }
+    return { errs, params };
+  }, [suite, values]);
+
+  async function start() {
+    if (pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await run(`Run benchmark: ${suite.name}`, () =>
+        api.benchmarks.run(
+          {
+            suite_id: suite.id,
+            parameters: parsed.params,
+            acknowledge_disruption: suite.disruptive ? true : undefined,
+          },
+          key.current,
+        ),
+      );
+      onClose();
+    } catch (err) {
+      setError(isApiError(err) ? err.message : 'The request failed unexpectedly.');
+      setPending(false);
+    }
+  }
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setErrors(parsed.errs);
+    if (Object.keys(parsed.errs).length) return;
+    if (suite.disruptive) setConfirmDisruptive(true);
+    else void start();
+  }
+
+  if (confirmDisruptive) {
+    return (
+      <ConfirmDialog
+        title={`Run ${suite.name}?`}
+        tone="danger"
+        confirmLabel="Run and disrupt traffic"
+        pending={pending}
+        error={error}
+        onConfirm={() => void start()}
+        onCancel={onClose}
+        consequences={
+          <p>
+            This suite can interrupt traffic through the gateways while it runs. Only run it when
+            that is acceptable.
+          </p>
+        }
+      />
+    );
+  }
+  return (
+    <DetailPanel title={suite.name} description={suite.description} onClose={onClose}>
+      <form className="stack" onSubmit={submit} noValidate>
+        {suite.parameters.map((p) => (
+          <Field
+            key={p.key}
+            id={`bp-${p.key}`}
+            label={`${p.label}${p.unit ? ` (${p.unit})` : ''}`}
+            hint={`${p.min}–${p.max}`}
+            error={errors[p.key]}
+          >
+            <input
+              id={`bp-${p.key}`}
+              inputMode="numeric"
+              value={values[p.key] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [p.key]: e.target.value }))}
+              aria-invalid={Boolean(errors[p.key])}
+              aria-describedby={`bp-${p.key}-msg`}
+            />
+          </Field>
+        ))}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+        <button type="submit" className="btn btn-primary" disabled={pending}>
+          {pending ? 'Sending request…' : 'Start run'}
+        </button>
+      </form>
+    </DetailPanel>
+  );
+}
+
+function RunDetail({ run, onClose }: { run: BenchmarkRun; onClose: () => void }) {
+  const m = run.metrics;
+  return (
+    <DetailPanel title={`Run ${run.id}`} description={run.suite_id} onClose={onClose}>
+      <div className="stack">
+        <p>
+          <OriginBadge origin={run.origin} /> <StatusBadge status={run.status} />
+        </p>
+        <dl className="kv">
+          <dt>Environment</dt>
+          <dd>{run.environment ?? 'Not reported'}</dd>
+          <dt>Started</dt>
+          <dd>
+            <Timestamp value={run.started_at} />
+          </dd>
+          <dt>Finished</dt>
+          <dd>
+            <Timestamp value={run.finished_at} />
+          </dd>
+          <dt>Parameters</dt>
+          <dd>
+            {Object.entries(run.parameters)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(', ') || 'None'}
+          </dd>
+          <dt>Attempted / succeeded / failed</dt>
+          <dd>{m ? `${m.attempted} / ${m.succeeded} / ${m.failed}` : 'Not reported'}</dd>
+          <dt>Latency p50 / p95 / p99</dt>
+          <dd>
+            {m && m.p50_ms != null
+              ? `${m.p50_ms} / ${m.p95_ms ?? '—'} / ${m.p99_ms ?? '—'} ms`
+              : 'Not measured'}
+          </dd>
+          <dt>Failover duration</dt>
+          <dd>{m?.failover_seconds != null ? `${m.failover_seconds} s` : 'Not measured'}</dd>
+          <dt>Evidence</dt>
+          <dd>
+            {run.evidence_url ? (
+              <a href={run.evidence_url} rel="noreferrer noopener" target="_blank">
+                Open evidence
+              </a>
+            ) : (
+              'No link supplied'
+            )}
+          </dd>
+        </dl>
+        {run.output && (
+          <pre className="diff" tabIndex={0} aria-label="Run output">
+            {run.output}
+          </pre>
+        )}
       </div>
-    </div>
-  )
+    </DetailPanel>
+  );
 }

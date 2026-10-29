@@ -1,605 +1,487 @@
-import { useState, useCallback, useEffect, useMemo } from 'react'
-import { fetchSandboxes, teardownSandbox, provisionSandbox, type Sandbox } from '../api'
-import { usePolling, formatDuration } from '../hooks'
-import { Sparkline } from '../components/Sparkline'
-import { RefreshButton } from '../components/RefreshButton'
-import { SkeletonTableRows } from '../components/SkeletonLoader'
+import { Plus } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
+import { useApi } from '../app-context';
+import { isApiError } from '../api/errors';
+import type { Sandbox } from '../api/contracts';
+import { DataTable, type Column } from '../components/DataTable';
+import { ConfirmDialog, DetailPanel, Modal } from '../components/Modal';
+import { QueryView } from '../components/QueryView';
+import {
+  ActionButton,
+  CapabilityNote,
+  CopyButton,
+  EmptyState,
+  FilterBar,
+  PageHeader,
+  Pagination,
+  SearchInput,
+  SelectFilter,
+  StatusBadge,
+  Timestamp,
+} from '../components/ui';
+import { useCapability, useEvents, useSandboxes } from '../hooks/queries';
+import { newKey } from '../lib/format';
+import { validateProvision, type ProvisionInput } from '../lib/validation';
+import { useOperations } from '../operations/OperationsProvider';
 
-interface Props {
-  onOpenProvision: () => void
-  showToast: (title: string, message: string, type?: 'info' | 'success' | 'warning' | 'error') => void
-}
+const PAGE_SIZE = 8;
+const STATUS_OPTIONS = [
+  { value: '', label: 'All statuses' },
+  ...['requested', 'provisioning', 'active', 'failed', 'terminating', 'terminated', 'expired'].map(
+    (s) => ({ value: s, label: s[0]!.toUpperCase() + s.slice(1) }),
+  ),
+];
 
-function cleanLabel(raw: string): string {
-  if (!raw) return ''
-  return raw.replace(/\.cstam\.felcloud\.tn$/, '').replace(/\.local$/, '')
-}
+export function Sandboxes() {
+  const location = useLocation();
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState('');
+  const [sort, setSort] = useState('created_at:desc');
+  const [page, setPage] = useState(1);
+  const [creating, setCreating] = useState(
+    Boolean((location.state as { provision?: boolean } | null)?.provision),
+  );
+  const [selected, setSelected] = useState<Sandbox | null>(null);
+  const [tearing, setTearing] = useState<Sandbox | null>(null);
+  const provision = useCapability('sandbox_provision');
+  const teardown = useCapability('sandbox_teardown');
+  const query = useSandboxes({ q, status, sort, page, pageSize: PAGE_SIZE });
 
-function formatTeamName(hostname: string, sandboxId: string): string {
-  const base = cleanLabel(hostname) || cleanLabel(sandboxId)
-  if (base.startsWith('team-') || base.startsWith('team')) {
-    const part = base.replace(/^team[-_]?/, '')
-    return `Team ${part.charAt(0).toUpperCase() + part.slice(1)}`
-  }
-  if (base.startsWith('recycle-test-')) {
-    const num = base.replace('recycle-test-', '').slice(0, 6)
-    return `Mock Test #${num}`
-  }
-  if (base.startsWith('sb-')) {
-    return base.replace('sb-', '').toUpperCase()
-  }
-  return base
-}
+  const columns: Column<Sandbox>[] = [
+    {
+      key: 'name',
+      header: 'Sandbox',
+      sortKey: 'name',
+      render: (s) => (
+        <div>
+          <strong>{s.name}</strong>
+          <div className="muted">
+            {s.team} · <code>{s.id}</code>
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      sortKey: 'status',
+      render: (s) => <StatusBadge status={s.status} />,
+    },
+    {
+      key: 'ip',
+      header: 'Private IP',
+      render: (s) =>
+        s.private_ip ? <code>{s.private_ip}</code> : <span className="muted">—</span>,
+    },
+    {
+      key: 'host',
+      header: 'Hostname',
+      render: (s) => s.hostname ?? <span className="muted">—</span>,
+    },
+    {
+      key: 'created',
+      header: 'Created',
+      sortKey: 'created_at',
+      render: (s) => <Timestamp value={s.created_at} />,
+    },
+    { key: 'expires', header: 'Expires', render: (s) => <Timestamp value={s.expires_at} /> },
+    {
+      key: 'actions',
+      header: 'Actions',
+      render: (s) => (
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setSelected(s)}
+            aria-label={`Details for ${s.name}`}
+          >
+            Details
+          </button>
+          <ActionButton
+            variant="ghost"
+            aria-label={`Tear down ${s.name}`}
+            disabledReason={
+              !teardown.enabled
+                ? teardown.reason
+                : ['terminated', 'terminating'].includes(s.status)
+                  ? `Sandbox is already ${s.status}.`
+                  : undefined
+            }
+            onClick={() => setTearing(s)}
+          >
+            Tear down
+          </ActionButton>
+        </div>
+      ),
+    },
+  ];
 
-function getSubdomain(hostname: string, sandboxId: string, custom?: string): string {
-  if (custom) return custom
-  const base = cleanLabel(hostname) || cleanLabel(sandboxId) || 'sandbox'
-  return `${base}.cstam.felcloud.tn`
-}
-
-export default function Sandboxes({ onOpenProvision, showToast }: Props) {
-  const sbFetcher = useCallback(() => fetchSandboxes(), [])
-  const { data: sandboxes, loading, refresh } = usePolling<Sandbox[]>(sbFetcher, 5000)
-
-  const [searchQuery, setSearchQuery] = useState('')
-  const [filterMode, setFilterMode] = useState<'ACTIVE' | 'ALL' | 'ISSUES' | 'RELEASED'>('ACTIVE')
-  const [hideReleasedTests, setHideReleasedTests] = useState(true)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [copyStatus, setCopyStatus] = useState('Copy cURL')
-  const [recoveringId, setRecoveringId] = useState<string | null>(null)
-
-  // Fallback data when backend hasn't populated yet
-  const fallbackList: Sandbox[] = useMemo(() => [
-    { id: 1, sandbox_id: 'sb-team-alpha', hostname: 'team-alpha', ip_address: '10.20.10.14', status: 'ACTIVE', custom_domain: '', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 7200, ttl_seconds: 7200 },
-    { id: 2, sandbox_id: 'sb-team-beta',  hostname: 'team-beta',  ip_address: '10.20.10.15', status: 'ACTIVE', custom_domain: '', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 5400, ttl_seconds: 5400 },
-    { id: 3, sandbox_id: 'sb-team-gamma', hostname: 'team-gamma', ip_address: '10.20.10.16', status: 'ACTIVE', custom_domain: 'api.gamma-app.tn', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 9800, ttl_seconds: 9800 },
-    { id: 4, sandbox_id: 'sb-team-delta', hostname: 'team-delta', ip_address: '10.20.10.17', status: 'ACTIVE', custom_domain: '', created_at: new Date().toISOString(), expires_at: Math.floor(Date.now() / 1000) + 3600, ttl_seconds: 3600 },
-  ], [])
-
-  const rawList = Array.isArray(sandboxes) && sandboxes.length > 0 ? sandboxes : fallbackList
-
-  // Counts
-  const activeCount   = rawList.filter(s => s.status === 'ACTIVE').length
-  const provCount     = rawList.filter(s => s.status === 'PROVISIONING').length
-  const issueCount    = rawList.filter(s => ['ERROR', 'FAILED', 'TEARDOWN_FAILED'].includes(s.status)).length
-  const releasedCount = rawList.filter(s => s.status === 'RELEASED').length
-
-  // Auto-switch filter mode if no active
-  useEffect(() => {
-    if (activeCount === 0 && issueCount > 0 && filterMode === 'ACTIVE') {
-      setFilterMode('ALL')
-    }
-  }, [activeCount, issueCount, filterMode])
-
-  // Select initial item
-  useEffect(() => {
-    if (!selectedId && rawList.length > 0) {
-      const best = rawList.find(s => s.status === 'ACTIVE') ||
-                   rawList.find(s => !s.sandbox_id.startsWith('recycle-test-')) ||
-                   rawList[0]
-      setSelectedId(best.sandbox_id)
-    }
-  }, [rawList, selectedId])
-
-  // Filtered dataset
-  const filtered = useMemo(() => {
-    return rawList.filter(s => {
-      if (hideReleasedTests && s.status === 'RELEASED' && s.sandbox_id.startsWith('recycle-test-')) {
-        return false
-      }
-
-      const q = searchQuery.toLowerCase().trim()
-      if (q) {
-        const team = formatTeamName(s.hostname, s.sandbox_id).toLowerCase()
-        const sub = getSubdomain(s.hostname, s.sandbox_id, s.custom_domain).toLowerCase()
-        const ip = s.ip_address.toLowerCase()
-        const id = s.sandbox_id.toLowerCase()
-        if (!team.includes(q) && !sub.includes(q) && !ip.includes(q) && !id.includes(q)) {
-          return false
+  return (
+    <>
+      <PageHeader
+        title="Sandboxes"
+        subtitle="Create and operate isolated team environments."
+        action={
+          <ActionButton
+            variant="primary"
+            icon={<Plus size={18} aria-hidden />}
+            disabledReason={provision.reason}
+            onClick={() => setCreating(true)}
+          >
+            Provision sandbox
+          </ActionButton>
         }
-      }
+      />
+      <CapabilityNote reason={provision.reason} />
+      <FilterBar>
+        <SearchInput
+          label="Search sandboxes"
+          value={q}
+          onChange={(v) => {
+            setQ(v);
+            setPage(1);
+          }}
+          placeholder="Search name, team, IP or hostname"
+        />
+        <SelectFilter
+          label="Filter by status"
+          value={status}
+          onChange={(v) => {
+            setStatus(v);
+            setPage(1);
+          }}
+          options={STATUS_OPTIONS}
+        />
+      </FilterBar>
+      <QueryView
+        query={query}
+        isEmpty={(d) => d.items.length === 0}
+        empty={
+          <EmptyState
+            title={q || status ? 'No sandboxes match your filters' : 'No sandboxes yet'}
+            message={
+              q || status
+                ? 'Try a different search or clear the filters.'
+                : 'The API returned no sandboxes. Provision one to get started.'
+            }
+          />
+        }
+      >
+        {(d) => (
+          <>
+            <DataTable
+              caption="Sandboxes"
+              columns={columns}
+              rows={d.items}
+              rowKey={(s) => s.id}
+              sort={sort}
+              onSort={setSort}
+            />
+            <Pagination page={d.page} pageSize={d.page_size} total={d.total} onPage={setPage} />
+          </>
+        )}
+      </QueryView>
+      {creating && <ProvisionDialog onClose={() => setCreating(false)} />}
+      {selected && <SandboxDetail sandbox={selected} onClose={() => setSelected(null)} />}
+      {tearing && <TeardownDialog sandbox={tearing} onClose={() => setTearing(null)} />}
+    </>
+  );
+}
 
-      if (filterMode === 'ACTIVE') {
-        return s.status === 'ACTIVE' || s.status === 'PROVISIONING'
-      }
-      if (filterMode === 'ISSUES') {
-        return ['ERROR', 'FAILED', 'TEARDOWN_FAILED'].includes(s.status)
-      }
-      if (filterMode === 'RELEASED') {
-        return s.status === 'RELEASED'
-      }
-      return true
-    }).sort((a, b) => {
-      const aIsMock = a.sandbox_id.startsWith('recycle-test-')
-      const bIsMock = b.sandbox_id.startsWith('recycle-test-')
-      if (!aIsMock && bIsMock) return -1
-      if (aIsMock && !bIsMock) return 1
+function ProvisionDialog({ onClose }: { onClose: () => void }) {
+  const api = useApi();
+  const { run } = useOperations();
+  const [input, setInput] = useState<ProvisionInput>({ name: '', team: '', ttlHours: '8' });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const guard = useRef(false);
+  const key = useRef(newKey());
 
-      const rank: Record<string, number> = { ACTIVE: 1, PROVISIONING: 2, TEARDOWN_FAILED: 3, ERROR: 4, RELEASED: 5 }
-      return (rank[a.status] || 9) - (rank[b.status] || 9)
-    })
-  }, [rawList, hideReleasedTests, searchQuery, filterMode])
+  const set = (field: keyof ProvisionInput) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setInput((cur) => ({ ...cur, [field]: e.target.value }));
 
-  const selectedSandbox = rawList.find(s => s.sandbox_id === selectedId) || null
-
-  async function handleTeardown(id: string) {
-    if (!confirm(`Teardown sandbox "${id}"? IP will enter 180s cooldown quarantine.`)) return
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (guard.current) return; // duplicate submission guard
+    const { errors: found, request } = validateProvision(input);
+    setErrors(found);
+    setFormError(null);
+    if (!request) return;
+    guard.current = true;
+    setPending(true);
     try {
-      await teardownSandbox(id)
-      showToast('Teardown Initiated', `Sandbox "${id}" marked for release.`, 'warning')
-      refresh()
-    } catch {
-      showToast('Teardown Completed', `Sandbox "${id}" decommissioned.`, 'warning')
-      refresh()
+      await run(
+        `Provision sandbox ${request.name}`,
+        () => api.sandboxes.provision(request, key.current),
+        {
+          verify: async () => {
+            const res = await api.sandboxes.list({ q: request.name, pageSize: 5 });
+            const found = res.items.find((s) => s.name === request.name);
+            return found?.status === 'active'
+              ? { ok: true, detail: `The API reports ${request.name} as active.` }
+              : {
+                  ok: false,
+                  detail: `The API reports ${request.name} as ${found?.status ?? 'missing'}, not active.`,
+                };
+          },
+        },
+      );
+      onClose();
+    } catch (err) {
+      if (isApiError(err)) {
+        const fields: Record<string, string> = {};
+        if (err.fieldErrors.name) fields.name = err.fieldErrors.name;
+        if (err.fieldErrors.team) fields.team = err.fieldErrors.team;
+        if (err.fieldErrors.ttl_hours) fields.ttlHours = err.fieldErrors.ttl_hours;
+        setErrors(fields);
+        setFormError(
+          Object.keys(fields).length
+            ? null
+            : `${err.message}${err.traceId ? ` (trace ${err.traceId})` : ''}`,
+        );
+      } else {
+        setFormError('The request failed unexpectedly.');
+      }
+      guard.current = false;
+      setPending(false);
     }
-  }
-
-  async function handleRecoverOrReprovision(sb: Sandbox) {
-    const baseTeam = cleanLabel(sb.hostname) || cleanLabel(sb.sandbox_id)
-    setRecoveringId(sb.sandbox_id)
-    showToast('Re-provisioning Sandbox', `Launching fresh Nova VM & HAProxy route for ${baseTeam}…`, 'info')
-    try {
-      await provisionSandbox(baseTeam)
-      showToast('Sandbox Active', `Nova VM online for ${baseTeam} on port 8080!`, 'success')
-      refresh()
-    } catch {
-      showToast('Sandbox Re-activated', `Nova VM recovered for ${baseTeam}.`, 'success')
-      refresh()
-    } finally {
-      setRecoveringId(null)
-    }
-  }
-
-  function handleRenew(id: string) {
-    showToast('Lease Extended', `Added +3600 seconds to sandbox lease.`, 'success')
-  }
-
-  function copyCurl(text: string) {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopyStatus('Copied!')
-      setTimeout(() => setCopyStatus('Copy cURL'), 1800)
-    })
   }
 
   return (
-    <div className="space-y-6 min-w-0">
-
-      {/* ── Page Hero Header ── */}
-      <div className="card-elevated p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <h1 className="text-3xl font-bold text-[#170B1B] tracking-tight">Sandboxes &amp; Private IPs</h1>
-            <span className="badge badge-purple font-mono">10.20.10.0/24 Subnet</span>
-            <span className={`badge ${activeCount > 0 ? 'badge-emerald' : 'badge-amber'}`}>
-              <span className={`w-2 h-2 rounded-full ${activeCount > 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-              {activeCount > 0 ? `${activeCount} Running Active` : `${issueCount} Attention Needed`}
-            </span>
-          </div>
-          <p className="text-sm text-[#827787] mt-1.5 max-w-2xl leading-relaxed">
-            Dynamic IPAM allocation for hackathon teams on OpenStack Nova &amp; Neutron with Keepalived/HAProxy routing.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3 flex-wrap flex-shrink-0">
-          <RefreshButton
-            onRefresh={() => { refresh(); showToast('Refreshed', 'Synced live sandbox state from control plane.', 'info') }}
-            label="Refresh"
-          />
-          <button
-            onClick={onOpenProvision}
-            className="flex items-center gap-2 px-5 py-2.5 bg-[#2D0035] hover:bg-[#43134c] text-white rounded-xl text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200 cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-[18px]">add_circle</span>
-            <span>Provision Sandbox</span>
+    <Modal
+      title="Provision sandbox"
+      description="Requests an isolated environment with a private IP lease."
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Cancel
           </button>
-        </div>
-      </div>
-
-      {/* ── 4 KPI Stat Cards with Glow & Sparklines ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
-        {/* Card 1: Active Instances */}
-        <div className="kpi-card glow-healthy">
-          <div className="flex items-center justify-between text-[#827787] text-sm">
-            <span className="font-semibold tracking-wide">Active Teams</span>
-            <span className="material-symbols-outlined text-emerald-600 text-[20px]">groups</span>
-          </div>
-          <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-3xl font-bold text-[#170B1B] font-mono">{activeCount || 4}</span>
-            <span className="text-sm text-[#827787] font-medium">/ 10 Max</span>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <div className="flex items-center gap-1.5 text-xs text-emerald-700 font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>100% Ingress Ready</span>
-            </div>
-            <Sparkline data={[2, 3, 3, 4, 4, activeCount || 4]} color="emerald" width={56} height={20} />
-          </div>
-        </div>
-
-        {/* Card 2: IPAM Leased */}
-        <div className="kpi-card glow-info">
-          <div className="flex items-center justify-between text-[#827787] text-sm">
-            <span className="font-semibold tracking-wide">IPAM Leased</span>
-            <span className="material-symbols-outlined text-blue-600 text-[20px]">layers</span>
-          </div>
-          <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-3xl font-bold text-[#170B1B] font-mono">{rawList.length}</span>
-            <span className="text-sm text-[#827787] font-medium">/ 250 Pool</span>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-xs text-blue-700 font-semibold">{250 - rawList.length} Available</span>
-            <Sparkline data={[4, 5, 5, 6, 6, rawList.length]} color="blue" width={56} height={20} />
-          </div>
-        </div>
-
-        {/* Card 3: Issues / Expired */}
-        <div className="kpi-card glow-warning">
-          <div className="flex items-center justify-between text-[#827787] text-sm">
-            <span className="font-semibold tracking-wide">Quarantined / Issues</span>
-            <span className="material-symbols-outlined text-amber-600 text-[20px]">warning</span>
-          </div>
-          <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-3xl font-bold text-[#170B1B] font-mono">{issueCount || 0}</span>
-            <span className="badge badge-amber">{issueCount === 0 ? 'Clean' : 'Needs Reset'}</span>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-xs text-amber-800 font-semibold">180s Cooldown Active</span>
-            <Sparkline data={[1, 2, 1, 0, issueCount || 0]} color="amber" width={56} height={20} />
-          </div>
-        </div>
-
-        {/* Card 4: Sub-second Ingress */}
-        <div className="kpi-card glow-primary">
-          <div className="flex items-center justify-between text-[#827787] text-sm">
-            <span className="font-semibold tracking-wide">Ingress Proxy</span>
-            <span className="material-symbols-outlined text-[#74537a] text-[20px]">router</span>
-          </div>
-          <div className="mt-2.5 flex items-baseline justify-between">
-            <span className="text-2xl font-bold text-[#170B1B] font-mono">HAProxy 2.8</span>
-            <span className="badge badge-emerald">Live Sync</span>
-          </div>
-          <div className="mt-3 flex items-center justify-between">
-            <span className="text-xs text-purple-900 font-semibold">VIP 203.0.113.10</span>
-            <Sparkline data={[1, 1, 1, 1, 1]} color="purple" width={56} height={20} />
-          </div>
-        </div>
-      </div>
-
-      {/* ── Filter Bar: Tabs, Search, & Hide Tests Toggle ── */}
-      <div className="card-elevated p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3.5">
-        {/* Search */}
-        <div className="relative flex-1 min-w-[240px]">
-          <span className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-[#827787]">
-            <span className="material-symbols-outlined text-[20px]">search</span>
-          </span>
+          <button
+            type="submit"
+            form="provision-form"
+            className="btn btn-primary"
+            aria-disabled={pending}
+            disabled={pending}
+          >
+            {pending ? 'Sending request…' : 'Provision sandbox'}
+          </button>
+        </>
+      }
+    >
+      <form id="provision-form" className="stack" onSubmit={(e) => void submit(e)} noValidate>
+        <Field
+          id="sbx-name"
+          label="Sandbox name"
+          hint="3–32 lowercase letters, digits or hyphens."
+          error={errors.name}
+        >
           <input
-            type="text"
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search by team, IP, or subdomain…"
-            className="w-full pl-11 pr-10 py-2.5 bg-[#F8F6F9] hover:bg-[#F3EEF5] focus:bg-white rounded-xl text-sm text-[#170B1B] font-medium placeholder-[#827787] focus:outline-none focus:ring-2 focus:ring-[#2D0035]/20 transition-all duration-200"
+            id="sbx-name"
+            value={input.name}
+            onChange={set('name')}
+            autoComplete="off"
+            aria-invalid={Boolean(errors.name)}
+            aria-describedby="sbx-name-msg"
+            data-autofocus
           />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute inset-y-0 right-0 pr-3 flex items-center text-[#827787] hover:text-[#170B1B] cursor-pointer"
-            >
-              <span className="material-symbols-outlined text-[18px]">cancel</span>
-            </button>
-          )}
-        </div>
-
-        {/* Tab Selector (Pill style) */}
-        <div className="flex items-center gap-2 overflow-x-auto text-sm">
-          {[
-            { id: 'ACTIVE',   label: 'Active & Prov', count: activeCount || 4 },
-            { id: 'ALL',      label: 'All Teams',     count: rawList.length },
-            { id: 'ISSUES',   label: 'Attention',     count: issueCount },
-            { id: 'RELEASED', label: 'Archived',      count: releasedCount },
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setFilterMode(tab.id as any)}
-              className={`px-4 py-2 rounded-full font-semibold transition-all duration-200 flex items-center gap-2 cursor-pointer flex-shrink-0 ${
-                filterMode === tab.id
-                  ? 'bg-[#2D0035] text-white shadow-xs'
-                  : 'bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B]'
-              }`}
-            >
-              <span>{tab.label}</span>
-              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
-                filterMode === tab.id ? 'bg-white/20 text-white' : 'bg-white text-[#74537a]'
-              }`}>
-                {tab.count}
-              </span>
-            </button>
-          ))}
-        </div>
-
-        {/* Hide test instances toggle */}
-        <label className="flex items-center gap-2 text-sm font-medium text-[#170B1B] cursor-pointer select-none px-4 py-2 bg-[#F8F6F9] rounded-xl flex-shrink-0">
+        </Field>
+        <Field id="sbx-team" label="Team" error={errors.team}>
           <input
-            type="checkbox"
-            checked={hideReleasedTests}
-            onChange={e => setHideReleasedTests(e.target.checked)}
-            className="w-4 h-4 rounded accent-[#2D0035] cursor-pointer"
+            id="sbx-team"
+            value={input.team}
+            onChange={set('team')}
+            autoComplete="off"
+            aria-invalid={Boolean(errors.team)}
+            aria-describedby="sbx-team-msg"
           />
-          <span className="text-[#827787]">Hide mock test leases</span>
-        </label>
-      </div>
-
-      {/* ── Sandboxes Table & Details Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start min-w-0">
-
-        {/* Table Container (Spacious padding py-4 px-6, uniform rows, no harsh cadres) */}
-        <div className={`${selectedSandbox ? 'lg:col-span-8' : 'lg:col-span-12'} min-w-0`}>
-          <div className="card-elevated overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="table-modern">
-                <thead>
-                  <tr>
-                    <th>Team Instance</th>
-                    <th>IP Address</th>
-                    <th>Subdomain Route</th>
-                    <th>Status</th>
-                    <th>Lease TTL</th>
-                    <th className="text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading && rawList.length === 0 ? (
-                    <SkeletonTableRows rows={5} cols={6} />
-                  ) : filtered.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-12 text-center text-[#827787]">
-                        <span className="material-symbols-outlined text-[36px] text-gray-300 block mb-2">dns</span>
-                        No sandboxes match current criteria.
-                      </td>
-                    </tr>
-                  ) : (
-                    filtered.map(s => {
-                      const isSelected = s.sandbox_id === selectedId
-                      const teamName = formatTeamName(s.hostname, s.sandbox_id)
-                      const sub = getSubdomain(s.hostname, s.sandbox_id, s.custom_domain)
-                      const isMock = s.sandbox_id.startsWith('recycle-test-')
-                      const isActive = s.status === 'ACTIVE'
-                      const isFailed = ['ERROR', 'FAILED', 'TEARDOWN_FAILED'].includes(s.status)
-
-                      return (
-                        <tr
-                          key={s.sandbox_id}
-                          onClick={() => setSelectedId(s.sandbox_id)}
-                          className={`cursor-pointer transition-colors duration-150 ${
-                            isSelected ? 'bg-purple-900/[0.04]' : 'hover:bg-purple-900/[0.02]'
-                          }`}
-                        >
-                          {/* Team Name */}
-                          <td className="min-w-[160px]">
-                            <div className="font-bold text-[#170B1B] text-base flex items-center gap-2">
-                              {teamName}
-                              {!isMock && <span className="w-2 h-2 rounded-full bg-[#74537a]" />}
-                            </div>
-                            <div className="text-xs text-[#827787] font-mono truncate max-w-[160px]" title={s.sandbox_id}>
-                              {cleanLabel(s.sandbox_id)}
-                            </div>
-                          </td>
-
-                          {/* IP Address */}
-                          <td className="font-mono whitespace-nowrap">
-                            <span className="px-3 py-1.5 rounded-xl bg-[#F8F6F9] text-[#170B1B] font-bold text-sm">
-                              {s.ip_address || '10.20.10.x'}:8080
-                            </span>
-                          </td>
-
-                          {/* Subdomain */}
-                          <td className="min-w-[200px] max-w-[280px]">
-                            <div className="font-mono text-sm font-semibold text-[#2D0035] truncate" title={sub}>
-                              {sub}
-                            </div>
-                            {s.custom_domain && (
-                              <div className="text-xs text-emerald-800 font-mono font-medium truncate mt-0.5">
-                                Alias: {s.custom_domain}
-                              </div>
-                            )}
-                          </td>
-
-                          {/* Status Pill Badge */}
-                          <td className="whitespace-nowrap">
-                            {isActive ? (
-                              <span className="badge badge-emerald">
-                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                                ACTIVE
-                              </span>
-                            ) : s.status === 'PROVISIONING' ? (
-                              <span className="badge badge-blue">
-                                <span className="w-2 h-2 rounded-full bg-blue-500 animate-spin" />
-                                BOOTING
-                              </span>
-                            ) : isFailed ? (
-                              <span className="badge badge-rose">
-                                <span className="material-symbols-outlined text-[14px]">warning</span>
-                                {s.status === 'TEARDOWN_FAILED' ? 'FAILED' : s.status}
-                              </span>
-                            ) : (
-                              <span className="badge badge-gray">
-                                RELEASED
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Lease TTL */}
-                          <td className="font-mono text-sm whitespace-nowrap">
-                            {isActive && s.expires_at ? (
-                              <span className="font-bold text-[#170B1B]">
-                                {formatDuration(Math.max(0, s.expires_at - Math.floor(Date.now() / 1000)))}
-                              </span>
-                            ) : isFailed ? (
-                              <span className="text-amber-800 font-semibold">Needs reset</span>
-                            ) : (
-                              <span className="text-[#827787]">Expired</span>
-                            )}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="text-right whitespace-nowrap space-x-2" onClick={e => e.stopPropagation()}>
-                            {isFailed ? (
-                              <button
-                                onClick={() => handleRecoverOrReprovision(s)}
-                                disabled={recoveringId === s.sandbox_id}
-                                className="px-3.5 py-1.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
-                              >
-                                {recoveringId === s.sandbox_id ? 'Booting…' : 'Re-deploy'}
-                              </button>
-                            ) : isActive ? (
-                              <button
-                                onClick={() => handleRenew(s.sandbox_id)}
-                                className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold transition-all cursor-pointer"
-                              >
-                                +1h
-                              </button>
-                            ) : null}
-
-                            <button
-                              onClick={() => setSelectedId(s.sandbox_id)}
-                              className="px-3.5 py-1.5 rounded-xl bg-[#F8F6F9] hover:bg-[#F2EDF4] text-[#170B1B] text-xs font-semibold transition-all cursor-pointer"
-                            >
-                              Inspect
-                            </button>
-
-                            {s.status !== 'RELEASED' && (
-                              <button
-                                onClick={() => handleTeardown(s.sandbox_id)}
-                                className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 text-xs font-semibold transition-all cursor-pointer"
-                              >
-                                Teardown
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {filtered.length > 30 && (
-              <div className="p-3.5 bg-[#F8F6F9] text-center text-xs text-[#827787]">
-                Displaying first 30 of {filtered.length} entries. Use search or filter tabs to narrow down results.
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ── Modern Inspector Drawer (Rounded-2xl, soft shadows) ── */}
-        {selectedSandbox && (
-          <div className="lg:col-span-4 card-elevated p-6 space-y-5 sticky top-20 animate-fade-in">
-            {/* Header */}
-            <div className="flex items-start justify-between pb-3.5 border-b border-purple-900/5">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-purple-50 flex items-center justify-center text-[#2D0035]">
-                  <span className="material-symbols-outlined text-[20px]">troubleshoot</span>
-                </div>
-                <div>
-                  <h3 className="font-bold text-base text-[#170B1B] leading-tight">
-                    {formatTeamName(selectedSandbox.hostname, selectedSandbox.sandbox_id)}
-                  </h3>
-                  <div className="text-xs font-mono text-[#827787]">
-                    {selectedSandbox.sandbox_id}
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={() => setSelectedId(null)}
-                className="text-[#827787] hover:text-[#170B1B] p-1.5 rounded-xl hover:bg-[#F8F6F9] transition-colors cursor-pointer"
-              >
-                <span className="material-symbols-outlined text-[18px]">close</span>
-              </button>
-            </div>
-
-            {/* Target Card */}
-            <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-3 text-sm">
-              <div className="flex justify-between items-center">
-                <span className="text-[#827787] font-medium">Private VM Target:</span>
-                <span className="font-mono font-bold text-[#170B1B] bg-white px-2.5 py-1 rounded-lg shadow-xs">
-                  {selectedSandbox.ip_address || '10.20.10.x'}:8080
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[#827787] font-medium">Subdomain:</span>
-                <span className="font-mono font-bold text-[#2D0035] truncate max-w-[200px]">
-                  {getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id, selectedSandbox.custom_domain)}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-[#827787] font-medium">VIP Routing:</span>
-                <span className="font-mono font-bold text-emerald-800">203.0.113.10 (gw1)</span>
-              </div>
-            </div>
-
-            {/* Security Isolation */}
-            <div className="space-y-2.5">
-              <span className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
-                Neutron Security Rules
-              </span>
-              <div className="p-4 rounded-2xl bg-[#F8F6F9] space-y-2.5 text-sm">
-                <div className="flex items-center gap-2.5 text-emerald-800 font-semibold">
-                  <span className="material-symbols-outlined text-[18px]">check_circle</span>
-                  <span>Ingress TCP 80/443 from Gateway VIP</span>
-                </div>
-                <div className="flex items-center gap-2.5 text-rose-800 font-semibold">
-                  <span className="material-symbols-outlined text-[18px]">block</span>
-                  <span>Drop 10.20.10.0/24 (Inter-sandbox)</span>
-                </div>
-                <div className="flex items-center gap-2.5 text-rose-800 font-semibold">
-                  <span className="material-symbols-outlined text-[18px]">block</span>
-                  <span>Drop Mgmt Port 8000</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Health cURL Command */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#74537a] uppercase tracking-wider font-mono">
-                  Test Ingress Health
-                </span>
-                <button
-                  onClick={() => copyCurl(`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`)}
-                  className="text-xs text-[#2D0035] hover:text-[#74537a] font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[16px]">content_copy</span>
-                  {copyStatus}
-                </button>
-              </div>
-              <pre className="p-3.5 rounded-2xl bg-[#170B1B] text-emerald-400 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all select-all">
-                {`curl -H 'Host: ${getSubdomain(selectedSandbox.hostname, selectedSandbox.sandbox_id)}' http://203.0.113.10/health`}
-              </pre>
-            </div>
-
-            {/* Lifecycle Buttons */}
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <button
-                onClick={() => handleRecoverOrReprovision(selectedSandbox)}
-                disabled={recoveringId === selectedSandbox.sandbox_id}
-                className="py-3 px-4 rounded-xl bg-[#2D0035] hover:bg-[#43134c] text-white text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md disabled:opacity-50"
-              >
-                <span className="material-symbols-outlined text-[18px]">rocket_launch</span>
-                <span>Deploy / Reset</span>
-              </button>
-              <button
-                onClick={() => handleTeardown(selectedSandbox.sandbox_id)}
-                className="py-3 px-4 rounded-xl bg-white hover:bg-rose-50 text-rose-700 text-sm font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs border border-rose-200/50"
-              >
-                <span className="material-symbols-outlined text-[18px]">delete</span>
-                <span>Teardown</span>
-              </button>
-            </div>
-          </div>
+        </Field>
+        <Field
+          id="sbx-ttl"
+          label="Lifetime (hours)"
+          hint="Whole hours, 1–72. The lease expires automatically."
+          error={errors.ttlHours}
+        >
+          <input
+            id="sbx-ttl"
+            inputMode="numeric"
+            value={input.ttlHours}
+            onChange={set('ttlHours')}
+            aria-invalid={Boolean(errors.ttlHours)}
+            aria-describedby="sbx-ttl-msg"
+          />
+        </Field>
+        {formError && (
+          <p className="form-error" role="alert">
+            {formError}
+          </p>
         )}
+      </form>
+    </Modal>
+  );
+}
 
-      </div>
-
+export function Field({
+  id,
+  label,
+  hint,
+  error,
+  children,
+}: {
+  id: string;
+  label: string;
+  hint?: string;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      {children}
+      <p
+        id={`${id}-msg`}
+        className={error ? 'form-error' : 'muted'}
+        role={error ? 'alert' : undefined}
+      >
+        {error ?? hint ?? ''}
+      </p>
     </div>
-  )
+  );
+}
+
+function TeardownDialog({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => void }) {
+  const api = useApi();
+  const { run } = useOperations();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const key = useRef(newKey());
+  async function confirm() {
+    if (pending) return;
+    setPending(true);
+    try {
+      await run(
+        `Tear down ${sandbox.name}`,
+        () => api.sandboxes.teardown(sandbox.id, key.current),
+        {
+          verify: async () => {
+            const s = await api.sandboxes.get(sandbox.id);
+            return s.status === 'terminated'
+              ? { ok: true, detail: 'The API reports the sandbox as terminated.' }
+              : { ok: false, detail: `The API reports the sandbox as ${s.status}.` };
+          },
+        },
+      );
+      onClose();
+    } catch (err) {
+      setError(isApiError(err) ? err.message : 'The request failed unexpectedly.');
+      setPending(false);
+    }
+  }
+  return (
+    <ConfirmDialog
+      title={`Tear down ${sandbox.name}?`}
+      tone="danger"
+      confirmLabel="Tear down sandbox"
+      pending={pending}
+      error={error}
+      onConfirm={() => void confirm()}
+      onCancel={onClose}
+      consequences={
+        <p>
+          This deletes the sandbox and everything running in it, removes its route, and moves its IP
+          {sandbox.private_ip ? ` (${sandbox.private_ip})` : ''} into quarantine. It cannot be
+          undone. The sandbox is only shown as terminated once the API confirms it.
+        </p>
+      }
+    />
+  );
+}
+
+function SandboxDetail({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => void }) {
+  const events = useEvents({ q: sandbox.id, pageSize: 5 });
+  return (
+    <DetailPanel
+      title={sandbox.name}
+      description={`${sandbox.team} · ${sandbox.id}`}
+      onClose={onClose}
+    >
+      <div className="stack">
+        <dl className="kv">
+          <dt>Status</dt>
+          <dd>
+            <StatusBadge status={sandbox.status} />
+          </dd>
+          {sandbox.status_reason && (
+            <>
+              <dt>Reason</dt>
+              <dd>{sandbox.status_reason}</dd>
+            </>
+          )}
+          <dt>Lease</dt>
+          <dd>
+            {sandbox.lease_id ? (
+              <>
+                <code>{sandbox.lease_id}</code>{' '}
+                <CopyButton value={sandbox.lease_id} label="lease ID" />
+              </>
+            ) : (
+              '—'
+            )}
+          </dd>
+          <dt>Private IP</dt>
+          <dd>{sandbox.private_ip ?? '—'}</dd>
+          <dt>Route</dt>
+          <dd>{sandbox.hostname ?? 'No route reported'}</dd>
+          <dt>Created</dt>
+          <dd>
+            <Timestamp value={sandbox.created_at} />
+          </dd>
+          <dt>Expires</dt>
+          <dd>
+            <Timestamp value={sandbox.expires_at} />
+          </dd>
+        </dl>
+        <section>
+          <h3 className="subsection-title">Lifecycle history</h3>
+          {sandbox.history?.length ? (
+            <ol className="plain-list">
+              {sandbox.history.map((h, i) => (
+                <li key={i}>
+                  <StatusBadge status={h.status} /> <Timestamp value={h.at} />{' '}
+                  {h.message && <span className="muted">— {h.message}</span>}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="muted">Not reported by API.</p>
+          )}
+        </section>
+        <section>
+          <h3 className="subsection-title">Related events</h3>
+          <QueryView
+            query={events}
+            rows={2}
+            isEmpty={(d) => d.items.length === 0}
+            empty={<p className="muted">No related events.</p>}
+          >
+            {(d) => (
+              <ul className="plain-list">
+                {d.items.map((e) => (
+                  <li key={e.id}>
+                    <StatusBadge status={e.severity} /> {e.message}{' '}
+                    <span className="muted">
+                      <Timestamp value={e.at} />
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </QueryView>
+        </section>
+      </div>
+    </DetailPanel>
+  );
 }
