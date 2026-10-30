@@ -32,8 +32,40 @@ export function Routes() {
   const query = useRoutes({ q, status: health, page, pageSize: 10 });
 
   const columns: Column<Route>[] = [
-    { key: 'host', header: 'Hostname', render: (r) => <strong>{r.hostname}</strong> },
-    { key: 'backend', header: 'Backend', render: (r) => <code>{r.backend}</code> },
+    {
+      key: 'host',
+      header: 'Hostname & Features',
+      render: (r) => {
+        const isCustom =
+          !r.hostname.endsWith('.felcloud.test') &&
+          !r.hostname.endsWith('.felcloud.internal') &&
+          !r.hostname.endsWith('.felcloud.tn') &&
+          !r.hostname.endsWith('.internal') &&
+          !r.hostname.endsWith('.local');
+        return (
+          <div>
+            <strong>{r.hostname}</strong>
+            <div className="route-feature-badges">
+              {r.tls && (
+                <span
+                  className={`route-badge route-badge-tls route-badge-tls-${r.tls.status}`}
+                  title={`TLS certificate status: ${r.tls.status}`}
+                >
+                  TLS ({r.tls.status})
+                </span>
+              )}
+              {isCustom && (
+                <span className="route-badge route-badge-domain" title="SNI custom domain routing">
+                  Custom domain
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      },
+    },
+
+    { key: 'backend', header: 'Backend', render: (r) => <code className="text-nowrap">{r.backend}</code> },
     {
       key: 'sandbox',
       header: 'Sandbox',
@@ -46,7 +78,7 @@ export function Routes() {
       header: 'Config generation',
       render: (r) => r.config_generation ?? <span className="muted">Not reported</span>,
     },
-    { key: 'check', header: 'Last check', render: (r) => <Timestamp value={r.last_check_at} /> },
+    { key: 'check', header: 'Last check', render: (r) => <Timestamp value={r.last_check_at} compact /> },
     {
       key: 'details',
       header: 'Details',
@@ -57,18 +89,46 @@ export function Routes() {
           onClick={() => setSelected(r)}
           aria-label={`Details for ${r.hostname}`}
         >
-          View
+          Details
         </button>
       ),
     },
   ];
 
+  const totalRoutes = query.data?.total ?? query.data?.items.length ?? 0;
+  const tlsCount = query.data?.items.filter((r) => r.tls && r.tls.status === 'valid').length ?? 0;
+  const customCount = query.data?.items.filter(
+    (r) =>
+      !r.hostname.endsWith('.felcloud.test') &&
+      !r.hostname.endsWith('.felcloud.internal') &&
+      !r.hostname.endsWith('.felcloud.tn') &&
+      !r.hostname.endsWith('.internal') &&
+      !r.hostname.endsWith('.local'),
+  ).length ?? 0;
+
   return (
     <>
       <PageHeader
         title="Traffic & Routes"
-        subtitle="Domain routing and the health of each backend."
+        subtitle="Domain routing, SSL termination, and health monitoring for microVM backends."
       />
+      <div className="bonus-feature-strip" aria-label="Routing architecture capabilities">
+        <span className="bonus-strip-item">
+          <span className="dot-positive" />
+          <strong>L7 MicroVM Routes:</strong> {totalRoutes} active
+        </span>
+        <span className="bonus-strip-sep">·</span>
+        <span className="bonus-strip-item">
+          <span className={customCount > 0 ? 'dot-positive' : 'dot-neutral'} />
+          <strong>Custom Domains:</strong> {customCount} {customCount === 1 ? 'domain' : 'domains'}
+        </span>
+        <span className="bonus-strip-sep">·</span>
+        <span className="bonus-strip-item">
+          <span className={tlsCount > 0 ? 'dot-positive' : 'dot-neutral'} />
+          <strong>TLS 1.3 Valid:</strong> {tlsCount} verified
+        </span>
+      </div>
+
       <FilterBar>
         <SearchInput
           label="Search routes"

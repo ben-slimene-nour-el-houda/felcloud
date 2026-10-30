@@ -1,7 +1,7 @@
-import { Check, Copy, Search } from 'lucide-react';
+import { Check, Copy, HelpCircle, Search } from 'lucide-react';
 import { useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { labelFor, TONE_SYMBOL, type Tone } from '../lib/labels';
-import { formatDateTime } from '../lib/format';
+import { formatCompactDateTime, formatDateTime } from '../lib/format';
 import type { TrackedOp } from '../operations/OperationsProvider';
 
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
@@ -177,11 +177,17 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-export function Timestamp({ value }: { value: string | null | undefined }) {
+export function Timestamp({
+  value,
+  compact = false,
+}: {
+  value: string | null | undefined;
+  compact?: boolean;
+}) {
   if (!value) return <span className="muted">—</span>;
   return (
-    <time dateTime={value} title={value}>
-      {formatDateTime(value)}
+    <time dateTime={value} title={value} className="timestamp-nowrap">
+      {compact ? formatCompactDateTime(value) : formatDateTime(value)}
     </time>
   );
 }
@@ -403,5 +409,81 @@ export function OperationStatus({ op, onDismiss }: { op: TrackedOp; onDismiss?: 
         )}
       </p>
     </div>
+  );
+}
+
+export function Tooltip({
+  text,
+  children,
+  position = 'top',
+}: {
+  text: string;
+  children: ReactNode;
+  position?: 'top' | 'bottom';
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <span
+      className="tooltip-wrapper"
+      onMouseEnter={() => setVisible(true)}
+      onMouseLeave={() => setVisible(false)}
+      onFocus={() => setVisible(true)}
+      onBlur={() => setVisible(false)}
+    >
+      {children}
+      {visible && (
+        <span role="tooltip" className={`tooltip-bubble tooltip-${position}`}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function InfoTooltip({
+  text,
+  label = 'Learn more',
+}: {
+  text: string;
+  label?: string;
+}) {
+  return (
+    <Tooltip text={text}>
+      <button
+        type="button"
+        className="tooltip-trigger-btn"
+        aria-label={label}
+        onClick={(e) => e.preventDefault()}
+      >
+        <HelpCircle size={14} aria-hidden />
+      </button>
+    </Tooltip>
+  );
+}
+
+export function VipTooltip() {
+  return (
+    <InfoTooltip
+      label="About Virtual IP (VIP)"
+      text="Virtual IP (VIP) is a single floating IP address shared between primary and standby gateways. Keepalived instantly routes incoming traffic to the active gateway without downtime."
+    />
+  );
+}
+
+export function GenerationTooltip() {
+  return (
+    <InfoTooltip
+      label="About Configuration Generation"
+      text="A monotonic generation counter tracking routing updates. Both gateways must reach the same generation to ensure routing consistency."
+    />
+  );
+}
+
+export function ReconciliationTooltip() {
+  return (
+    <InfoTooltip
+      label="About Lease Reconciliation"
+      text="Reconciliation compares the IPAM lease database against real Linux network namespaces and HAProxy rules, recovering expired leases and resolving orphaned IPs."
+    />
   );
 }

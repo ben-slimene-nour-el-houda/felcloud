@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react';
+import { Download, Plus, Trash2 } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useApi } from '../app-context';
@@ -7,6 +7,8 @@ import type { Sandbox } from '../api/contracts';
 import { DataTable, type Column } from '../components/DataTable';
 import { ConfirmDialog, DetailPanel, Modal } from '../components/Modal';
 import { QueryView } from '../components/QueryView';
+import { downloadJsonEvidence } from '../lib/evidence';
+
 import {
   ActionButton,
   CapabilityNote,
@@ -72,20 +74,20 @@ export function Sandboxes() {
       key: 'ip',
       header: 'Private IP',
       render: (s) =>
-        s.private_ip ? <code>{s.private_ip}</code> : <span className="muted">—</span>,
+        s.private_ip ? <code className="text-nowrap">{s.private_ip}</code> : <span className="muted">—</span>,
     },
     {
       key: 'host',
       header: 'Hostname',
-      render: (s) => s.hostname ?? <span className="muted">—</span>,
+      render: (s) => (s.hostname ? <span className="text-nowrap">{s.hostname}</span> : <span className="muted">—</span>),
     },
     {
       key: 'created',
       header: 'Created',
       sortKey: 'created_at',
-      render: (s) => <Timestamp value={s.created_at} />,
+      render: (s) => <Timestamp value={s.created_at} compact />,
     },
-    { key: 'expires', header: 'Expires', render: (s) => <Timestamp value={s.expires_at} /> },
+    { key: 'expires', header: 'Expires', render: (s) => <Timestamp value={s.expires_at} compact /> },
     {
       key: 'actions',
       header: 'Actions',
@@ -100,7 +102,8 @@ export function Sandboxes() {
             Details
           </button>
           <ActionButton
-            variant="ghost"
+            variant="danger"
+            icon={<Trash2 size={14} aria-hidden />}
             aria-label={`Tear down ${s.name}`}
             disabledReason={
               !teardown.enabled
@@ -124,17 +127,36 @@ export function Sandboxes() {
         title="Sandboxes"
         subtitle="Create and operate isolated team environments."
         action={
-          <ActionButton
-            variant="primary"
-            icon={<Plus size={18} aria-hidden />}
-            disabledReason={provision.reason}
-            onClick={() => setCreating(true)}
-          >
-            Provision sandbox
-          </ActionButton>
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                downloadJsonEvidence('sandboxes-evidence', {
+                  sandboxes: query.data?.items ?? [],
+                  total: query.data?.total ?? 0,
+                  exportedAt: new Date().toISOString(),
+                });
+              }}
+            >
+              <Download size={16} aria-hidden />
+              <span>Download evidence (JSON)</span>
+            </button>
+            <ActionButton
+              variant="primary"
+              icon={<Plus size={18} aria-hidden />}
+              aria-label="Provision sandbox"
+              disabledReason={provision.reason}
+              onClick={() => setCreating(true)}
+            >
+              Spin-up sandbox
+            </ActionButton>
+          </div>
         }
       />
       <CapabilityNote reason={provision.reason} />
+
+
       <FilterBar>
         <SearchInput
           label="Search sandboxes"
@@ -401,7 +423,32 @@ function TeardownDialog({ sandbox, onClose }: { sandbox: Sandbox; onClose: () =>
 }
 
 function SandboxDetail({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => void }) {
+  const api = useApi();
   const events = useEvents({ q: sandbox.id, pageSize: 5 });
+  const [domainInput, setDomainInput] = useState(sandbox.custom_domain ?? '');
+  const [domainPending, setDomainPending] = useState(false);
+  const [domainStatus, setDomainStatus] = useState<string | null>(null);
+
+  const handleSaveDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!api.sandboxes.customDomain) return;
+    setDomainPending(true);
+    setDomainStatus(null);
+    try {
+      const res = await api.sandboxes.customDomain({
+        sandbox_id: sandbox.id,
+        custom_domain: domainInput.trim(),
+      });
+      if (res.success) {
+        setDomainStatus(domainInput.trim() ? 'Domain mapped!' : 'Domain cleared');
+      }
+    } catch {
+      setDomainStatus('Failed to map domain');
+    } finally {
+      setDomainPending(false);
+    }
+  };
+
   return (
     <DetailPanel
       title={sandbox.name}
@@ -435,6 +482,21 @@ function SandboxDetail({ sandbox, onClose }: { sandbox: Sandbox; onClose: () => 
           <dd>{sandbox.private_ip ?? '—'}</dd>
           <dt>Route</dt>
           <dd>{sandbox.hostname ?? 'No route reported'}</dd>
+          <dt>Custom Domain</dt>
+          <dd>
+            <form onSubmit={handleSaveDomain} className="row wrap" style={{ gap: '6px', alignItems: 'center' }}>
+              <input
+                type="text"
+                placeholder="e.g. app.team1.example.com"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                style={{ width: '210px', padding: '3px 8px', fontSize: '12px' }}
+              />
+              <button type="submit" className="btn btn-secondary btn-sm" disabled={domainPending}>
+                {domainPending ? 'Saving…' : domainStatus ? domainStatus : 'Map domain'}
+              </button>
+            </form>
+          </dd>
           <dt>Created</dt>
           <dd>
             <Timestamp value={sandbox.created_at} />

@@ -1,9 +1,11 @@
+import { Download, Flame } from 'lucide-react';
 import { useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useApi } from '../app-context';
 import { isApiError } from '../api/errors';
-import type { DrillPlan, Gateway } from '../api/contracts';
+import type { Gateway } from '../api/contracts';
 import { ConfirmDialog } from '../components/Modal';
-import { GatewayTopology } from '../components/GatewayTopology';
+import { GatewayTopology, type FailoverEventInfo } from '../components/GatewayTopology';
 import { QueryView } from '../components/QueryView';
 import {
   ActionButton,
@@ -15,20 +17,20 @@ import {
   Timestamp,
 } from '../components/ui';
 import { useCapability, useGateways, useOperationHistory } from '../hooks/queries';
-import { newKey } from '../lib/format';
+import { downloadJsonEvidence } from '../lib/evidence';
+import { formatDuration, newKey } from '../lib/format';
 import { useOperations } from '../operations/OperationsProvider';
 
 export function Gateways() {
   const api = useApi();
   const { run } = useOperations();
   const failover = useCapability('gateway_failover');
-  const drill = useCapability('failover_drill');
   const gateways = useGateways();
-  const history = useOperationHistory({ q: 'failover', pageSize: 5 });
+  const history = useOperationHistory({ q: 'failover', pageSize: 10 });
   const [target, setTarget] = useState<Gateway | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [plan, setPlan] = useState<DrillPlan | null>(null);
+  const [lastFailover, setLastFailover] = useState<FailoverEventInfo | null>(null);
   const key = useRef(newKey());
 
   async function confirm(t: Gateway) {
@@ -36,6 +38,7 @@ export function Gateways() {
     setPending(true);
     setError(null);
     try {
+      const start = Date.now();
       await run(
         `Fail over virtual IP to ${t.name}`,
         () => api.gateways.failover({ target_gateway_id: t.id }, key.current),
@@ -49,6 +52,13 @@ export function Gateways() {
           },
         },
       );
+      const elapsed = Date.now() - start;
+      setLastFailover({
+        ownerName: t.name,
+        duration: `${elapsed} ms (observed by console, ±1 s)`,
+        timestamp: Date.now(),
+        totalMs: elapsed,
+      });
       key.current = newKey();
       setTarget(null);
     } catch (err) {
@@ -62,6 +72,24 @@ export function Gateways() {
       <PageHeader
         title="Gateways"
         subtitle="Redundant HAProxy and Keepalived gateways sharing one virtual IP."
+        action={
+          gateways.data ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                downloadJsonEvidence('gateways-cluster-evidence', {
+                  vip: gateways.data?.vip ?? null,
+                  gateways: gateways.data?.gateways ?? [],
+                  lastFailover: lastFailover ?? null,
+                });
+              }}
+            >
+              <Download size={16} aria-hidden />
+              <span>Download evidence (JSON)</span>
+            </button>
+          ) : undefined
+        }
       />
       <QueryView
         query={gateways}
@@ -70,18 +98,10 @@ export function Gateways() {
         empty={<EmptyState title="No gateways reported" message="The API returned no gateways." />}
       >
         {(view) => (
-          <>
-            <Card
-              title="Topology"
-              description="Roles and ownership are exactly what the API reports; nothing is assumed."
-            >
-              <GatewayTopology view={view} detailed />
-            </Card>
-            <Card
-              title="Manual failover"
-              description="Move the virtual IP to another gateway. Active connections may be interrupted."
-            >
-              <CapabilityNote reason={failover.reason} />
+          <Card
+            title="Topology"
+            description="Roles and ownership are exactly what the API reports; nothing is assumed."
+            action={
               <div className="row wrap">
                 {view.gateways.map((g) => (
                   <ActionButton
@@ -104,38 +124,24 @@ export function Gateways() {
                     Fail over to {g.name}
                   </ActionButton>
                 ))}
+                <Link
+                  to="/drill"
+                  className="btn btn-secondary"
+                  title="Live Drill console with 100ms probing and downtime measurement"
+                >
+                  <Flame size={16} aria-hidden />
+                  <span>Live Drill</span>
+                </Link>
               </div>
-            </Card>
-          </>
+            }
+          >
+            <CapabilityNote reason={failover.reason} />
+            <GatewayTopology view={view} detailed lastFailover={lastFailover} />
+          </Card>
         )}
       </QueryView>
 
-      <Card title="Failure drill" description="A drill is a dry run. It never stops a service.">
-        <CapabilityNote reason={drill.reason} />
-        <ActionButton
-          variant="secondary"
-          disabledReason={drill.reason}
-          onClick={() =>
-            void api.gateways
-              .drill()
-              .then(setPlan)
-              .catch(() => setPlan(null))
-          }
-        >
-          Show dry-run plan
-        </ActionButton>
-        {plan && (
-          <div className="stack-sm">
-            <StatusBadge status="pending" label="Dry run — no service is stopped" />
-            <ul>
-              {plan.steps.map((s) => (
-                <li key={s}>{s}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </Card>
-
+      {/* Failover history as a structured table (Requirement 5) */}
       <Card title="Failover history" description="From the backend operation history.">
         <QueryView
           query={history}
@@ -149,21 +155,41 @@ export function Gateways() {
           }
         >
           {(d) => (
-            <ul className="plain-list">
-              {d.items.map((o) => (
-                <li key={o.id} className="row spread">
-                  <span>
-                    <code>{o.id}</code> {o.message && <span className="muted">— {o.message}</span>}
-                  </span>
-                  <span>
-                    <StatusBadge status={o.status} />{' '}
-                    <span className="muted">
-                      <Timestamp value={o.started_at} />
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="table-wrap">
+              <table className="data-table" aria-label="Failover history">
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Trigger</th>
+                    <th scope="col">Duration</th>
+                    <th scope="col">Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.items.map((o) => (
+                    <tr key={o.id}>
+                      <td>
+                        <Timestamp value={o.started_at} />
+                      </td>
+                      <td>
+                        <strong>
+                          {o.requested_by ? `Manual (${o.requested_by})` : 'Automatic (VRRP election)'}
+                        </strong>
+                        {o.message && (
+                          <div className="muted" style={{ fontSize: '12px' }}>
+                            {o.message}
+                          </div>
+                        )}
+                      </td>
+                      <td className="font-mono">{formatDuration(o.started_at, o.finished_at)}</td>
+                      <td>
+                        <StatusBadge status={o.status} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </QueryView>
       </Card>

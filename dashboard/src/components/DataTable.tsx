@@ -15,10 +15,11 @@ interface Props<T> {
   rowKey: (row: T) => string;
   sort?: string;
   onSort?: (sort: string) => void;
+  rowClassName?: (row: T) => string | undefined;
 }
 
 /** Table on wide screens; each row becomes a labelled record card on narrow screens (CSS only). */
-export function DataTable<T>({ caption, columns, rows, rowKey, sort, onSort }: Props<T>) {
+export function DataTable<T>({ caption, columns, rows, rowKey, sort, onSort, rowClassName }: Props<T>) {
   const [sortField, sortDir] = (sort ?? '').split(':');
   return (
     <div className="table-wrap">
@@ -60,7 +61,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, sort, onSort }: P
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={rowKey(row)}>
+            <tr key={rowKey(row)} className={rowClassName ? rowClassName(row) : undefined}>
               {columns.map((c) => (
                 <td key={c.key} data-label={c.header}>
                   {c.render(row)}

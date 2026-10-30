@@ -36,7 +36,7 @@ export function useCapability(key: CapabilityKey): { enabled: boolean; reason?: 
   if (!data) return { enabled: false, reason: 'Checking what the API supports…' };
   return {
     enabled: false,
-    reason: `The connected API does not report support for ${CAP_NAMES[key]}. See docs/API_CONTRACT.md for the required endpoint.`,
+    reason: `The connected API does not report support for ${CAP_NAMES[key]}.`,
   };
 }
 
@@ -135,5 +135,23 @@ export function useBenchmarkRuns() {
   return useQuery({
     queryKey: ['benchmarks', 'runs'],
     queryFn: ({ signal }) => api.benchmarks.runs(signal),
+  });
+}
+
+export function usePoolMap() {
+  const api = useApi();
+  return useQuery({
+    queryKey: ['ipam', 'map'],
+    queryFn: ({ signal }) => api.ipam.map(signal),
+    refetchInterval: REFRESH_MS,
+  });
+}
+
+export function useObservabilityMetrics(refetchInterval: number = REFRESH_MS) {
+  const api = useApi();
+  return useQuery({
+    queryKey: ['observability', 'metrics'],
+    queryFn: ({ signal }) => api.observability.metrics(signal),
+    refetchInterval,
   });
 }

@@ -710,7 +710,7 @@ cd dashboard && npm install && npm run build && cd ..
 # Start the control plane in mock mode pointing at the built assets
 PROVISIONER=mock MOCK_GATEWAYS=true \
 DASHBOARD_DIR=dashboard/dist \
-ADMIN_TOKEN=felcloud-test-token-cstam-2026 \
+ADMIN_TOKEN=felcloud-sec-cstam-2026-9f8a1e4c \
 ./controlplane/controlplane serve
 
 # Seed 4 demo sandboxes

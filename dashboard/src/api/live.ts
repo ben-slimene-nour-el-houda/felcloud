@@ -1,5 +1,5 @@
 import { ApiClient, type ClientOptions } from './client';
-import type { Api } from './contracts';
+import { ObservabilityMetricsSchema, type Api } from './contracts';
 import { benchmarkEndpoints } from './endpoints/benchmarks';
 import { configurationEndpoints } from './endpoints/configurations';
 import { eventEndpoints, operationEndpoints } from './endpoints/events';
@@ -26,6 +26,9 @@ export function createLiveApi(opts: ClientOptions): Api {
     events: eventEndpoints(c),
     operations: operationEndpoints(c),
     logs: logEndpoints(c),
+    observability: {
+      metrics: (signal) => c.request('/metrics', { schema: ObservabilityMetricsSchema, signal }),
+    },
     benchmarks: benchmarkEndpoints(c),
   };
 }

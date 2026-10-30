@@ -1,5 +1,5 @@
 import type { ApiClient } from '../client';
-import { SandboxSchema, pagedOf, type Api } from '../contracts';
+import { CustomDomainResponseSchema, SandboxSchema, pagedOf, type Api } from '../contracts';
 
 const listSchema = pagedOf(SandboxSchema);
 
@@ -19,5 +19,11 @@ export const sandboxEndpoints = (c: ApiClient): Api['sandboxes'] => ({
       method: 'DELETE',
       schema: SandboxSchema,
       idempotencyKey,
+    }),
+  customDomain: (req) =>
+    c.request('/sandboxes/custom-domain', {
+      method: 'POST',
+      body: req,
+      schema: CustomDomainResponseSchema,
     }),
 });

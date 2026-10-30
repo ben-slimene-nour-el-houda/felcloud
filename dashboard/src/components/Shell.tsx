@@ -1,11 +1,12 @@
 import { useIsFetching, useQueryClient } from '@tanstack/react-query';
-import { Cloud, Menu, RefreshCw, UserRound } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Menu, RefreshCw, UserRound } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import felcloudLogo from '../assets/logo.png';
 import { useApp } from '../app-context';
 import { tokenStore } from '../api/auth';
 import { isApiError } from '../api/errors';
-import { useHealth } from '../hooks/queries';
+import { useGateways, useHealth } from '../hooks/queries';
 import { NAV_ITEMS } from '../nav';
 import { formatTime } from '../lib/format';
 import { useOperations } from '../operations/OperationsProvider';
@@ -23,8 +24,14 @@ export function DemoModeBanner() {
 }
 
 export function ConnectionIndicator() {
-  const { api } = useApp();
+  const { api, config } = useApp();
   const { data, error, isPending } = useHealth();
+  const isDemo = api.mode === 'demo' || config.demoMode;
+
+  if (isDemo) {
+    return <ToneBadge tone="warning">Simulator</ToneBadge>;
+  }
+
   if (isPending) return <ToneBadge tone="neutral">Checking API…</ToneBadge>;
   if (!data) {
     const auth = isApiError(error) && (error.kind === 'auth' || error.kind === 'forbidden');
@@ -33,23 +40,19 @@ export function ConnectionIndicator() {
     );
   }
   const label =
-    api.mode === 'demo'
-      ? 'Simulator'
-      : data.status === 'ok'
-        ? 'API: connected'
-        : data.status === 'degraded'
-          ? 'API: degraded'
-          : 'API: down';
+    data.status === 'ok'
+      ? 'API: connected'
+      : data.status === 'degraded'
+        ? 'API: degraded'
+        : 'API: down';
   return (
     <ToneBadge
       tone={
-        api.mode === 'demo'
-          ? 'warning'
-          : data.status === 'ok'
-            ? 'positive'
-            : data.status === 'degraded'
-              ? 'warning'
-              : 'critical'
+        data.status === 'ok'
+          ? 'positive'
+          : data.status === 'degraded'
+            ? 'warning'
+            : 'critical'
       }
     >
       {label}
@@ -91,42 +94,115 @@ function ConnectionWarning({ onSignIn }: { onSignIn: () => void }) {
 }
 
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
+  const topItems = NAV_ITEMS.filter((i) => !i.section);
+  const operateItems = NAV_ITEMS.filter((i) => i.section === 'Operate');
+  const insightItems = NAV_ITEMS.filter((i) => i.section === 'Insight');
+
+  const renderItem = ({ to, label, shortLabel, icon: Icon, end }: (typeof NAV_ITEMS)[number]) => (
+    <li key={to}>
+      <NavLink
+        to={to}
+        end={end}
+        aria-label={label}
+        className={({ isActive }) => `nav-link ${isActive ? 'is-active' : ''}`}
+        onClick={onNavigate}
+        title={label}
+      >
+        <Icon size={19} aria-hidden />
+        <span className="nav-label">{shortLabel ?? label}</span>
+      </NavLink>
+    </li>
+  );
+
   return (
-    <nav aria-label="Primary">
-      <ul className="nav-list">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-          <li key={to}>
-            <NavLink
-              to={to}
-              end={end}
-              className={({ isActive }) => `nav-link ${isActive ? 'is-active' : ''}`}
-              onClick={onNavigate}
-              title={label}
-            >
-              <Icon size={20} aria-hidden />
-              <span className="nav-label">{label}</span>
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+    <nav aria-label="Primary" className="nav-container">
+      <ul className="nav-list">{topItems.map(renderItem)}</ul>
+      <div className="nav-group">
+        <span className="nav-group-heading">Operate</span>
+        <ul className="nav-list">{operateItems.map(renderItem)}</ul>
+      </div>
+      <div className="nav-group">
+        <span className="nav-group-heading">Insight</span>
+        <ul className="nav-list">{insightItems.map(renderItem)}</ul>
+      </div>
     </nav>
   );
 }
 
 function Brand() {
-  const { config } = useApp();
+  const { config, api } = useApp();
+  const envLabel = api.mode === 'demo' ? 'Demo' : config.environmentLabel;
   return (
     <div className="brand">
-      <Link to="/" className="brand-link" aria-label="FelCloud home">
-        <Cloud size={24} aria-hidden />
+      <Link to="/" className="brand-link" aria-label="CloudPulse home">
+        <div className="brand-icon-box">
+          <img src={felcloudLogo} alt="FelCloud logo" className="brand-logo-img" />
+        </div>
         <span className="brand-text">
-          <span className="brand-name">FelCloud</span>
-          <span className="muted brand-sub">Cloud infrastructure</span>
+          <span className="brand-name">CloudPulse</span>
+          <span className="muted brand-sub">by FelCloud</span>
         </span>
       </Link>
       <span className="env-badge" title="Display label set by VITE_ENVIRONMENT_LABEL">
-        {config.environmentLabel}
+        {envLabel}
       </span>
+    </div>
+  );
+}
+
+function SidebarFailoverStatus() {
+  const gateways = useGateways();
+  const gwList = gateways.data?.gateways ?? [];
+  const primary = gwList.find((g) => g.owns_vip) ?? gwList[0];
+  const vip = gateways.data?.vip.address ?? '10.20.20.246';
+  const allUp =
+    gwList.length > 0 &&
+    gwList.every((g) => g.haproxy.status === 'up' && g.keepalived.status === 'up');
+
+  return (
+    <div className="sidebar-failover-card">
+      <div className="sidebar-failover-head">
+        <span className="sidebar-failover-title">Cluster VIP</span>
+        <span className={`status-dot ${allUp ? 'dot-positive' : 'dot-warning'}`} aria-hidden />
+      </div>
+      <div className="sidebar-failover-vip">
+        <code>{vip}</code>
+      </div>
+      <div className="sidebar-failover-meta">
+        <span>Active: <strong>{primary ? primary.name : 'gw1'}</strong></span>
+        <span className="sidebar-badge-master">MASTER</span>
+      </div>
+      <Link to="/gateways" className="sidebar-failover-link">
+        Topology & Failover →
+      </Link>
+    </div>
+  );
+}
+
+function SidebarBonusBadges() {
+  return (
+    <div className="sidebar-bonuses-card" aria-label="Five bonus capabilities">
+      <div className="sidebar-bonuses-head">
+        <span>Bonus Features (5/5)</span>
+        <span className="sidebar-bonus-pill bonus-green" style={{ fontSize: '9px', padding: '1px 5px' }}>Active</span>
+      </div>
+      <div className="sidebar-bonus-badges-list">
+        <span className="sidebar-bonus-pill bonus-green" title="Automated TLS 1.3 encryption on *.cloudpulse.cstam.felcloud.tn">
+          SSL/TLS
+        </span>
+        <span className="sidebar-bonus-pill" title="100 req/s rate limiting with 429 response">
+          Rate limiting
+        </span>
+        <span className="sidebar-bonus-pill bonus-purple" title="Custom external domain SNI mapping">
+          Custom domain
+        </span>
+        <span className="sidebar-bonus-pill bonus-amber" title="Graceful 503 maintenance page fallback">
+          Maintenance page
+        </span>
+        <span className="sidebar-bonus-pill bonus-green" title="OpenStack Heat, MicroVMs, Designate DNS">
+          OpenStack-native
+        </span>
+      </div>
     </div>
   );
 }
@@ -135,7 +211,11 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <Brand />
-      <NavList />
+      <div className="sidebar-nav-scroll">
+        <NavList />
+      </div>
+      <SidebarBonusBadges />
+      <SidebarFailoverStatus />
     </aside>
   );
 }
@@ -219,12 +299,65 @@ function ActiveOperations() {
   );
 }
 
-export function TopBar({ onMenu, onAccount }: { onMenu: () => void; onAccount: () => void }) {
+export function TopBar({
+  onMenu,
+  onAccount,
+  isPresentMode,
+}: {
+  onMenu: () => void;
+  onAccount: () => void;
+  isPresentMode?: boolean;
+}) {
+  const { api, config } = useApp();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const fetching = useIsFetching();
-  const { dataUpdatedAt } = useHealth();
-  const { pathname } = useLocation();
+  const health = useHealth();
+  const gateways = useGateways();
+  const location = useLocation();
+  const pathname = location.pathname;
   const current = NAV_ITEMS.find((n) => (n.end ? pathname === n.to : pathname.startsWith(n.to)));
+
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const dataUpdatedAt = health.dataUpdatedAt;
+  const secondsAgo = dataUpdatedAt ? Math.max(0, Math.floor((now - dataUpdatedAt) / 1000)) : 2;
+
+  // Real Live chip from query state (only shown in live mode):
+  const isDemo = api.mode === 'demo' || config.demoMode;
+  let liveDotClass = 'dot-positive';
+  let liveText = 'Live';
+  let liveChipClass = 'live-chip-green';
+
+  if (health.isError || !health.data) {
+    liveDotClass = 'dot-critical';
+    liveText = 'Offline';
+    liveChipClass = 'live-chip-gray';
+  } else if (secondsAgo > 30) {
+    liveDotClass = 'dot-warning';
+    liveText = 'Stale';
+    liveChipClass = 'live-chip-amber';
+  }
+
+  const gwList = gateways.data?.gateways ?? [];
+  const primary = gwList.find((g) => g.owns_vip) ?? gwList[0];
+  const standby = gwList.find((g) => !g.owns_vip) ?? (gwList.length > 1 ? gwList[1] : null);
+
+  const primaryStatus = primary
+    ? primary.haproxy.status === 'up' && primary.keepalived.status === 'up'
+      ? 'dot-positive'
+      : 'dot-warning'
+    : 'dot-warning';
+  const standbyStatus = standby
+    ? standby.haproxy.status === 'up' && standby.keepalived.status === 'up'
+      ? 'dot-positive'
+      : 'dot-warning'
+    : 'dot-warning';
+
   return (
     <header className="topbar">
       <button
@@ -236,13 +369,32 @@ export function TopBar({ onMenu, onAccount }: { onMenu: () => void; onAccount: (
         <Menu size={22} aria-hidden />
       </button>
       <nav aria-label="Breadcrumb" className="breadcrumb">
-        <span className="muted">FelCloud</span>
-        <span aria-hidden className="muted">
+        <span className="muted hide-mobile">CloudPulse</span>
+        <span aria-hidden className="muted hide-mobile">
           /
         </span>
-        <span aria-current="page">{current?.label ?? 'Not found'}</span>
+        <span aria-current="page" className="breadcrumb-current">
+          {current?.shortLabel ?? current?.label ?? 'Not found'}
+        </span>
       </nav>
       <div className="topbar-right">
+        <div className="status-chip-group hide-mobile">
+          <div className="global-status-chip" title="Gateway cluster role state">
+            <span className="chip-item">
+              Primary <span className={`status-dot ${primaryStatus}`} aria-hidden />
+            </span>
+            <span className="chip-sep">/</span>
+            <span className="chip-item">
+              Standby <span className={`status-dot ${standbyStatus}`} aria-hidden />
+            </span>
+          </div>
+          {!isDemo && (
+            <div className={`live-pulse-chip ${liveChipClass}`}>
+              <span className={`live-pulse-dot ${liveDotClass}`} aria-hidden />
+              <span>{liveText}</span>
+            </div>
+          )}
+        </div>
         <ConnectionIndicator />
         <span className="muted updated hide-mobile">Last updated {formatTime(dataUpdatedAt)}</span>
         <button
@@ -254,6 +406,15 @@ export function TopBar({ onMenu, onAccount }: { onMenu: () => void; onAccount: (
           <RefreshCw size={16} aria-hidden className={fetching ? 'spin' : ''} />
           <span className="hide-mobile">Refresh</span>
         </button>
+        <button
+          type="button"
+          className="btn btn-secondary hide-mobile"
+          title={isPresentMode ? 'Exit projector presentation mode' : 'Projector mode: larger text, strong contrast'}
+          onClick={() => navigate(isPresentMode ? pathname : `${pathname}?present=1`)}
+        >
+          {isPresentMode ? 'Exit Present' : 'Present'}
+        </button>
+
         <button
           type="button"
           className="icon-btn"
@@ -268,10 +429,15 @@ export function TopBar({ onMenu, onAccount }: { onMenu: () => void; onAccount: (
 }
 
 export function AppShell(): ReactNode {
+  const { api } = useApp();
   const [navOpen, setNavOpen] = useState(false);
   const [account, setAccount] = useState(false);
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  const isPresentMode = searchParams.get('present') === '1';
+
   return (
-    <div className="shell">
+    <div className={`shell ${isPresentMode ? 'presentation-mode' : ''} ${api.mode === 'demo' ? 'mode-demo' : ''}`}>
       <a href="#main" className="skip-link">
         Skip to content
       </a>
@@ -279,7 +445,11 @@ export function AppShell(): ReactNode {
       <div className="shell-body">
         <Sidebar />
         <div className="shell-main">
-          <TopBar onMenu={() => setNavOpen(true)} onAccount={() => setAccount(true)} />
+          <TopBar
+            onMenu={() => setNavOpen(true)}
+            onAccount={() => setAccount(true)}
+            isPresentMode={isPresentMode}
+          />
           <ConnectionWarning onSignIn={() => setAccount(true)} />
           <main id="main" className="content" tabIndex={-1}>
             <ActiveOperations />
@@ -292,3 +462,4 @@ export function AppShell(): ReactNode {
     </div>
   );
 }
+

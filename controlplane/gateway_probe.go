@@ -17,14 +17,31 @@ import (
 
 // ── Probe result types ─────────────────────────────────────────────────────────
 
+// GWMetrics holds live Prometheus/HAProxy metrics.
+type GWMetrics struct {
+	TotalRequests    int64             `json:"total_requests"`
+	TotalConnections int64             `json:"total_connections"`
+	CurrentConns     int64             `json:"current_connections"`
+	UptimeSec        int64             `json:"uptime_sec"`
+	IdlePct          int               `json:"idle_pct"`
+	BytesOut         int64             `json:"bytes_out"`
+	HTTP2xx          int64             `json:"http_2xx"`
+	HTTP4xx          int64             `json:"http_4xx"`
+	HTTP5xx          int64             `json:"http_5xx"`
+	Backends         map[string]string `json:"backends,omitempty"`
+}
+
 // GWProbe is the live state of one gateway.
 type GWProbe struct {
-	Reachable  bool   `json:"reachable"`
-	HAProxy    string `json:"haproxy"`    // "UP" | "DOWN" | "UNKNOWN"
-	Keepalived string `json:"keepalived"` // MASTER | BACKUP | FAULT | UNKNOWN
-	VIPHolder  bool   `json:"vip_holder_local"`
-	ProbedAt   string `json:"probed_at"`
-	Error      string `json:"error,omitempty"`
+	Reachable         bool             `json:"reachable"`
+	HAProxy           string           `json:"haproxy"`    // "UP" | "DOWN" | "UNKNOWN"
+	Keepalived        string           `json:"keepalived"` // MASTER | BACKUP | FAULT | UNKNOWN
+	VIPHolder         bool             `json:"vip_holder_local"`
+	ProbedAt          string           `json:"probed_at"`
+	Metrics           GWMetrics        `json:"metrics"`
+	RecentSysLogs     []map[string]any `json:"recent_sys_logs,omitempty"`
+	RecentHAProxyLogs []map[string]any `json:"recent_haproxy_logs,omitempty"`
+	Error             string           `json:"error,omitempty"`
 }
 
 // ProbeResult is the full cached snapshot.
@@ -48,8 +65,8 @@ type probeCache struct {
 	inflight chan struct{} // non-nil while a probe is running
 }
 
-// gwCache is the package-level singleton; TTL 3 s (inclusive of failed probes).
-var gwCache = &probeCache{ttl: 3 * time.Second}
+// gwCache is the package-level singleton; TTL 10 s for smooth responsive UI polling.
+var gwCache = &probeCache{ttl: 10 * time.Second}
 
 // Get returns the cached probe result, refreshing it when the TTL has expired.
 // Concurrent callers share one in-flight probe — no pile-up.
@@ -130,8 +147,8 @@ func runGatewayProbes(store *gatewayStore) ProbeResult {
 	}
 
 	vipHolder := "unknown"
-	for name, p := range gateways {
-		if p.VIPHolder {
+	for _, name := range gatewayHosts {
+		if p, ok := gateways[name]; ok && p.VIPHolder {
 			vipHolder = name
 			break
 		}
@@ -168,8 +185,31 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 	// Wrap probe in configurable context timeout (default 8s for live jump host).
 	script := fmt.Sprintf(
 		"echo haproxy=$(systemctl is-active haproxy 2>/dev/null || echo inactive);"+
-			"echo keepalived=$(cat /run/keepalived/state 2>/dev/null | tr -d '[:space:]' || echo UNKNOWN);"+
-			"echo vip=$(ip addr show 2>/dev/null | grep -c %q || echo 0)",
+			"echo keepalived=$(systemctl is-active keepalived 2>/dev/null || echo inactive);"+
+			"ip addr show 2>/dev/null | grep -F %q >/dev/null && echo vip=1 || echo vip=0;"+
+			"journalctl -u keepalived -n 5 --no-pager --output=short-iso 2>/dev/null | while read -r l; do echo syslog_k=$l; done;"+
+			"tail -n 5 /var/log/haproxy.log 2>/dev/null | while read -r l; do echo syslog_h=$l; done;"+
+			`python3 -c "import socket;
+try:
+    s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.connect('/run/haproxy/admin.sock');s.sendall(b'show info\n');info=s.recv(2048).decode();s.close()
+    for l in info.splitlines():
+        if ': ' in l:
+            k,v=l.split(': ',1);print(f'haproxy_metric_{k.lower()}={v}')
+    s2=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s2.connect('/run/haproxy/admin.sock');s2.sendall(b'show stat\n');stat=b''
+    while True:
+        b=s2.recv(4096)
+        if not b: break
+        stat += b
+    s2.close()
+    for l in stat.decode().splitlines():
+        p=l.split(',')
+        if len(p)>48 and p[1]=='FRONTEND':
+            print(f'haproxy_code_{p[0]}_req={p[48]};2xx={p[40]};4xx={p[42]};5xx={p[43]}')
+        elif len(p)>18 and p[1]!='FRONTEND' and p[1]!='BACKEND' and p[1]!='':
+            print(f'haproxy_backend_{p[0]}={p[17]};dur={p[38]}')
+except Exception:
+    pass
+" 2>/dev/null`,
 		vip,
 	)
 
@@ -214,12 +254,15 @@ func probeOneGateway(host, inv, bastion, vault, vip string) GWProbe {
 	return p
 }
 
-// parseProbeOutput turns "haproxy=active\nkeepalived=MASTER\nvip=1" into a GWProbe.
+// parseProbeOutput turns "haproxy=active\nkeepalived=MASTER\nvip=1\nhaproxy_metric_..." into a GWProbe.
 func parseProbeOutput(raw string) GWProbe {
 	p := GWProbe{
 		Reachable:  true,
 		HAProxy:    "UNKNOWN",
 		Keepalived: "UNKNOWN",
+		Metrics: GWMetrics{
+			Backends: make(map[string]string),
+		},
 	}
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -233,14 +276,114 @@ func parseProbeOutput(raw string) GWProbe {
 		if val, ok := cutPrefix(line, "keepalived="); ok {
 			s := strings.ToUpper(strings.TrimSpace(val))
 			switch s {
-			case "MASTER", "BACKUP", "FAULT":
-				p.Keepalived = s
+			case "ACTIVE", "UP", "MASTER", "BACKUP":
+				p.Keepalived = "UP"
 			default:
-				p.Keepalived = "UNKNOWN"
+				p.Keepalived = "DOWN"
 			}
 		}
 		if val, ok := cutPrefix(line, "vip="); ok {
-			p.VIPHolder = strings.TrimSpace(val) != "0" && strings.TrimSpace(val) != ""
+			p.VIPHolder = strings.TrimSpace(val) == "1"
+		}
+		// Metrics parsing
+		if val, ok := cutPrefix(line, "haproxy_metric_cumreq="); ok {
+			if v, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				p.Metrics.TotalRequests = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_metric_cumconns="); ok {
+			if v, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				p.Metrics.TotalConnections = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_metric_currconns="); ok {
+			if v, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				p.Metrics.CurrentConns = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_metric_uptime_sec="); ok {
+			if v, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				p.Metrics.UptimeSec = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_metric_idle_pct="); ok {
+			if v, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+				p.Metrics.IdlePct = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_metric_totalbytesout="); ok {
+			if v, err := strconv.ParseInt(strings.TrimSpace(val), 10, 64); err == nil {
+				p.Metrics.BytesOut = v
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_code_"); ok {
+			// val is e.g. "http_front_req=3364;2xx=27;4xx=550;5xx=2787"
+			parts := strings.Split(val, ";")
+			for _, part := range parts {
+				if v2, ok2 := cutPrefix(part, "2xx="); ok2 {
+					if n, err := strconv.ParseInt(v2, 10, 64); err == nil {
+						p.Metrics.HTTP2xx += n
+					}
+				}
+				if v4, ok4 := cutPrefix(part, "4xx="); ok4 {
+					if n, err := strconv.ParseInt(v4, 10, 64); err == nil {
+						p.Metrics.HTTP4xx += n
+					}
+				}
+				if v5, ok5 := cutPrefix(part, "5xx="); ok5 {
+					if n, err := strconv.ParseInt(v5, 10, 64); err == nil {
+						p.Metrics.HTTP5xx += n
+					}
+				}
+			}
+		}
+		if val, ok := cutPrefix(line, "haproxy_backend_"); ok {
+			// val is e.g. "live10_backend=UP;dur=0"
+			parts := strings.Split(val, "=")
+			if len(parts) >= 2 {
+				name := parts[0]
+				subparts := strings.Split(parts[1], ";")
+				status := subparts[0]
+				p.Metrics.Backends[name] = status
+			}
+		}
+		if val, ok := cutPrefix(line, "syslog_k="); ok {
+			val = strings.TrimSpace(val)
+			if val != "" {
+				parts := strings.SplitN(val, " ", 4)
+				at := time.Now().UTC().Format(time.RFC3339)
+				msg := val
+				if len(parts) >= 4 {
+					at = parts[0]
+					msg = parts[3]
+				}
+				p.RecentSysLogs = append(p.RecentSysLogs, map[string]any{
+					"at":          at,
+					"gateway_id":  "gw1",
+					"unit":        "keepalived.service",
+					"level":       "info",
+					"message":     msg,
+				})
+			}
+		}
+		if val, ok := cutPrefix(line, "syslog_h="); ok {
+			val = strings.TrimSpace(val)
+			if val != "" {
+				parts := strings.SplitN(val, " ", 4)
+				at := time.Now().UTC().Format(time.RFC3339)
+				msg := val
+				if len(parts) >= 4 {
+					at = parts[0]
+					msg = parts[3]
+				}
+				p.RecentHAProxyLogs = append(p.RecentHAProxyLogs, map[string]any{
+					"at":          at,
+					"gateway_id":  "gw1",
+					"unit":        "haproxy.service",
+					"level":       "info",
+					"message":     msg,
+				})
+			}
 		}
 	}
 	return p

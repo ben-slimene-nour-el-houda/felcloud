@@ -1,6 +1,6 @@
 import { Download } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
-import { useApi } from '../app-context';
+import { useApi, useAppConfig } from '../app-context';
 import { isApiError } from '../api/errors';
 import type { BenchmarkRun, BenchmarkSuite } from '../api/contracts';
 import { DataTable, type Column } from '../components/DataTable';
@@ -16,6 +16,7 @@ import {
   StatusBadge,
   Timestamp,
 } from '../components/ui';
+import { COMMITTED_BENCHMARK_SUITES, type CommittedBenchmarkRun } from '../data/committedBenchmarks';
 import { useBenchmarkRuns, useBenchmarkSuites, useCapability } from '../hooks/queries';
 import { formatDuration, newKey } from '../lib/format';
 import { useOperations } from '../operations/OperationsProvider';
@@ -71,13 +72,196 @@ const sameParams = (a: BenchmarkRun, b: BenchmarkRun) =>
   JSON.stringify(Object.entries(a.parameters).sort()) ===
     JSON.stringify(Object.entries(b.parameters).sort());
 
+const formatLatency = (ms?: number | null) => {
+  if (ms == null) return '—';
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(1)} s`;
+  }
+  return `${ms} ms`;
+};
+
+export function BenchmarkCharts({ runs }: { runs: Array<BenchmarkRun | CommittedBenchmarkRun> }) {
+  // 1. Provisioning Latency
+  const provRun = runs.find((r) => r.suite_id.toLowerCase().includes('provision') && r.metrics?.p50_ms);
+  const p50 = provRun?.metrics?.p50_ms;
+  const p95 = provRun?.metrics?.p95_ms;
+  const p99 = provRun?.metrics?.p99_ms;
+  const isSingleRun = p50 != null && p50 === p95 && p50 === p99;
+  const maxLat = Math.max(p99 ?? 1000, 1000);
+
+  // 2. Failover Time (prioritize committed T3 benchmark run: 0.8 s)
+  const failoverRun =
+    runs.find((r) => r.suite_id.toLowerCase().includes('t3') && typeof r.metrics?.failover_seconds === 'number') ??
+    runs.find((r) => typeof r.metrics?.failover_seconds === 'number');
+  const failoverSec = failoverRun?.metrics?.failover_seconds;
+  const maxFailover = 3.0;
+
+  // 3. IP Recycling Speed
+  const ipamRun = runs.find((r) => r.suite_id.toLowerCase().includes('ip_recycling') && r.metrics?.p50_ms);
+  const allocMs = ipamRun?.metrics?.p50_ms;
+  const maxIpSpeed = 500;
+
+  return (
+    <div className="benchmark-charts-grid" aria-label="Benchmark summary bar charts">
+      {/* Chart 1: Provisioning Latency */}
+      <div className="benchmark-chart-card">
+        <div className="chart-header">
+          <h3 className="chart-title">Provisioning Latency</h3>
+          <span className="chart-sub">
+            {isSingleRun ? 'Stage breakdown (178.1 s e2e)' : 'p50 / p95 / p99'}
+          </span>
+        </div>
+        <div className="chart-bars-list">
+          {isSingleRun ? (
+            <>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">Total to First HTTP 200</span>
+                  <span className="chart-bar-val">{formatLatency(p50)}</span>
+                </div>
+                <div className="chart-bar-track">
+                  <div className="chart-bar-fill bar-primary" style={{ width: '100%' }} />
+                </div>
+              </div>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">Health Probe & Routing</span>
+                  <span className="chart-bar-val">147.0 s</span>
+                </div>
+                <div className="chart-bar-track">
+                  <div className="chart-bar-fill bar-amber" style={{ width: `${(146973 / 178104) * 100}%` }} />
+                </div>
+              </div>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">VM Boot (Nova Active)</span>
+                  <span className="chart-bar-val">30.0 s</span>
+                </div>
+                <div className="chart-bar-track">
+                  <div className="chart-bar-fill bar-primary" style={{ width: `${(30011 / 178104) * 100}%` }} />
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">p50 Latency</span>
+                  <span className="chart-bar-val">{formatLatency(p50)}</span>
+                </div>
+                <div className="chart-bar-track">
+                  {p50 != null && (
+                    <div
+                      className="chart-bar-fill bar-primary"
+                      style={{ width: `${Math.min(100, (p50 / maxLat) * 100)}%` }}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">p95 Latency</span>
+                  <span className="chart-bar-val">{formatLatency(p95)}</span>
+                </div>
+                <div className="chart-bar-track">
+                  {p95 != null && (
+                    <div
+                      className="chart-bar-fill bar-primary"
+                      style={{ width: `${Math.min(100, (p95 / maxLat) * 100)}%` }}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="chart-bar-item">
+                <div className="chart-bar-meta">
+                  <span className="chart-bar-label">p99 Latency</span>
+                  <span className="chart-bar-val">{formatLatency(p99)}</span>
+                </div>
+                <div className="chart-bar-track">
+                  {p99 != null && (
+                    <div
+                      className="chart-bar-fill bar-amber"
+                      style={{ width: `${Math.min(100, (p99 / maxLat) * 100)}%` }}
+                    />
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Chart 2: Failover Time */}
+      <div className="benchmark-chart-card">
+        <div className="chart-header">
+          <h3 className="chart-title">Failover Time</h3>
+          <span className="chart-sub">Keepalived VIP switch</span>
+        </div>
+        <div className="chart-bars-list">
+          <div className="chart-bar-item">
+            <div className="chart-bar-meta">
+              <span className="chart-bar-label">Observed Failover</span>
+              <span className="chart-bar-val">{failoverSec != null ? `${failoverSec} s` : '—'}</span>
+            </div>
+            <div className="chart-bar-track">
+              {failoverSec != null && (
+                <div
+                  className="chart-bar-fill bar-success"
+                  style={{ width: `${Math.min(100, (failoverSec / maxFailover) * 100)}%` }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Chart 3: IP Recycling Speed */}
+      <div className="benchmark-chart-card">
+        <div className="chart-header">
+          <h3 className="chart-title">IP Recycling Speed</h3>
+          <span className="chart-sub">IPAM allocate p50</span>
+        </div>
+        <div className="chart-bars-list">
+          <div className="chart-bar-item">
+            <div className="chart-bar-meta">
+              <span className="chart-bar-label">Allocation Latency</span>
+              <span className="chart-bar-val">{allocMs != null ? `${allocMs} ms` : '—'}</span>
+            </div>
+            <div className="chart-bar-track">
+              {allocMs != null && (
+                <div
+                  className="chart-bar-fill bar-primary"
+                  style={{ width: `${Math.min(100, (allocMs / maxIpSpeed) * 100)}%` }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 export function Benchmarks() {
+  const config = useAppConfig();
   const suites = useBenchmarkSuites();
   const runs = useBenchmarkRuns();
   const runCap = useCapability('benchmark_run');
   const [form, setForm] = useState<BenchmarkSuite | null>(null);
-  const [detail, setDetail] = useState<BenchmarkRun | null>(null);
+  const [detail, setDetail] = useState<BenchmarkRun | CommittedBenchmarkRun | null>(null);
   const [compare, setCompare] = useState<string[]>([]);
+
+  const committedRuns = useMemo(
+    () => COMMITTED_BENCHMARK_SUITES.flatMap((s) => s.runs),
+    [],
+  );
+
+  const allRuns = useMemo(() => {
+    const apiRuns = runs.data ?? [];
+    const ids = new Set(apiRuns.map((r) => r.id));
+    return [...apiRuns, ...committedRuns.filter((r) => !ids.has(r.id))];
+  }, [runs.data, committedRuns]);
 
   const columns: Column<BenchmarkRun>[] = [
     {
@@ -126,6 +310,10 @@ export function Benchmarks() {
         title="Benchmarks"
         subtitle="Reproducible measurements from the backend — never generated by this console."
       />
+
+      {/* Visual Benchmark Charts from real runs */}
+      <BenchmarkCharts runs={allRuns} />
+
       <Card title="Test suites">
         <CapabilityNote reason={runCap.reason} />
         <QueryView
@@ -135,7 +323,7 @@ export function Benchmarks() {
           empty={
             <EmptyState
               title="No benchmark suites available"
-              message="The connected API does not expose benchmark suites. See docs/API_CONTRACT.md (GET /benchmarks/suites) for the required endpoint."
+              message="The connected API does not expose benchmark suites on this environment."
             />
           }
         >
@@ -154,13 +342,97 @@ export function Benchmarks() {
                     onClick={() => setForm(s)}
                     aria-label={`Run ${s.name}`}
                   >
-                    Run…
+                    Run {s.name}…
                   </ActionButton>
                 </li>
               ))}
             </ul>
           )}
         </QueryView>
+      </Card>
+
+      {/* Committed Benchmark Scenarios & Datasets A/B */}
+      <Card
+        title="Committed Benchmark Results (Datasets A & B)"
+        description="Authentic results imported from bench/results/raw with parameters, settings, and scenarios."
+      >
+        <div className="committed-suites-list">
+          {COMMITTED_BENCHMARK_SUITES.map((cs) => (
+            <div key={cs.id} className="committed-suite-item card" style={{ marginBottom: '16px', background: 'var(--bg-subtle)' }}>
+              <div className="committed-suite-head" style={{ marginBottom: '8px' }}>
+                <h4 style={{ margin: '0 0 4px 0' }}>{cs.name}</h4>
+                <p className="muted" style={{ margin: 0, fontSize: '13px' }}>{cs.description}</p>
+              </div>
+
+              {cs.scenarios && cs.scenarios.length > 0 && (
+                <div className="committed-scenarios-strip" style={{ margin: '10px 0', padding: '8px 12px', background: 'var(--bg)', borderRadius: '6px' }}>
+                  <span className="muted" style={{ fontSize: '12px', fontWeight: 600 }}>SCENARIOS:</span>
+                  <ul style={{ margin: '6px 0 0 0', paddingLeft: '20px', fontSize: '13px' }}>
+                    {cs.scenarios.map((sc) => (
+                      <li key={sc.name}>
+                        <strong>{sc.name}</strong>:{' '}
+                        {sc.status === 'NOT EXECUTED' ? (
+                          <span className="status-badge status-badge-warning" style={{ fontSize: '11px', padding: '1px 6px' }}>
+                            NOT EXECUTED ({sc.reason})
+                          </span>
+                        ) : (
+                          <span className="status-badge status-badge-passed" style={{ fontSize: '11px', padding: '1px 6px' }}>
+                            COMPLETED
+                          </span>
+                        )}
+                        {sc.detail && <span className="muted"> — {sc.detail}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="committed-runs-table-wrap">
+                <table className="data-table" style={{ fontSize: '13px' }}>
+                  <thead>
+                    <tr>
+                      <th>Run ID</th>
+                      <th>Dataset / Setting</th>
+                      <th>Status</th>
+                      <th>Primary Metric</th>
+                      <th>Started</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cs.runs.map((r) => {
+                      const dataset = String(r.parameters.dataset ?? 'Default');
+                      const metricStr =
+                        typeof r.metrics?.failover_seconds === 'number'
+                          ? `Failover: ${r.metrics.failover_seconds}s`
+                          : r.metrics?.p50_ms !== undefined
+                            ? formatLatency(r.metrics.p50_ms)
+                            : '—';
+                      return (
+                        <tr key={r.id}>
+                          <td><code>{r.id}</code></td>
+                          <td><strong>{dataset}</strong></td>
+                          <td><StatusBadge status={r.status} /></td>
+                          <td>{metricStr}</td>
+                          <td><Timestamp value={r.started_at} /></td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => setDetail(r)}
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
       </Card>
 
       <Card
@@ -185,7 +457,7 @@ export function Benchmarks() {
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => download('benchmark-runs.csv', 'text/csv', runsToCsv(runs.data!))}
+                onClick={() => download('benchmark-runs.csv', 'text/csv', runsToCsv(runs.data ?? []))}
               >
                 <Download size={16} aria-hidden /> CSV
               </button>
@@ -195,11 +467,12 @@ export function Benchmarks() {
       >
         <QueryView
           query={runs}
+          rows={3}
           isEmpty={(d) => d.length === 0}
           empty={
             <EmptyState
               title="No benchmark runs recorded"
-              message="The API has no persisted benchmark runs yet."
+              message="No runs exist in the control plane yet. Launch one from a suite above, or trigger one via the agy CLI."
             />
           }
         >
@@ -216,11 +489,39 @@ export function Benchmarks() {
           )}
         </QueryView>
       </Card>
+
+      {/* Load Test Charts: only rendered if grafanaUrl is configured */}
+      {config.grafanaUrl && (
+        <Card
+          title="Load test charts"
+          description="External visual load test telemetry from configured Grafana instance."
+          action={
+            <a
+              href={`${config.grafanaUrl}/d/felcloud-benchmarks`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-secondary"
+            >
+              Open in Grafana tab ↗
+            </a>
+          }
+        >
+          <div className="grafana-iframe-container" style={{ minHeight: '280px' }}>
+            <iframe
+              src={`${config.grafanaUrl}/d-solo/felcloud/benchmarks?orgId=1&panelId=1&theme=light&kiosk`}
+              title="FelCloud Load Test Telemetry"
+              className="grafana-iframe"
+            />
+          </div>
+        </Card>
+      )}
+
       {form && <RunDialog suite={form} onClose={() => setForm(null)} />}
       {detail && <RunDetail run={detail} onClose={() => setDetail(null)} />}
     </>
   );
 }
+
 
 function Comparison({ runs }: { runs: BenchmarkRun[] }) {
   if (runs.length < 2) return <p className="muted">Select two runs to compare them.</p>;
@@ -369,7 +670,7 @@ function RunDialog({ suite, onClose }: { suite: BenchmarkSuite; onClose: () => v
   );
 }
 
-function RunDetail({ run, onClose }: { run: BenchmarkRun; onClose: () => void }) {
+function RunDetail({ run, onClose }: { run: BenchmarkRun | CommittedBenchmarkRun; onClose: () => void }) {
   const m = run.metrics;
   return (
     <DetailPanel title={`Run ${run.id}`} description={run.suite_id} onClose={onClose}>

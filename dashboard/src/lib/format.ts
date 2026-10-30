@@ -1,10 +1,23 @@
 const dateTime = new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+const compactDateTime = new Intl.DateTimeFormat('en-GB', {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+});
 const timeOnly = new Intl.DateTimeFormat('en-GB', { timeStyle: 'medium' });
 
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : dateTime.format(d);
+}
+
+export function formatCompactDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : compactDateTime.format(d);
 }
 
 export function formatTime(ms: number | undefined): string {

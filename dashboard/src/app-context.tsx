@@ -23,3 +23,4 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 export const useApi = (): Api => useApp().api;
+export const useAppConfig = (): AppConfig => useApp().config;

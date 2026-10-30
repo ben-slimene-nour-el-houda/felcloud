@@ -13,6 +13,7 @@ import { Benchmarks } from './pages/Benchmarks';
 import { Configuration } from './pages/Configuration';
 import { Gateways } from './pages/Gateways';
 import { Ipam } from './pages/Ipam';
+import { LiveDrill } from './pages/LiveDrill';
 import { Observability } from './pages/Observability';
 import { Overview } from './pages/Overview';
 import { Routes as TrafficRoutes } from './pages/Routes';
@@ -40,6 +41,7 @@ export function AppRoutes() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<Overview />} />
+        <Route path="drill" element={<LiveDrill />} />
         <Route path="sandboxes" element={<Sandboxes />} />
         <Route path="ipam" element={<Ipam />} />
         <Route path="gateways" element={<Gateways />} />

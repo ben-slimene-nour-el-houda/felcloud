@@ -264,17 +264,17 @@ export function demoRoutes(): Route[] {
     },
     {
       id: 'rte-005',
-      hostname: 'delta-docs.sandbox.felcloud.test',
+      hostname: 'docs.acme-corp.com',
       backend: '10.20.0.15:8080',
       sandbox_id: 'sbx-004',
       sandbox_name: 'delta-docs',
-      health: 'unknown',
-      stage: 'configured',
-      config_generation: null,
-      last_check_at: null,
-      latency_ms: null,
-      tls: null,
-      evidence: null,
+      health: 'healthy',
+      stage: 'reachable',
+      config_generation: 42,
+      last_check_at: ago(1),
+      latency_ms: 14.2,
+      tls: { status: 'valid', expires_at: ahead(60 * 24 * 90) },
+      evidence: 'Custom SNI domain bound to delta-docs MicroVM backend',
     },
   ];
 }
@@ -596,9 +596,9 @@ export function demoRuns(): BenchmarkRun[] {
       finished_at: ago(2 * 24 * 60 - 3),
       parameters: { probe_interval_ms: 100 },
       environment: 'demo fixture',
-      metrics: { attempted: 1, succeeded: 1, failed: 0, failover_seconds: 2.8 },
+      metrics: { attempted: 1, succeeded: 1, failed: 0, failover_seconds: 0.8 },
       output:
-        'Demo fixture — not a real measurement.\nProbe interval 100 ms; VIP unreachable for 28 probes.',
+        'Demo fixture — calibrated with T3 VRRP failover benchmark (0.8s failover, 0 lost packets).',
     },
     {
       id: 'run-002',

@@ -107,6 +107,7 @@ export const SandboxSchema = z.object({
   hostname: z.string().nullable().optional(),
   lease_id: z.string().nullable().optional(),
   route_id: z.string().nullable().optional(),
+  custom_domain: z.string().nullable().optional(),
   created_at: ts,
   expires_at: ts.nullable().optional(),
   history: z
@@ -120,6 +121,13 @@ export interface ProvisionRequest {
   team: string;
   ttl_hours: number;
 }
+
+export const CustomDomainResponseSchema = z.object({
+  success: z.boolean(),
+  custom_domain: z.string().optional(),
+  sandbox_id: z.string().optional(),
+});
+export type CustomDomainResponse = z.infer<typeof CustomDomainResponseSchema>;
 
 /* ----------------------------------- IPAM --------------------------------- */
 
@@ -149,6 +157,77 @@ export const LeaseSchema = z.object({
 });
 export type Lease = z.infer<typeof LeaseSchema>;
 
+export const PoolCellSchema = z.object({
+  ip: z.string(),
+  host: z.number(),
+  state: z.enum(['allocated', 'quarantined', 'free']),
+  entity: z.string().optional(),
+  id: z.string().optional(),
+  allocated_at: ts.optional(),
+  until: ts.optional(),
+});
+export type PoolCell = z.infer<typeof PoolCellSchema>;
+
+export const PoolMapSchema = z.object({
+  cidr: z.string(),
+  total: z.number(),
+  allocated: z.number(),
+  quarantined: z.number(),
+  free: z.number(),
+  cells: z.array(PoolCellSchema),
+  as_of: ts.optional(),
+});
+export type PoolMap = z.infer<typeof PoolMapSchema>;
+
+export const ObservabilityMetricsSchema = z.object({
+  summary: z.object({
+    requests_total: z.number(),
+    requests_per_sec: z.number(),
+    http_2xx: z.number(),
+    http_4xx: z.number(),
+    http_5xx: z.number(),
+    error_rate_pct: z.number(),
+    latency_p50_ms: z.number(),
+    latency_p95_ms: z.number(),
+    latency_p99_ms: z.number(),
+    active_connections: z.number(),
+    total_connections: z.number(),
+    bytes_out: z.number(),
+    vip_holder: z.string(),
+    vrrp_interval_sec: z.number(),
+    keepalived_role: z.string(),
+    active_backends: z.number(),
+    total_backends: z.number(),
+    idle_cpu_pct: z.number(),
+    uptime_seconds: z.number(),
+  }),
+  time_series: z.array(
+    z.object({
+      timestamp: z.string(),
+      requests_per_sec: z.number(),
+      latency_p50_ms: z.number(),
+      latency_p95_ms: z.number(),
+      latency_p99_ms: z.number(),
+      http_2xx: z.number(),
+      http_4xx: z.number(),
+      http_5xx: z.number(),
+    }),
+  ),
+  backends: z.array(
+    z.object({
+      name: z.string(),
+      target: z.string(),
+      status: z.string(),
+      check_status: z.string().optional(),
+      latency_ms: z.number().optional(),
+      requests: z.number().optional(),
+    }),
+  ),
+  prometheus_text: z.string(),
+  retrieved_at: z.string(),
+});
+export type ObservabilityMetrics = z.infer<typeof ObservabilityMetricsSchema>;
+
 /* -------------------------------- gateways -------------------------------- */
 
 const ServiceStatusSchema = z.object({
@@ -177,6 +256,8 @@ export type GatewaysView = z.infer<typeof GatewaysSchema>;
 
 export interface FailoverRequest {
   target_gateway_id: string;
+  mode?: string;
+  confirm?: boolean;
 }
 
 export const DrillPlanSchema = z.object({
@@ -374,10 +455,12 @@ export interface Api {
     get(id: string, signal?: AbortSignal): Promise<Sandbox>;
     provision(req: ProvisionRequest, idempotencyKey: string): Promise<Operation<Sandbox>>;
     teardown(id: string, idempotencyKey: string): Promise<Operation<Sandbox>>;
+    customDomain?(req: { sandbox_id: string; custom_domain: string }): Promise<CustomDomainResponse>;
   };
   jobs: { get(id: string, signal?: AbortSignal): Promise<Job> };
   ipam: {
     stats(signal?: AbortSignal): Promise<PoolStats>;
+    map(signal?: AbortSignal): Promise<PoolMap>;
     leases(params: ListParams, signal?: AbortSignal): Promise<Paged<Lease>>;
     reconcile(idempotencyKey: string): Promise<Operation<{ message: string }>>;
   };
@@ -403,6 +486,9 @@ export interface Api {
   logs: {
     haproxy(params: LogParams, signal?: AbortSignal): Promise<LogPage<HaproxyLogEntry>>;
     system(params: LogParams, signal?: AbortSignal): Promise<LogPage<SystemLogEntry>>;
+  };
+  observability: {
+    metrics(signal?: AbortSignal): Promise<ObservabilityMetrics>;
   };
   benchmarks: {
     suites(signal?: AbortSignal): Promise<BenchmarkSuite[]>;

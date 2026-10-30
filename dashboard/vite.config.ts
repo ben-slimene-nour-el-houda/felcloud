@@ -2,15 +2,29 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// The dev server proxies /api to a local Python control plane so the browser
-// never needs CORS during development. Override with VITE_DEV_PROXY_TARGET.
+// The dev server proxies /api to the Go control plane (:8081).
 const proxyTarget = process.env.VITE_DEV_PROXY_TARGET ?? 'http://localhost:8081';
+const devToken = process.env.ADMIN_TOKEN ?? 'felcloud-admin-token-cstam-2026-very-secure';
 
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: { '/api': { target: proxyTarget, changeOrigin: true } },
+    proxy: {
+      '/api': {
+        target: proxyTarget,
+        changeOrigin: true,
+        headers: devToken
+          ? {
+              Authorization: `Bearer ${devToken}`,
+            }
+          : undefined,
+      },
+      '/metrics': {
+        target: proxyTarget,
+        changeOrigin: true,
+      },
+    },
   },
   build: { sourcemap: false, target: 'es2022' },
   test: {
