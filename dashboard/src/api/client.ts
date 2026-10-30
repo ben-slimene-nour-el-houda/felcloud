@@ -123,7 +123,10 @@ export class ApiClient {
     return new ApiError({
       kind,
       status: response.status,
-      message: sanitizeMessage(inner.message, defaultMessage(kind)),
+      message: sanitizeMessage(
+        inner.message ?? (typeof envelope.error === 'string' ? envelope.error : undefined),
+        defaultMessage(kind),
+      ),
       code: typeof inner.code === 'string' ? inner.code : undefined,
       traceId:
         (typeof envelope.trace_id === 'string' ? envelope.trace_id : undefined) ??
@@ -137,6 +140,7 @@ export class ApiClient {
   private parse<T>(schema: z.ZodType<T>, body: unknown, status: number): T {
     const result = schema.safeParse(body);
     if (!result.success) {
+      console.error('[API schema validation error]', JSON.stringify(result.error.issues), body);
       throw new ApiError({
         kind: 'invalid_response',
         status,

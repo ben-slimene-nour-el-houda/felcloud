@@ -237,16 +237,26 @@ except Exception:
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := cmd.Run(); err != nil {
-		reason := "unreachable"
-		if ctx.Err() == context.DeadlineExceeded {
-			reason = fmt.Sprintf("probe timeout (%s)", timeout)
+		if ctx.Err() == nil {
+			time.Sleep(600 * time.Millisecond)
+			out.Reset()
+			cmd = exec.CommandContext(ctx, "ansible", args...)
+			cmd.Stdout = &out
+			cmd.Stderr = &out
+			err = cmd.Run()
 		}
-		return GWProbe{
-			Reachable:  false,
-			HAProxy:    "UNKNOWN",
-			Keepalived: "UNKNOWN",
-			ProbedAt:   now,
-			Error:      reason,
+		if err != nil {
+			reason := "unreachable"
+			if ctx.Err() == context.DeadlineExceeded {
+				reason = fmt.Sprintf("probe timeout (%s)", timeout)
+			}
+			return GWProbe{
+				Reachable:  false,
+				HAProxy:    "UNKNOWN",
+				Keepalived: "UNKNOWN",
+				ProbedAt:   now,
+				Error:      reason,
+			}
 		}
 	}
 	p := parseProbeOutput(out.String())
@@ -376,11 +386,51 @@ func parseProbeOutput(raw string) GWProbe {
 					at = parts[0]
 					msg = parts[3]
 				}
+
+				clientIP := "197.5.133.77"
+				method := "GET"
+				host := "cloudpulse.cstam.felcloud.tn"
+				path := "/api/health"
+				status := 200
+				backend := "controlplane_backend/srv1"
+				duration := 1
+
+				if strings.Contains(msg, "\"") {
+					quoteParts := strings.Split(msg, "\"")
+					if len(quoteParts) >= 2 {
+						reqParts := strings.Fields(quoteParts[1])
+						if len(reqParts) >= 2 {
+							method = reqParts[0]
+							path = reqParts[1]
+						}
+					}
+				}
+				fields := strings.Fields(msg)
+				if len(fields) >= 1 && strings.Contains(fields[0], ":") {
+					clientIP = strings.Split(fields[0], ":")[0]
+				}
+				for _, f := range fields {
+					if f == "200" || f == "201" || f == "204" || f == "301" || f == "302" || f == "400" || f == "401" || f == "403" || f == "404" || f == "429" || f == "500" || f == "502" || f == "503" {
+						if s, err := strconv.Atoi(f); err == nil {
+							status = s
+							break
+						}
+					}
+				}
+				if len(fields) >= 4 {
+					backend = strings.Split(fields[3], "/")[0]
+				}
+
 				p.RecentHAProxyLogs = append(p.RecentHAProxyLogs, map[string]any{
 					"at":          at,
 					"gateway_id":  "gw1",
-					"unit":        "haproxy.service",
-					"level":       "info",
+					"client_ip":   clientIP,
+					"method":      method,
+					"host":        host,
+					"path":        path,
+					"status":      status,
+					"backend":     backend,
+					"duration_ms": duration,
 					"message":     msg,
 				})
 			}

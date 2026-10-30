@@ -1,7 +1,7 @@
 import type { UseQueryResult } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { isApiError } from '../api/errors';
-import { ErrorState, LoadingSkeleton } from './ui';
+import { EmptyState, ErrorState, LoadingSkeleton } from './ui';
 import { formatDateTime } from '../lib/format';
 
 interface Props<T> {
@@ -23,6 +23,25 @@ export function QueryView<T>({ query, children, isEmpty, empty, rows, label }: P
   const { data, error, isError, isPending, refetch, dataUpdatedAt } = query;
   if (isPending && !isError) return <LoadingSkeleton rows={rows} label={label} />;
   if (data === undefined) {
+    if (isApiError(error) && (error.kind === 'auth' || error.kind === 'forbidden')) {
+      return (
+        <EmptyState
+          title="Sign-in required"
+          message="Authentication is required to view live data. Set your API bearer token to continue."
+          action={
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('felcloud:open-auth'));
+              }}
+            >
+              Set API token
+            </button>
+          }
+        />
+      );
+    }
     return (
       <ErrorState
         message={error instanceof Error ? error.message : 'The request failed.'}

@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useApi } from '../app-context';
 import type { Route } from '../api/contracts';
 import { ROUTE_STAGES } from '../api/contracts';
 import { DataTable, type Column } from '../components/DataTable';
-import { DetailPanel } from '../components/Modal';
+import { DetailPanel, Modal } from '../components/Modal';
 import { QueryView } from '../components/QueryView';
 import {
   EmptyState,
@@ -14,7 +16,7 @@ import {
   StatusBadge,
   Timestamp,
 } from '../components/ui';
-import { useRoutes } from '../hooks/queries';
+import { useRoutes, useSandboxes } from '../hooks/queries';
 import { labelFor } from '../lib/labels';
 
 const HEALTH_OPTIONS = [
@@ -25,11 +27,50 @@ const HEALTH_OPTIONS = [
 ];
 
 export function Routes() {
+  const api = useApi();
+  const queryClient = useQueryClient();
   const [q, setQ] = useState('');
   const [health, setHealth] = useState('');
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Route | null>(null);
+  const [bindModalOpen, setBindModalOpen] = useState(false);
+  const [targetSandbox, setTargetSandbox] = useState('');
+  const [domainInput, setDomainInput] = useState('');
+  const [bindPending, setBindPending] = useState(false);
+  const [bindStatus, setBindStatus] = useState<string | null>(null);
+  const [bindError, setBindError] = useState<string | null>(null);
+
   const query = useRoutes({ q, status: health, page, pageSize: 10 });
+  const sandboxesQuery = useSandboxes({ pageSize: 50 });
+
+  const handleBindDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!api.sandboxes.customDomain || !targetSandbox || !domainInput.trim()) return;
+    setBindPending(true);
+    setBindStatus(null);
+    setBindError(null);
+    try {
+      const res = await api.sandboxes.customDomain({
+        sandbox_id: targetSandbox,
+        custom_domain: domainInput.trim(),
+      });
+      if (res.success) {
+        setBindStatus('Custom domain deployed and synchronized across dual gateways!');
+        await queryClient.invalidateQueries({ queryKey: ['routes'] });
+        await queryClient.invalidateQueries({ queryKey: ['sandboxes'] });
+        setTimeout(() => {
+          setBindModalOpen(false);
+          setBindStatus(null);
+        }, 1200);
+      } else {
+        setBindError('Failed to bind custom domain.');
+      }
+    } catch (err) {
+      setBindError(err instanceof Error ? err.message : 'Failed to bind custom domain.');
+    } finally {
+      setBindPending(false);
+    }
+  };
 
   const columns: Column<Route>[] = [
     {
@@ -37,11 +78,12 @@ export function Routes() {
       header: 'Hostname & Features',
       render: (r) => {
         const isCustom =
-          !r.hostname.endsWith('.felcloud.test') &&
+          r.id.endsWith('-custom') ||
+          (!r.hostname.endsWith('.felcloud.test') &&
           !r.hostname.endsWith('.felcloud.internal') &&
           !r.hostname.endsWith('.felcloud.tn') &&
           !r.hostname.endsWith('.internal') &&
-          !r.hostname.endsWith('.local');
+          !r.hostname.endsWith('.local'));
         return (
           <div>
             <strong>{r.hostname}</strong>
@@ -99,11 +141,12 @@ export function Routes() {
   const tlsCount = query.data?.items.filter((r) => r.tls && r.tls.status === 'valid').length ?? 0;
   const customCount = query.data?.items.filter(
     (r) =>
-      !r.hostname.endsWith('.felcloud.test') &&
+      r.id.endsWith('-custom') ||
+      (!r.hostname.endsWith('.felcloud.test') &&
       !r.hostname.endsWith('.felcloud.internal') &&
       !r.hostname.endsWith('.felcloud.tn') &&
       !r.hostname.endsWith('.internal') &&
-      !r.hostname.endsWith('.local'),
+      !r.hostname.endsWith('.local')),
   ).length ?? 0;
 
   return (
@@ -111,6 +154,18 @@ export function Routes() {
       <PageHeader
         title="Traffic & Routes"
         subtitle="Domain routing, SSL termination, and health monitoring for microVM backends."
+        action={
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => {
+              setBindModalOpen(true);
+              setTargetSandbox(sandboxesQuery.data?.items[0]?.id ?? 'team1');
+            }}
+          >
+            Bind custom domain
+          </button>
+        }
       />
       <div className="bonus-feature-strip" aria-label="Routing architecture capabilities">
         <span className="bonus-strip-item">
@@ -224,6 +279,86 @@ export function Routes() {
             </section>
           </div>
         </DetailPanel>
+      )}
+
+      {bindModalOpen && (
+        <Modal
+          title="Bind Custom Domain"
+          description="Map an external domain or custom alias to a sandbox microVM across both HAProxy gateways."
+          onClose={() => {
+            if (!bindPending) {
+              setBindModalOpen(false);
+              setBindError(null);
+              setBindStatus(null);
+            }
+          }}
+        >
+          <form onSubmit={handleBindDomain} className="stack">
+            <div>
+              <label htmlFor="target-sandbox-select" style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: '13px' }}>
+                Target Sandbox
+              </label>
+              <select
+                id="target-sandbox-select"
+                value={targetSandbox}
+                onChange={(e) => setTargetSandbox(e.target.value)}
+                required
+                style={{ width: '100%', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-surface)' }}
+              >
+                <option value="">Select a sandbox…</option>
+                {sandboxesQuery.data?.items.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.id}) · {s.private_ip}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="custom-domain-name" style={{ display: 'block', marginBottom: '6px', fontWeight: 500, fontSize: '13px' }}>
+                Custom Domain Hostname
+              </label>
+              <input
+                id="custom-domain-name"
+                type="text"
+                placeholder="e.g. app.team1.cstam.felcloud.tn"
+                value={domainInput}
+                onChange={(e) => setDomainInput(e.target.value)}
+                required
+                style={{ width: '100%', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-surface)' }}
+              />
+            </div>
+
+            {bindError && (
+              <div style={{ color: 'var(--tone-danger-text, #f87171)', fontSize: '13px', padding: '8px', background: 'rgba(239, 68, 68, 0.1)', borderRadius: '4px' }}>
+                {bindError}
+              </div>
+            )}
+            {bindStatus && (
+              <div style={{ color: 'var(--tone-success-text, #4ade80)', fontSize: '13px', padding: '8px', background: 'rgba(34, 197, 94, 0.1)', borderRadius: '4px' }}>
+                {bindStatus}
+              </div>
+            )}
+
+            <div className="row wrap justify-end" style={{ gap: '8px', marginTop: '16px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setBindModalOpen(false)}
+                disabled={bindPending}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={bindPending || !targetSandbox || !domainInput.trim()}
+              >
+                {bindPending ? 'Synchronizing gateways…' : 'Bind domain'}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </>
   );

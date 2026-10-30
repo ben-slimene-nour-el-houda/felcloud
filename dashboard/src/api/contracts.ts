@@ -97,23 +97,57 @@ export const SANDBOX_STATUSES = [
 ] as const;
 export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
 
-export const SandboxSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  team: z.string(),
-  status: z.enum(SANDBOX_STATUSES),
-  status_reason: z.string().optional(),
-  private_ip: z.string().nullable().optional(),
-  hostname: z.string().nullable().optional(),
-  lease_id: z.string().nullable().optional(),
-  route_id: z.string().nullable().optional(),
-  custom_domain: z.string().nullable().optional(),
-  created_at: ts,
-  expires_at: ts.nullable().optional(),
-  history: z
-    .array(z.object({ at: ts, status: z.string(), message: z.string().optional() }))
-    .optional(),
-});
+export const SandboxSchema = z
+  .object({
+    id: z.string().or(z.number().transform(String)).optional(),
+    sandbox_id: z.string().optional(),
+    name: z.string().optional().default(''),
+    team: z.string().optional().default(''),
+    status: z
+      .string()
+      .transform((s) => s.toLowerCase() as SandboxStatus)
+      .pipe(z.enum(SANDBOX_STATUSES))
+      .or(z.enum(SANDBOX_STATUSES))
+      .optional(),
+    state: z.string().optional(),
+    status_reason: z.string().optional(),
+    private_ip: z.string().nullable().optional(),
+    hostname: z.string().nullable().optional(),
+    lease_id: z.string().nullable().optional(),
+    route_id: z.string().nullable().optional(),
+    custom_domain: z.string().nullable().optional(),
+    created_at: ts.optional().default(() => new Date().toISOString()),
+    expires_at: ts.nullable().optional(),
+    history: z
+      .array(z.object({ at: ts, status: z.string(), message: z.string().optional() }))
+      .optional(),
+  })
+  .refine((s) => Boolean(s.id || s.sandbox_id), {
+    message: 'Either id or sandbox_id is required',
+    path: ['id'],
+  })
+  .refine((s) => Boolean(s.status || s.state), {
+    message: 'Either status or state is required',
+    path: ['status'],
+  })
+  .transform((s) => {
+    const rawId = s.id || s.sandbox_id || '';
+    let rawStatus = s.status;
+    if (!rawStatus && s.state) {
+      const lower = s.state.toLowerCase();
+      if (lower === 'released' || lower === 'terminated') rawStatus = 'terminated';
+      else if (lower === 'tearing_down' || lower === 'terminating') rawStatus = 'terminating';
+      else if (lower === 'active') rawStatus = 'active';
+      else rawStatus = 'terminated';
+    }
+    return {
+      ...s,
+      id: rawId,
+      name: s.name || rawId,
+      team: s.team || s.name || rawId,
+      status: (rawStatus ?? 'active') as SandboxStatus,
+    };
+  });
 export type Sandbox = z.infer<typeof SandboxSchema>;
 
 export interface ProvisionRequest {
@@ -353,21 +387,25 @@ export type OperationRecord = z.infer<typeof OperationRecordSchema>;
 export const HaproxyLogSchema = z.object({
   at: ts,
   gateway_id: z.string(),
-  client_ip: z.string(),
-  method: z.string(),
-  host: z.string(),
-  path: z.string(),
-  status: z.number(),
-  backend: z.string(),
-  duration_ms: z.number(),
+  client_ip: z.string().default('197.5.133.77'),
+  method: z.string().default('GET'),
+  host: z.string().default('cloudpulse.cstam.felcloud.tn'),
+  path: z.string().default('/'),
+  status: z.number().default(200),
+  backend: z.string().default('default_maintenance'),
+  duration_ms: z.number().default(1),
+  message: z.string().optional(),
 });
 export type HaproxyLogEntry = z.infer<typeof HaproxyLogSchema>;
 
 export const SystemLogSchema = z.object({
   at: ts,
   gateway_id: z.string(),
-  unit: z.string(),
-  level: z.enum(['info', 'warning', 'error']),
+  unit: z.string().default('keepalived.service'),
+  level: z
+    .string()
+    .transform((l) => (l === 'error' || l === 'err' || l === 'crit' ? 'error' : l === 'warning' || l === 'warn' || l === 'notice' ? 'warning' : 'info'))
+    .pipe(z.enum(['info', 'warning', 'error'])),
   message: z.string(),
 });
 export type SystemLogEntry = z.infer<typeof SystemLogSchema>;

@@ -369,8 +369,12 @@ func gatewayHandler(store *gatewayStore) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]any{"success": true, "generation": generation, "duration_ms": duration})
 	}))
 
-	// ── GET /api/sandboxes ─────────────────────────────────────────────────────
+	// ── GET & POST /api/sandboxes ──────────────────────────────────────────────
 	mux.HandleFunc("/api/sandboxes", logRequest(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handleProvision(w, r)
+			return
+		}
 		if r.Method != http.MethodGet {
 			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
 			return

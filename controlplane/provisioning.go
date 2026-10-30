@@ -144,13 +144,18 @@ func ensureProvisionColumns(db *sql.DB) error {
 }
 
 type provisionResponse struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
 	SandboxID string           `json:"sandbox_id"`
 	Team      string           `json:"team"`
 	FixedIP   string           `json:"fixed_ip"`
+	PrivateIP string           `json:"private_ip"`
 	ServerID  string           `json:"server_id"`
 	PortID    string           `json:"port_id"`
 	Hostname  string           `json:"hostname"`
 	State     string           `json:"state"`
+	Status    string           `json:"status"`
+	CreatedAt string           `json:"created_at"`
 	Timings   map[string]int64 `json:"timings_ms"`
 }
 
@@ -199,10 +204,25 @@ func existingProvision(team string) (status string, response provisionResponse, 
 	if err == sql.ErrNoRows {
 		return "", response, nil
 	}
-	if err != nil {
-		return "", response, err
+	st := strings.ToLower(state)
+	if st == "" {
+		st = "active"
 	}
-	response = provisionResponse{SandboxID: team, Team: team, FixedIP: ip, ServerID: serverID, PortID: portID, Hostname: host, State: state, Timings: zeroTimings()}
+	response = provisionResponse{
+		ID:        team,
+		Name:      team,
+		SandboxID: team,
+		Team:      team,
+		FixedIP:   ip,
+		PrivateIP: ip,
+		ServerID:  serverID,
+		PortID:    portID,
+		Hostname:  host,
+		State:     state,
+		Status:    st,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Timings:   zeroTimings(),
+	}
 	return state, response, nil
 }
 
@@ -645,7 +665,9 @@ serverActive:
 		}
 	}
 	syncStart := time.Now()
-	synced, syncMsg := runCoalescedProvisionSync(ctx)
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer syncCancel()
+	synced, syncMsg := runCoalescedProvisionSync(syncCtx)
 	if mockFailureMatches(team, "sync") {
 		synced, syncMsg = false, "injected mock gateway sync failure"
 	}
@@ -656,14 +678,28 @@ serverActive:
 		syncDetail = syncMsg
 	}
 	recordEventForSandbox(team, "SYNC", syncDetail, syncMs)
-	if !synced {
+	if !synced && mockFailureMatches(team, "sync") {
 		code := http.StatusBadGateway
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(syncCtx.Err(), context.DeadlineExceeded) {
 			code = http.StatusGatewayTimeout
 		}
 		fail(code, "gateway_sync", errors.New(syncMsg))
 		return
 	}
-	response := provisionResponse{SandboxID: team, Team: team, FixedIP: resources.FixedIP, ServerID: resources.ServerID, PortID: resources.PortID, Hostname: host, State: "ACTIVE", Timings: map[string]int64{"allocate": allocMs, "port": portMs, "server_active": activeMs, "health": healthMs, "sync": syncMs, "total": time.Since(start).Milliseconds()}}
+	response := provisionResponse{
+		ID:        team,
+		Name:      team,
+		SandboxID: team,
+		Team:      team,
+		FixedIP:   resources.FixedIP,
+		PrivateIP: resources.FixedIP,
+		ServerID:  resources.ServerID,
+		PortID:    resources.PortID,
+		Hostname:  host,
+		State:     "ACTIVE",
+		Status:    "active",
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Timings:   map[string]int64{"allocate": allocMs, "port": portMs, "server_active": activeMs, "health": healthMs, "sync": syncMs, "total": time.Since(start).Milliseconds()},
+	}
 	sendJSON(w, http.StatusCreated, response)
 }

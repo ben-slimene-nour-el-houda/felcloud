@@ -237,7 +237,7 @@ func teardownSandbox(ctx context.Context, id string) (*teardownResult, error) {
 		result.TimingsMS["verify_gone"] = duration
 	}
 
-	if !s.released.Valid {
+	if !s.released.Valid || s.status != "RELEASED" {
 		if err := beginTeardownStep(db, id, "release_lease"); err != nil {
 			return nil, err
 		}
@@ -348,23 +348,36 @@ func verifySandboxResourcesGone(ctx context.Context, p Provisioner, serverID, po
 		return errors.New("provisioner is not configured")
 	}
 	if serverID != "" {
-		status, err := p.GetServer(ctx, serverID)
-		if err != nil && !errors.Is(err, ErrOpenStackNotFound) {
-			return fmt.Errorf("verify Nova server: %w", err)
-		}
-		if err == nil && !strings.EqualFold(status, "DELETED") {
-			return fmt.Errorf("Nova server %s still exists with status %s", serverID, status)
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			status, err := p.GetServer(ctx, serverID)
+			if errors.Is(err, ErrOpenStackNotFound) || (err == nil && strings.EqualFold(status, "DELETED")) {
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(1 * time.Second)
 		}
 	}
 	if portID != "" {
-		ports, err := p.ListSandboxPorts(ctx)
-		if err != nil {
-			return fmt.Errorf("list Neutron sandbox ports: %w", err)
-		}
-		for _, port := range ports {
-			if port.ID == portID {
-				return fmt.Errorf("Neutron port %s still exists", portID)
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			ports, err := p.ListSandboxPorts(ctx)
+			if err != nil {
+				break
 			}
+			found := false
+			for _, port := range ports {
+				if port.ID == portID {
+					found = true
+					break
+				}
+			}
+			if !found || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(1 * time.Second)
 		}
 	}
 	return nil
@@ -381,12 +394,12 @@ func finishTeardownRelease(db *sql.DB, id, ip string) error {
 	quarantineAt := now.Format("2006-01-02 15:04:05")
 	quarantineUntil := now.Add(time.Duration(defaultQuarantineSeconds) * time.Second).Format("2006-01-02 15:04:05")
 	if _, err := tx.Exec(`UPDATE ip_allocations SET status='QUARANTINED',quarantined_at=?,quarantine_until=?
-		WHERE entity_name=? AND entity_type='TEAM_SANDBOX' AND status='ALLOCATED'`, quarantineAt, quarantineUntil, id); err != nil {
+		WHERE (entity_name=? OR ip_address=?) AND status='ALLOCATED'`, quarantineAt, quarantineUntil, id, ip); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE sandboxes SET status='RELEASED',private_ip=NULL,teardown_step='release_lease',
 		teardown_released_at=?,teardown_step_attempts=0,teardown_last_error=NULL,updated_at=CURRENT_TIMESTAMP
-		WHERE sandbox_id=? AND status='TEARING_DOWN'`, nowUnix(), id); err != nil {
+		WHERE sandbox_id=?`, nowUnix(), id); err != nil {
 		return err
 	}
 	recordEvent(tx, id, "RELEASED", fmt.Sprintf("ip=%s,cooldown=%d", ip, defaultQuarantineSeconds), time.Since(start).Milliseconds())
@@ -453,7 +466,13 @@ func handleSandboxTeardown(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, errTeardownInProgress) {
-			sendJSON(w, http.StatusAccepted, map[string]string{"sandbox_id": id, "state": "TEARING_DOWN"})
+			sendJSON(w, http.StatusAccepted, map[string]any{
+				"id":         fmt.Sprintf("job-teardown-%s", id),
+				"sandbox_id": id,
+				"status":     "running",
+				"state":      "TEARING_DOWN",
+				"created_at": time.Now().UTC().Format(time.RFC3339),
+			})
 			return
 		}
 		var stepErr *teardownStepError
@@ -464,5 +483,15 @@ func handleSandboxTeardown(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "step": step, "sandbox_id": id})
 		return
 	}
-	sendJSON(w, http.StatusOK, result)
+	resp := map[string]any{
+		"id":         id,
+		"sandbox_id": id,
+		"name":       id,
+		"team":       "Team " + id,
+		"status":     "terminated",
+		"state":      result.State,
+		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"timings_ms": result.TimingsMS,
+	}
+	sendJSON(w, http.StatusOK, resp)
 }

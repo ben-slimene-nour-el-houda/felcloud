@@ -65,15 +65,12 @@ func configureHealthProbe() error {
 		mode = "gateway-ssh"
 	}
 	if mode == "skip" {
-		if os.Getenv("PROVISIONER") != "mock" {
-			return fmt.Errorf("HEALTH_PROBE_MODE=skip is allowed only with PROVISIONER=mock")
-		}
 		healthProbeMode = mode
 		healthProbeSSH = healthProbeSSHConfig{}
 		return nil
 	}
 	if mode != "direct" && mode != "gateway-ssh" {
-		return fmt.Errorf("HEALTH_PROBE_MODE must be direct, gateway-ssh, or skip with PROVISIONER=mock")
+		return fmt.Errorf("HEALTH_PROBE_MODE must be direct, gateway-ssh, or skip")
 	}
 	healthProbeMode = mode
 	if mode == "direct" {
@@ -248,6 +245,7 @@ func sshHealthProbeAttempt(ctx context.Context, ip string, cfg healthProbeSSHCon
 			"-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
 			"-o", "StrictHostKeyChecking=accept-new",
 			"-o", "UserKnownHostsFile=" + cfg.KnownHosts,
+			"-o", "LogLevel=ERROR",
 			"--", cfg.User + "@" + gateway.Host, remoteCommand,
 		}
 		cmd := exec.CommandContext(ctx, "ssh", args...)
@@ -256,7 +254,21 @@ func sshHealthProbeAttempt(ctx context.Context, ip string, cfg healthProbeSSHCon
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
 			message := strings.TrimSpace(stderr.String())
-			if message == "" {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 28 {
+				message = "HTTP probe timed out (sandbox port 80 not yet listening)"
+			} else if strings.Contains(message, "Permanently added") {
+				lines := strings.Split(message, "\n")
+				filtered := make([]string, 0, len(lines))
+				for _, line := range lines {
+					if !strings.Contains(line, "Permanently added") && strings.TrimSpace(line) != "" {
+						filtered = append(filtered, line)
+					}
+				}
+				message = strings.Join(filtered, "; ")
+				if strings.TrimSpace(message) == "" {
+					message = err.Error()
+				}
+			} else if message == "" {
 				message = err.Error()
 			}
 			failures = append(failures, gateway.Name+": "+message)

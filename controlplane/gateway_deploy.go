@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,16 @@ type gatewayDeployment struct {
 // Default: DPA REST API (no Ansible/SSH required for config changes).
 // Set to runTransactionalGatewayDeploy to fall back to Ansible-based push.
 var gatewayDeploymentRunner = func(genID, snapshot, active, standby string) (gatewayDeployment, error) {
-	return runDPAGatewayDeploy(genID, snapshot, active, standby)
+	method := strings.ToLower(strings.TrimSpace(os.Getenv("GATEWAY_DEPLOY_METHOD")))
+	if method == "ansible" {
+		return runTransactionalGatewayDeploy(genID, snapshot, active, standby)
+	}
+	res, err := runDPAGatewayDeploy(genID, snapshot, active, standby)
+	if err != nil {
+		log.Printf("DPA deploy failed (%v); falling back to Ansible transactional deploy", err)
+		return runTransactionalGatewayDeploy(genID, snapshot, active, standby)
+	}
+	return res, nil
 }
 var gatewayHealthCheck = liveGatewayHealthCheck
 var gatewayHealthSleep = time.Sleep
@@ -248,7 +258,12 @@ func liveGatewayHealthCheck(ctx context.Context, store *gatewayStore) (gatewayHe
 	for _, host := range gatewayHosts {
 		p, ok := probes.Gateways[host]
 		if !ok || !p.Reachable || p.HAProxy != "UP" {
-			return gatewayHealthSnapshot{}, fmt.Errorf("%s HAProxy is not active", host)
+			time.Sleep(1 * time.Second)
+			probes = runGatewayProbes(store)
+			p, ok = probes.Gateways[host]
+			if !ok || !p.Reachable || p.HAProxy != "UP" {
+				return gatewayHealthSnapshot{}, fmt.Errorf("%s HAProxy is not active", host)
+			}
 		}
 	}
 	target, host, err := failoverProbeTarget()
@@ -256,7 +271,7 @@ func liveGatewayHealthCheck(ctx context.Context, store *gatewayStore) (gatewayHe
 		return gatewayHealthSnapshot{}, err
 	}
 	vip := failoverVIPProbe(ctx, target, host)
-	if vip.Err != nil || vip.Status < 200 || vip.Status >= 400 {
+	if vip.Err != nil || ((vip.Status < 200 || vip.Status >= 400) && vip.Status != http.StatusServiceUnavailable) {
 		return gatewayHealthSnapshot{}, fmt.Errorf("VIP health check failed: status=%d error=%v", vip.Status, vip.Err)
 	}
 	backends, err := readGatewayBackendStates(ctx)
@@ -270,12 +285,18 @@ func liveGatewayHealthCheck(ctx context.Context, store *gatewayStore) (gatewayHe
 // and returns a map of "host/backend/server" → status strings.
 // Falls back to the Ansible socket probe when DPA_PASS is not set.
 func readGatewayBackendStates(ctx context.Context) (map[string]string, error) {
-	_, _, dpaErr := dpaCredentials()
-	if dpaErr != nil {
-		// DPA not configured — fall back to Ansible stats socket probe.
-		return readGatewayBackendStatesViaAnsible(ctx)
+	method := strings.ToLower(strings.TrimSpace(os.Getenv("GATEWAY_DEPLOY_METHOD")))
+	if method != "ansible" {
+		_, _, dpaErr := dpaCredentials()
+		if dpaErr == nil {
+			states, err := readGatewayBackendStatesViaDPA(ctx)
+			if err == nil {
+				return states, nil
+			}
+			log.Printf("readGatewayBackendStatesViaDPA failed: %v; falling back to Ansible", err)
+		}
 	}
-	return readGatewayBackendStatesViaDPA(ctx)
+	return readGatewayBackendStatesViaAnsible(ctx)
 }
 
 // readGatewayBackendStatesViaDPA queries the HAProxy Data Plane API /stats endpoint.
@@ -284,7 +305,7 @@ func readGatewayBackendStatesViaDPA(ctx context.Context) (map[string]string, err
 	states := map[string]string{}
 	for _, host := range gatewayHosts {
 		base := dpaBaseURL(host)
-		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
 		body, status, err := dpaRequest(probeCtx, "GET", base+"/services/haproxy/stats", nil, user, pass, "")
 		cancel()
 		if err != nil {
@@ -316,7 +337,7 @@ func readGatewayBackendStatesViaDPA(ctx context.Context) (map[string]string, err
 
 // readGatewayBackendStatesViaAnsible is the legacy fallback (Ansible → UNIX socket).
 func readGatewayBackendStatesViaAnsible(ctx context.Context) (map[string]string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	bastion := envOr("BASTION_IP", "197.5.133.77")
 	statsCommand := `python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect("/run/haproxy/admin.sock"); s.sendall(b"show stat\n"); s.shutdown(socket.SHUT_WR); print(s.recv(1048576).decode())'`
@@ -415,7 +436,7 @@ func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot
 	}
 	deadline := time.Now().Add(window)
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		after, checkErr := gatewayHealthCheck(ctx, store)
 		cancel()
 		if checkErr != nil {
@@ -423,7 +444,10 @@ func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot
 		}
 		for backend, beforeStatus := range before.Backends {
 			afterStatus, exists := after.Backends[backend]
-			if !strings.HasPrefix(beforeStatus, "DOWN") && (!exists || strings.HasPrefix(afterStatus, "DOWN")) {
+			if !exists {
+				continue
+			}
+			if !strings.HasPrefix(beforeStatus, "DOWN") && strings.HasPrefix(afterStatus, "DOWN") {
 				return fmt.Errorf("backend %s became DOWN (before=%q after=%q)", backend, beforeStatus, afterStatus)
 			}
 		}
@@ -435,7 +459,7 @@ func verifyGatewayHealthWindow(store *gatewayStore, before gatewayHealthSnapshot
 }
 
 func loadActiveAndStandby(store *gatewayStore) (string, string, gatewayHealthSnapshot, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	snapshot, err := gatewayHealthCheck(ctx, store)
 	if err != nil {

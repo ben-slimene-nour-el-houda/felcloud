@@ -355,6 +355,36 @@ export function Benchmarks() {
       <Card
         title="Committed Benchmark Results (Datasets A & B)"
         description="Authentic results imported from bench/results/raw with parameters, settings, and scenarios."
+        action={
+          <div className="row">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() =>
+                download(
+                  'committed-benchmark-results.json',
+                  'application/json',
+                  JSON.stringify(COMMITTED_BENCHMARK_SUITES, null, 2),
+                )
+              }
+            >
+              <Download size={16} aria-hidden /> Export JSON
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() =>
+                download(
+                  'committed-benchmark-results.csv',
+                  'text/csv',
+                  runsToCsv(COMMITTED_BENCHMARK_SUITES.flatMap((s) => s.runs) as any),
+                )
+              }
+            >
+              <Download size={16} aria-hidden /> Export CSV
+            </button>
+          </div>
+        }
       >
         <div className="committed-suites-list">
           {COMMITTED_BENCHMARK_SUITES.map((cs) => (
@@ -707,13 +737,26 @@ function RunDetail({ run, onClose }: { run: BenchmarkRun | CommittedBenchmarkRun
           <dd>{m?.failover_seconds != null ? `${m.failover_seconds} s` : 'Not measured'}</dd>
           <dt>Evidence</dt>
           <dd>
-            {run.evidence_url ? (
-              <a href={run.evidence_url} rel="noreferrer noopener" target="_blank">
-                Open evidence
-              </a>
-            ) : (
-              'No link supplied'
-            )}
+            <div className="row" style={{ marginTop: '4px', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() =>
+                  download(
+                    `${run.id}-evidence.json`,
+                    'application/json',
+                    JSON.stringify(run, null, 2),
+                  )
+                }
+              >
+                <Download size={14} aria-hidden /> Download evidence (JSON)
+              </button>
+              {run.evidence_url && (
+                <a href={run.evidence_url} rel="noreferrer noopener" target="_blank" className="btn btn-secondary btn-sm">
+                  Open source evidence ↗
+                </a>
+              )}
+            </div>
           </dd>
         </dl>
         {run.output && (

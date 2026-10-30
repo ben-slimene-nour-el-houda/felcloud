@@ -153,8 +153,8 @@ function Brand() {
 function SidebarFailoverStatus() {
   const gateways = useGateways();
   const gwList = gateways.data?.gateways ?? [];
-  const primary = gwList.find((g) => g.owns_vip) ?? gwList[0];
-  const vip = gateways.data?.vip.address ?? '10.20.20.246';
+  const primary = gwList.find((g) => g.owns_vip) ?? (gateways.data ? gwList[0] : null);
+  const vip = gateways.data?.vip.address ?? '—';
   const allUp =
     gwList.length > 0 &&
     gwList.every((g) => g.haproxy.status === 'up' && g.keepalived.status === 'up');
@@ -169,8 +169,8 @@ function SidebarFailoverStatus() {
         <code>{vip}</code>
       </div>
       <div className="sidebar-failover-meta">
-        <span>Active: <strong>{primary ? primary.name : 'gw1'}</strong></span>
-        <span className="sidebar-badge-master">MASTER</span>
+        <span>Active: <strong>{primary ? primary.name : '—'}</strong></span>
+        {primary && <span className="sidebar-badge-master">MASTER</span>}
       </div>
       <Link to="/gateways" className="sidebar-failover-link">
         Topology & Failover →
@@ -344,8 +344,8 @@ export function TopBar({
   }
 
   const gwList = gateways.data?.gateways ?? [];
-  const primary = gwList.find((g) => g.owns_vip) ?? gwList[0];
-  const standby = gwList.find((g) => !g.owns_vip) ?? (gwList.length > 1 ? gwList[1] : null);
+  const primary = gwList.find((g) => g.owns_vip) ?? (gateways.data ? gwList[0] : null);
+  const standby = gwList.find((g) => !g.owns_vip) ?? (gateways.data && gwList.length > 1 ? gwList[1] : null);
 
   const primaryStatus = primary
     ? primary.haproxy.status === 'up' && primary.keepalived.status === 'up'
@@ -396,6 +396,16 @@ export function TopBar({
           )}
         </div>
         <ConnectionIndicator />
+        {!Boolean(tokenStore.get()) && (
+          <button
+            type="button"
+            className="btn btn-primary hide-mobile"
+            onClick={onAccount}
+            style={{ fontSize: '13px', padding: '4px 12px' }}
+          >
+            Sign in
+          </button>
+        )}
         <span className="muted updated hide-mobile">Last updated {formatTime(dataUpdatedAt)}</span>
         <button
           type="button"
@@ -435,6 +445,12 @@ export function AppShell(): ReactNode {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
   const isPresentMode = searchParams.get('present') === '1';
+
+  useEffect(() => {
+    const handleOpenAuth = () => setAccount(true);
+    window.addEventListener('felcloud:open-auth', handleOpenAuth);
+    return () => window.removeEventListener('felcloud:open-auth', handleOpenAuth);
+  }, []);
 
   return (
     <div className={`shell ${isPresentMode ? 'presentation-mode' : ''} ${api.mode === 'demo' ? 'mode-demo' : ''}`}>

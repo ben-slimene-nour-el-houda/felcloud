@@ -239,12 +239,27 @@ func handleProvision(w http.ResponseWriter, r *http.Request) {
 		provisionError(w, http.StatusBadRequest, "", "decode", errors.New("invalid request payload"))
 		return
 	}
-	if req.Team == "" {
-		req.Team = req.SandboxID
+	id := req.Name
+	if id == "" {
+		id = req.SandboxID
 	}
-	if req.Team == "" || !dnsLabelRE.MatchString(req.Team) {
-		provisionError(w, http.StatusBadRequest, req.Team, "validate", errors.New("team must be a lowercase DNS label of 1-63 characters"))
+	if id == "" {
+		id = req.Team
+	}
+	if !dnsLabelRE.MatchString(id) {
+		id = strings.ToLower(strings.TrimSpace(id))
+		id = regexp.MustCompile(`[^a-z0-9-]+`).ReplaceAllString(id, "-")
+		id = strings.Trim(id, "-")
+	}
+	if id == "" || !dnsLabelRE.MatchString(id) {
+		provisionError(w, http.StatusBadRequest, id, "validate", errors.New("sandbox name must be a lowercase DNS label of 1-63 characters"))
 		return
+	}
+	req.SandboxID = id
+	req.Team = id
+
+	if req.TTL == 0 && req.TTLHours > 0 {
+		req.TTL = req.TTLHours * 3600
 	}
 	if provisioner == nil {
 		provisionError(w, http.StatusBadGateway, req.Team, "config", errors.New("provisioner is not configured"))

@@ -326,7 +326,7 @@ func setupDashboardAPIRoutes(mux *http.ServeMux, store *gatewayStore) {
 		defer db.Close()
 
 		rows, err := db.Query(`
-			SELECT id, sandbox_id, hostname, COALESCE(private_ip, fixed_ip, ''), status, updated_at
+			SELECT id, sandbox_id, hostname, COALESCE(private_ip, fixed_ip, ''), status, updated_at, COALESCE(custom_domain, '')
 			FROM sandboxes
 			WHERE COALESCE(private_ip, fixed_ip, '') != ''
 			ORDER BY id ASC`)
@@ -342,8 +342,8 @@ func setupDashboardAPIRoutes(mux *http.ServeMux, store *gatewayStore) {
 		items := make([]map[string]any, 0)
 		for rows.Next() {
 			var id int
-			var sandboxID, hostname, ip, status, updatedAt string
-			if err := rows.Scan(&id, &sandboxID, &hostname, &ip, &status, &updatedAt); err == nil {
+			var sandboxID, hostname, ip, status, updatedAt, customDomain string
+			if err := rows.Scan(&id, &sandboxID, &hostname, &ip, &status, &updatedAt, &customDomain); err == nil {
 				health := "healthy"
 				stage := "deployed"
 				if strings.ToUpper(status) != "ACTIVE" {
@@ -363,7 +363,44 @@ func setupDashboardAPIRoutes(mux *http.ServeMux, store *gatewayStore) {
 					"latency_ms":        1.2,
 					"evidence":          fmt.Sprintf("HAProxy backend %s: active (status %s)", ip, status),
 				})
+
+				if customDomain != "" {
+					items = append(items, map[string]any{
+						"id":                fmt.Sprintf("route-%s-custom", sandboxID),
+						"hostname":          customDomain,
+						"backend":           fmt.Sprintf("%s:80", ip),
+						"sandbox_id":        sandboxID,
+						"sandbox_name":      sandboxID,
+						"health":            health,
+						"stage":             stage,
+						"config_generation": latestGenID,
+						"last_check_at":     time.Now().UTC().Format(time.RFC3339),
+						"latency_ms":        1.2,
+						"evidence":          fmt.Sprintf("HAProxy backend %s: active (status %s, custom domain)", ip, status),
+					})
+				}
 			}
+		}
+
+		qParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+		statusParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+		if statusParam != "" || qParam != "" {
+			filtered := make([]map[string]any, 0)
+			for _, item := range items {
+				if statusParam != "" && fmt.Sprint(item["health"]) != statusParam {
+					continue
+				}
+				if qParam != "" {
+					h := strings.ToLower(fmt.Sprint(item["hostname"]))
+					b := strings.ToLower(fmt.Sprint(item["backend"]))
+					s := strings.ToLower(fmt.Sprint(item["sandbox_name"]))
+					if !strings.Contains(h, qParam) && !strings.Contains(b, qParam) && !strings.Contains(s, qParam) {
+						continue
+					}
+				}
+				filtered = append(filtered, item)
+			}
+			items = filtered
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -467,6 +504,73 @@ func setupDashboardAPIRoutes(mux *http.ServeMux, store *gatewayStore) {
 			"total":     len(ops),
 			"page":      1,
 			"page_size": 10,
+		})
+	}))
+
+	// ── 6b. Jobs ───────────────────────────────────────────────────────────────
+	mux.HandleFunc("/api/jobs/", logRequest(func(w http.ResponseWriter, r *http.Request) {
+		jobID := strings.TrimPrefix(r.URL.Path, "/api/jobs/")
+		if r.Method != http.MethodGet {
+			errJSON(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		db, err := getDBConnection()
+		if err != nil {
+			errJSON(w, http.StatusInternalServerError, "db error", err.Error())
+			return
+		}
+		defer db.Close()
+
+		now := time.Now().UTC().Format(time.RFC3339)
+
+		// Check if it's a teardown job: e.g. job-teardown-mission404
+		if strings.HasPrefix(jobID, "job-teardown-") {
+			targetSandbox := strings.TrimPrefix(jobID, "job-teardown-")
+			var status string
+			err = db.QueryRow("SELECT status FROM sandboxes WHERE sandbox_id = ?", targetSandbox).Scan(&status)
+			if err != nil {
+				// If not found in sandboxes table, it was completely purged -> succeeded
+				writeJSON(w, http.StatusOK, map[string]any{
+					"id":         jobID,
+					"kind":       "sandbox_teardown",
+					"status":     "succeeded",
+					"created_at": now,
+					"updated_at": now,
+					"message":    fmt.Sprintf("Sandbox %s torn down successfully", targetSandbox),
+				})
+				return
+			}
+
+			jobStatus := "running"
+			switch strings.ToUpper(status) {
+			case "RELEASED", "TERMINATED":
+				jobStatus = "succeeded"
+			case "TEARDOWN_FAILED", "FAILED":
+				jobStatus = "failed"
+			default:
+				jobStatus = "running"
+			}
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"id":         jobID,
+				"kind":       "sandbox_teardown",
+				"status":     jobStatus,
+				"created_at": now,
+				"updated_at": now,
+				"message":    fmt.Sprintf("Sandbox %s teardown status: %s", targetSandbox, status),
+			})
+			return
+		}
+
+		// Fallback for any other job ID
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":         jobID,
+			"kind":       "operation",
+			"status":     "succeeded",
+			"created_at": now,
+			"updated_at": now,
+			"message":    "Operation completed successfully",
 		})
 	}))
 

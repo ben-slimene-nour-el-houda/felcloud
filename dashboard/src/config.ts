@@ -21,7 +21,7 @@ export function loadConfig(env?: EnvLike): AppConfig {
   return {
     apiBaseUrl: String(apiBase ?? '/api'),
     demoMode: String(demoMode ?? 'false').toLowerCase() === 'true',
-    timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 10_000,
+    timeoutMs: Number.isFinite(timeout) && timeout >= 60_000 ? timeout : 120_000,
     environmentLabel: String(envLabel ?? 'Development'),
     grafanaUrl: rawGrafana || undefined,
   };

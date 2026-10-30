@@ -52,6 +52,8 @@ type SandboxPort struct {
 type CreateReq struct {
 	SandboxID    string `json:"sandbox_id,omitempty"`
 	Team         string `json:"team,omitempty"`
+	Name         string `json:"name,omitempty"`
+	TTLHours     int64  `json:"ttl_hours,omitempty"`
 	FixedIP      string `json:"-"`
 	CustomDomain string `json:"custom_domain,omitempty"`
 	TTL          int64  `json:"ttl,omitempty"`
@@ -551,9 +553,14 @@ func (p *OpenStackProvisioner) resolveSecurityGroup(ctx context.Context) (string
 }
 
 func cloudInitHTTP() []byte {
-	// Input-independent script: team names never enter cloud-init or shell syntax.
-	// systemd unit survives reboots; no package install (sandbox network has no internet).
 	script := `#cloud-config
+package_update: false
+package_upgrade: false
+packages: []
+bootcmd:
+  - mkdir -p /var/www/sandbox
+  - 'echo "FelCloud sandbox ready" > /var/www/sandbox/index.html'
+  - 'nohup python3 -m http.server 80 --directory /var/www/sandbox </dev/null >/var/log/sandbox-http.log 2>&1 &'
 write_files:
   - path: /etc/systemd/system/sandbox-http.service
     content: |
@@ -566,17 +573,8 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
-  - |
-    mkdir -p /var/www/sandbox
-    ip=""
-    for i in $(seq 1 30); do
-      ip=$(hostname -I | awk '{print $1}')
-      [ -n "$ip" ] && break
-      sleep 1
-    done
-    echo "FelCloud sandbox ready ($ip)" > /var/www/sandbox/index.html
   - [systemctl, daemon-reload]
-  - [systemctl, enable, --now, sandbox-http.service]
+  - [systemctl, enable, sandbox-http.service]
 `
 	return []byte(script)
 }
