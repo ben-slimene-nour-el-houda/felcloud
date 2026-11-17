@@ -3,14 +3,14 @@
 # FelCloud - OpenStack Designate DNS Synchronizer (+2 Bonus Points)
 # ==============================================================================
 # Automates DNS record management on OpenStack Designate (DNSaaS):
-# - Ensures root DNS zone exists (e.g. cstam.felcloud.tn.)
-# - Provisions wildcard A-record (*.cstam.felcloud.tn.) pointing to Edge VIP
+# - Ensures root DNS zone exists (e.g. example.com.)
+# - Provisions wildcard A-record (*.example.com.) pointing to Edge VIP
 # - Manages custom domain CNAME / A records dynamically
 # ==============================================================================
 
 set -euo pipefail
 
-ZONE_NAME="${DNS_ZONE:-cstam.felcloud.tn.}"
+ZONE_NAME="${DNS_ZONE:-example.com.}"
 VIP_IP="${VIP_ADDRESS:-10.20.20.246}"
 TTL="${DNS_TTL:-300}"
 
@@ -37,7 +37,7 @@ ZONE_ID=$(openstack zone list -f value -c id -c name | awk -v z="${ZONE_NAME}" '
 
 if [[ -z "${ZONE_ID}" ]]; then
     echo "--> Zone ${ZONE_NAME} does not exist. Creating zone..."
-    ZONE_ID=$(openstack zone create --email "dns-admin@felcloud.tn" --ttl "${TTL}" "${ZONE_NAME}" -f value -c id)
+    ZONE_ID=$(openstack zone create --email "dns-admin@example.com" --ttl "${TTL}" "${ZONE_NAME}" -f value -c id)
     echo "✓ Created Designate Zone: ${ZONE_NAME} (ID: ${ZONE_ID})"
 else
     echo "✓ Existing Zone found (ID: ${ZONE_ID})"

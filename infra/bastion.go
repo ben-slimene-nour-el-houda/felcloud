@@ -9,8 +9,7 @@ import (
 )
 
 // BastionOutputs holds references to the Bastion instance and its ports.
-// NOTE: No Floating IP is allocated here — the existing 197.5.133.119 is
-// reassigned manually to bastion-edge-port via: openstack floating ip set
+// NOTE: Floating IP is attached to bastion-edge-port during deployment via OpenStack CLI or Pulumi.
 type BastionOutputs struct {
 	Instance *compute.Instance
 	MgmtPort *networking.Port

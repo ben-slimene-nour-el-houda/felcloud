@@ -17,10 +17,10 @@ type SecurityOutputs struct {
 
 // CreateSecurityGroups provisions the gateway, sandbox, management, and control-plane groups.
 func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, error) {
-	// 1. sg-gateway: 80/443 open; 22 closed by default; VRRP protocol between GW1<->GW2 edge ports
+	// 1. sg-gateway: 80/443 open; 22 strictly closed (SSH restricted to sg-management); VRRP protocol between GW1<->GW2 edge ports
 	sgGateway, err := networking.NewSecGroup(ctx, "sg-gateway", &networking.SecGroupArgs{
 		Name:        pulumi.String("sg-gateway"),
-		Description: pulumi.String("Security group for edge gateways GW1 and GW2"),
+		Description: pulumi.String("Security group for edge gateways GW1 and GW2 (HTTP/HTTPS/VRRP only; no SSH)"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sg-gateway: %w", err)
@@ -69,22 +69,6 @@ func CreateSecurityGroups(ctx *pulumi.Context, cfg *Config) (*SecurityOutputs, e
 		return nil, fmt.Errorf("failed to create sg-gateway VRRP rule: %w", err)
 	}
 
-	// Optional / Conditional SSH for sg-gateway
-	if cfg.AdminSSHCIDR != "" {
-		_, err = networking.NewSecGroupRule(ctx, "sg-gateway-rule-ssh", &networking.SecGroupRuleArgs{
-			SecurityGroupId: sgGateway.ID(),
-			Direction:       pulumi.String("ingress"),
-			Ethertype:       pulumi.String("IPv4"),
-			Protocol:        pulumi.String("tcp"),
-			PortRangeMin:    pulumi.Int(22),
-			PortRangeMax:    pulumi.Int(22),
-			RemoteIpPrefix:  pulumi.String(cfg.AdminSSHCIDR),
-			Description:     pulumi.String("Temporary admin SSH access"),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create sg-gateway SSH rule: %w", err)
-		}
-	}
 
 	// 2. sg-sandbox: gateway-only ingress and explicit DNS/web/gateway egress.
 	sgSandbox, err := networking.NewSecGroup(ctx, "sg-sandbox", &networking.SecGroupArgs{

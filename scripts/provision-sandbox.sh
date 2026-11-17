@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# FelCloud - Sandbox Provisioning CLI Client
+# ==============================================================================
+# Sends an HTTP POST to the control plane API to provision a new tenant sandbox.
+#
+# Arguments:
+#   $1                 (Optional) Team / Sandbox name (default: team-demo).
+#
+# Environment variables:
+#   CONTROL_PLANE_BASE_URL (Optional) Base URL for API (default: http://127.0.0.1:8080).
+#   ADMIN_TOKEN            (Optional) Bearer token for API authentication.
+#   AUTH_DISABLED          (Optional) Set to true if running without auth.
+#   PORT                   (Optional) Target port for the sandbox HTTP service (default: 80).
+#
+# Usage:
+#   ./scripts/provision-sandbox.sh student-42
+# ==============================================================================
 set -Eeuo pipefail
 
 TEAM_NAME="${1:-${TEAM_NAME:-team-demo}}"

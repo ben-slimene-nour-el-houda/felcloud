@@ -14,7 +14,7 @@ set -uo pipefail
 
 HAPROXY_HEALTH_URL="${HAPROXY_HEALTH_URL:-http://127.0.0.1:9000/healthz}"
 HAPROXY_STAT_FILE="${HAPROXY_STAT_FILE:-/run/haproxy/admin.sock}"
-CURL_TIMEOUT=2
+CURL_TIMEOUT=1
 
 # ── Stage 1: service unit must be active ──────────────────────────────────────
 if ! systemctl is-active --quiet haproxy; then

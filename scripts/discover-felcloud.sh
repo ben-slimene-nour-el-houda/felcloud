@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# ==============================================================================
+# FelCloud - OpenStack Environment Discovery Snapshot Tool
+# ==============================================================================
+# Inspects and exports current OpenStack tenant topology into a timestamped file.
+#
+# Environment variables:
+#   DISCOVERY_OUTPUT_DIR (Optional) Directory to save discovery output (default: output/).
+#   OS_*                 (Required) Standard OpenStack authentication environment variables.
+#
+# Usage:
+#   ./scripts/discover-felcloud.sh
+# ==============================================================================
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

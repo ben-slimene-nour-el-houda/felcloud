@@ -67,10 +67,10 @@ echo "✓ Sandbox ${TEAM} active with dynamically assigned IP: ${ASSIGNED_IP}"
 step 3 "Demonstrating Custom Domain Binding Bonus Feature"
 DOMAIN_RESP=$(curl -fsS -X POST "${AUTH_HEADER[@]}" \
     -H "Content-Type: application/json" \
-    -d "{\"sandbox_id\":\"${TEAM}\",\"custom_domain\":\"demo.cstam-felcloud.tn\"}" \
+    -d "{\"sandbox_id\":\"${TEAM}\",\"custom_domain\":\"demo.sandbox.example.com\"}" \
     "${API_URL}/api/sandboxes/custom-domain")
 echo "${DOMAIN_RESP}" | python3 -m json.tool
-echo "✓ Mapped custom domain: demo.cstam-felcloud.tn -> ${ASSIGNED_IP}"
+echo "✓ Mapped custom domain: demo.sandbox.example.com -> ${ASSIGNED_IP}"
 
 # 4. Gateway Failover
 step 4 "Simulating Primary Gateway Crash & Automated Failover"

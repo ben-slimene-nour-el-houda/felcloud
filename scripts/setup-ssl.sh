@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-DOMAIN="${DOMAIN:-cstam.felcloud.tn}"
+DOMAIN="${DOMAIN:-sandbox.example.com}"
 OUTPUT_DIR="${OUTPUT_DIR:-/etc/haproxy/certs}"
 BUNDLE_FILE="${OUTPUT_DIR}/felcloud-gateway.pem"
 MODE="${MODE:-self-signed}" # 'self-signed' or 'letsencrypt'
